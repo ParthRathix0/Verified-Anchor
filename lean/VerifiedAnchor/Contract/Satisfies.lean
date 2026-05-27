@@ -36,6 +36,11 @@ def resolveSeeds (s : AccountsStruct) (c : Ctx) : List SeedSpec → List ByteArr
        | some a => ByteArray.mk a.key.toArray
        | none => ByteArray.empty) :: resolveSeeds s c rest
 
+/-- Anchor's `CLOSED_ACCOUNT_DISCRIMINATOR`: 8 bytes of `0xff` written to a closed
+    account's data so it can never be re-deserialized as a live account. -/
+def closedAccountDiscriminator : ByteArray :=
+  (⟨#[0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]⟩ : ByteArray)
+
 /-- What it means for the account at field index `idx` (declared field `f`) to satisfy one
     constraint, given the whole struct `s` and runtime accounts `c`. -/
 def satisfies (s : AccountsStruct) (c : Ctx) (idx : Nat) (f : AccountField) :
@@ -53,13 +58,14 @@ def satisfies (s : AccountsStruct) (c : Ctx) (idx : Nat) (f : AccountField) :
       (Ctx.atField s c idx).satisfiesSome (fun a =>
         (findProgramAddress (resolveSeeds s c ss) s.programId).satisfiesSome (fun pr =>
           pr.1 = a.key ∧ bumpMatches b pr.2))
-  | .init payer _space owner =>
+  | .init payer space owner =>
       (Ctx.atField s c idx).satisfiesSome (fun a =>
         (Ctx.lookup s c payer).satisfiesSome (fun p =>
-          a.owner = owner ∧ p.isSigner = true ∧ p.isWritable = true ∧ _space + 8 ≤ a.data.size))
+          a.owner = owner ∧ p.isSigner = true ∧ p.isWritable = true ∧ space + 8 ≤ a.data.size))
   | .close dest =>
       (Ctx.atField s c idx).satisfiesSome (fun a =>
-        (Ctx.lookup s c dest).satisfiesSome (fun _ => True) ∧ a.lamports = 0)
+        (Ctx.lookup s c dest).satisfiesSome (fun _ => True) ∧
+          a.lamports = 0 ∧ hasDiscriminator a closedAccountDiscriminator)
 
 /-- The contract is decidable, constraint by constraint. Load-bearing for `validatesBool`. -/
 instance (s : AccountsStruct) (c : Ctx) (idx : Nat) (f : AccountField) (k : Constraint) :
