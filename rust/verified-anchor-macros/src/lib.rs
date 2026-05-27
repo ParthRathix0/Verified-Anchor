@@ -63,6 +63,39 @@ fn collect_fields(input: &DeriveInput) -> syn::Result<Vec<FieldSpec>> {
     Ok(specs)
 }
 
+fn lean_constraint(c: &Constraint) -> String {
+    match c {
+        Constraint::Signer => "Constraint.signer".to_string(),
+        Constraint::Mut => "Constraint.mut".to_string(),
+        Constraint::Owner(_) => "Constraint.owner ownerPlaceholder".to_string(),
+    }
+}
+
+fn lean_spec_string(specs: &[FieldSpec]) -> String {
+    let mut fields = Vec::new();
+    for spec in specs {
+        let cs: Vec<String> = spec.constraints.iter().map(lean_constraint).collect();
+        fields.push(format!(
+            "{{ name := \"{}\", ty := AccountType.uncheckedAccount, constraints := [{}] }}",
+            spec.name,
+            cs.join(", ")
+        ));
+    }
+    let body = if fields.is_empty() {
+        "[]".to_string()
+    } else {
+        let mut lines = String::from("\n  [ ");
+        lines.push_str(&fields[0]);
+        for f in &fields[1..] {
+            lines.push_str("\n  , ");
+            lines.push_str(f);
+        }
+        lines.push_str(" ]");
+        lines
+    };
+    format!("{{ programId := Pubkey.zero\n, fields :={} }}", body)
+}
+
 fn validate_body(specs: &[FieldSpec]) -> TokenStream2 {
     let n = specs.len();
     let mut checks = Vec::new();
@@ -109,9 +142,16 @@ pub fn derive_verified_accounts(input: TokenStream) -> TokenStream {
     };
     let name = &input.ident;
     let body = validate_body(&specs);
+    let lean = lean_spec_string(&specs);
     let expanded = quote! {
         impl ::verified_anchor::Validate for #name {
             #body
+        }
+        impl #name {
+            /// The Milestone-1 `AccountsStruct` literal for this struct (Lean source).
+            pub fn lean_spec() -> ::std::string::String {
+                #lean.to_string()
+            }
         }
     };
     expanded.into()
