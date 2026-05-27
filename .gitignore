@@ -1,0 +1,7 @@
+# Lean
+/lean/.lake/
+/lean/build/
+**/.lake/
+# Rust
+/rust/target/
+target/
