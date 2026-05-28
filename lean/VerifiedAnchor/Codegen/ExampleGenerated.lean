@@ -29,10 +29,10 @@ def authAcct : AccountInfo :=
     rentEpoch := 0, isSigner := true, isWritable := false, executable := false }
 
 /-- Good: vault writable, authority signs. -/
-def goodCtx : Ctx := [vaultAcct, authAcct]
+def goodCtx : Ctx := Ctx.ofAccounts [vaultAcct, authAcct]
 
 /-- Tampered: the authority is not a signer. -/
-def tamperedCtx : Ctx := [vaultAcct, { authAcct with isSigner := false }]
+def tamperedCtx : Ctx := Ctx.ofAccounts [vaultAcct, { authAcct with isSigner := false }]
 
 #guard genValidate transfer goodCtx = true
 #guard genValidate transfer tamperedCtx = false
@@ -71,8 +71,8 @@ def hoVault (stored : Pubkey) : AccountInfo :=
 def hoAuthority : AccountInfo :=
   { key := authKeyE, lamports := 0, data := ByteArray.empty, owner := Pubkey.zero,
     rentEpoch := 0, isSigner := false, isWritable := false, executable := false }
-def hoGood : Ctx := [hoVault authKeyE, hoAuthority]
-def hoBad : Ctx := [hoVault (Pubkey.ofBytes (List.replicate 32 6)), hoAuthority]
+def hoGood : Ctx := Ctx.ofAccounts [hoVault authKeyE, hoAuthority]
+def hoBad : Ctx := Ctx.ofAccounts [hoVault (Pubkey.ofBytes (List.replicate 32 6)), hoAuthority]
 
 #guard checkConstraint withHasOne hoGood 0 vaultFieldE (Constraint.hasOne "authority") = true
 #guard checkConstraint withHasOne hoBad 0 vaultFieldE (Constraint.hasOne "authority") = false
@@ -82,7 +82,7 @@ def hoBad : Ctx := [hoVault (Pubkey.ofBytes (List.replicate 32 6)), hoAuthority]
 `applyInit` on a funded-signer-payer + empty-target context succeeds, and the M1 `init`
 post-condition (owner set, ≥ `space+8` bytes) follows from `init_establishes_post`. -/
 def lcDisc : ByteArray := ByteArray.mk (Array.replicate 8 0)
-def lcPre : Ctx :=
+def lcPre : Ctx := Ctx.ofAccounts
   [ { key := Pubkey.zero, lamports := 0, data := ByteArray.empty, owner := Pubkey.zero,
       rentEpoch := 0, isSigner := false, isWritable := false, executable := false }
   , { key := Pubkey.zero, lamports := 1000, data := ByteArray.empty, owner := Pubkey.zero,
@@ -94,7 +94,7 @@ def lcPre : Ctx :=
     target ends up program-owned with at least `space+8` bytes. -/
 theorem lc_init_establishes :
     ∀ c', applyInit 0 1 0 Pubkey.zero lcDisc 500 lcPre = some c' →
-      ∃ a, c'[0]? = some a ∧ a.owner = Pubkey.zero ∧ 0 + 8 ≤ a.data.size :=
+      ∃ a, c'.accounts[0]? = some a ∧ a.owner = Pubkey.zero ∧ 0 + 8 ≤ a.data.size :=
   fun c' h => init_establishes_post 0 1 0 Pubkey.zero lcDisc 500 lcPre c' (by decide) (by decide) h
 
 end VerifiedAnchor.Codegen.Examples
