@@ -15,6 +15,8 @@ pub enum VAError {
     WrongHasOne { field: &'static str, target: &'static str },
     InitFailed { field: &'static str },
     CloseFailed { field: &'static str },
+    WrongPda { field: &'static str },
+    WrongBump { field: &'static str },
 }
 
 impl core::fmt::Display for VAError {
@@ -29,6 +31,8 @@ impl core::fmt::Display for VAError {
                 write!(f, "account `{field}` field does not match `{target}`"),
             VAError::InitFailed { field } => write!(f, "init failed for `{field}`"),
             VAError::CloseFailed { field } => write!(f, "close failed for `{field}`"),
+            VAError::WrongPda { field } => write!(f, "account `{field}` is not the expected PDA"),
+            VAError::WrongBump { field } => write!(f, "account `{field}` has a non-canonical bump"),
         }
     }
 }
