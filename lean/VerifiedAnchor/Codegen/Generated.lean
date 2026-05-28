@@ -1,29 +1,36 @@
 import VerifiedAnchor.Contract.Validates
 
+/-- `o` holds a value satisfying the Bool predicate `p` (false if `o` is none).
+
+    Defined in the root `Option` namespace (mirroring `Option.satisfiesSome`) so that the
+    `o.allB p` dot-notation resolves against the real `Option` type. -/
+def Option.allB {α} (o : Option α) (p : α → Bool) : Bool :=
+  match o with | none => false | some a => p a
+
 namespace VerifiedAnchor
 
-/-- Per-constraint Bool checks, exactly transcribing the generated Rust `if`s. -/
-def genSigner (a : AccountInfo) : Bool := a.isSigner
-def genMut    (a : AccountInfo) : Bool := a.isWritable
-def genOwner  (expected : Pubkey) (a : AccountInfo) : Bool := decide (a.owner = expected)
+/-- Relational has_one check: the Pubkey at the field's layout offset in this account's data
+    equals the looked-up field account's key. None-safe. -/
+def genHasOne (s : AccountsStruct) (c : Ctx) (idx : Nat) (f : AccountField) (field : String) : Bool :=
+  (Ctx.atField s c idx).allB (fun a =>
+    (f.ty.layoutOffsetOf field).allB (fun off =>
+      (readPubkey a.data off).allB (fun val =>
+        (Ctx.lookup s c field).allB (fun target => decide (val = target.key)))))
 
-/-- Operational check of one M2 constraint against the resolved account. Constraints
-    outside the M2 subset are not generated, so they return `false` here. -/
-def genConstraint (a : AccountInfo) : Constraint → Bool
-  | .signer  => genSigner a
-  | .mut     => genMut a
-  | .owner e => genOwner e a
-  | _        => false
+/-- Operational check of one constraint, resolving accounts from the full context.
+    (init/close/seeds are not validation constraints → false.) -/
+def genConstraint (s : AccountsStruct) (c : Ctx) (idx : Nat) (f : AccountField) :
+    Constraint → Bool
+  | .signer          => (Ctx.atField s c idx).allB (fun a => a.isSigner)
+  | .mut             => (Ctx.atField s c idx).allB (fun a => a.isWritable)
+  | .owner e         => (Ctx.atField s c idx).allB (fun a => decide (a.owner = e))
+  | .discriminator d => (Ctx.atField s c idx).allB (fun a => decide (hasDiscriminator a d))
+  | .hasOne field    => genHasOne s c idx f field
+  | _                => false
 
-/-- The generated per-field check: resolve the account, then every (implied ++ explicit)
-    constraint must pass. A missing account fails. -/
 def genFieldValidate (s : AccountsStruct) (c : Ctx) (idx : Nat) (f : AccountField) : Bool :=
-  match Ctx.atField s c idx with
-  | none   => false
-  | some a => (f.ty.impliedConstraints ++ f.constraints).all (genConstraint a)
+  (f.ty.impliedConstraints ++ f.constraints).all (genConstraint s c idx f)
 
-/-- The generated validator: well-formed account count, then every field validates.
-    Mirrors the emitted Rust `validate` (positional, short-circuiting). -/
 def genValidate (s : AccountsStruct) (c : Ctx) : Bool :=
   decide (c.length = s.fields.length) &&
     s.fields.zipIdx.all (fun p => genFieldValidate s c p.2 p.1)
