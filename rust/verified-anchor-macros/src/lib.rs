@@ -4,11 +4,12 @@ use quote::quote;
 use syn::parse::{Parse, ParseStream};
 use syn::{parse_macro_input, punctuated::Punctuated, Data, DeriveInput, Expr, Fields, Token};
 
-/// One M2 constraint parsed from a field's `#[account(...)]`.
+/// One M2/M3 constraint parsed from a field's `#[account(...)]`.
 enum Constraint {
     Signer,
     Mut,
     Owner(Expr),
+    HasOne(syn::Ident),
 }
 
 impl Parse for Constraint {
@@ -26,9 +27,14 @@ impl Parse for Constraint {
                 let expr: Expr = input.parse()?;
                 Ok(Constraint::Owner(expr))
             }
+            "has_one" => {
+                input.parse::<Token![=]>()?;
+                let target: syn::Ident = input.parse()?;
+                Ok(Constraint::HasOne(target))
+            }
             other => Err(syn::Error::new(
                 ident.span(),
-                format!("unsupported constraint `{other}` for Milestone 2 (only signer, mut, owner)"),
+                format!("unsupported constraint `{other}` (supported: signer, mut, owner, has_one)"),
             )),
         }
     }
@@ -68,6 +74,7 @@ fn lean_constraint(c: &Constraint) -> String {
         Constraint::Signer => "Constraint.signer".to_string(),
         Constraint::Mut => "Constraint.mut".to_string(),
         Constraint::Owner(_) => "Constraint.owner ownerPlaceholder".to_string(),
+        Constraint::HasOne(t) => format!("Constraint.hasOne \"{}\"", t),
     }
 }
 
@@ -75,9 +82,16 @@ fn lean_spec_string(specs: &[FieldSpec]) -> String {
     let mut fields = Vec::new();
     for spec in specs {
         let cs: Vec<String> = spec.constraints.iter().map(lean_constraint).collect();
+        // If this field has a has_one constraint, emit a richer AccountType so the Lean
+        // layout resolver can locate the stored Pubkey at offset 8 (after the discriminator).
+        let ty = spec.constraints.iter().find_map(|c| {
+            if let Constraint::HasOne(t) = c { Some(t.to_string()) } else { None }
+        }).map(|t| format!("AccountType.account \"Vault\" [(\"{}\", 8)] Pubkey.zero", t))
+          .unwrap_or_else(|| "AccountType.uncheckedAccount".to_string());
         fields.push(format!(
-            "{{ name := \"{}\", ty := AccountType.uncheckedAccount, constraints := [{}] }}",
+            "{{ name := \"{}\", ty := {}, constraints := [{}] }}",
             spec.name,
+            ty,
             cs.join(", ")
         ));
     }
@@ -98,6 +112,9 @@ fn lean_spec_string(specs: &[FieldSpec]) -> String {
 
 fn validate_body(specs: &[FieldSpec]) -> TokenStream2 {
     let n = specs.len();
+    // Build a name→index map so has_one can look up the target field's position.
+    let index_of: std::collections::HashMap<String, usize> =
+        specs.iter().enumerate().map(|(i, s)| (s.name.clone(), i)).collect();
     let mut checks = Vec::new();
     for (i, spec) in specs.iter().enumerate() {
         let name = &spec.name;
@@ -116,6 +133,21 @@ fn validate_body(specs: &[FieldSpec]) -> TokenStream2 {
                 Constraint::Owner(expr) => quote! {
                     if accounts[#i].owner != &(#expr) {
                         return Err(::verified_anchor::VAError::WrongOwner { field: #name });
+                    }
+                },
+                Constraint::HasOne(target) => {
+                    let tname = target.to_string();
+                    let tidx = *index_of.get(&tname)
+                        .unwrap_or_else(|| panic!("has_one target `{tname}` is not a field of this struct"));
+                    let fname = name;
+                    quote! {
+                        {
+                            let data = accounts[#i].try_borrow_data()
+                                .map_err(|_| ::verified_anchor::VAError::WrongHasOne { field: #fname, target: #tname })?;
+                            if data.len() < 8 + 32 || &data[8..8 + 32] != accounts[#tidx].key.as_ref() {
+                                return Err(::verified_anchor::VAError::WrongHasOne { field: #fname, target: #tname });
+                            }
+                        }
                     }
                 },
             };
