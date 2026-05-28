@@ -26,20 +26,20 @@ fields.
 
 ## What is proven
 
-`theorem genValidate_sound (s c) (h : M2Subset s) : genValidate s c = true ↔ validates s c`
+`theorem genValidate_sound (s c) (h : M4Subset s) : genValidate s c = true ↔ validates s c`
 — the Lean model of the generated validator agrees with the Milestone-1 contract for every
-struct in the M2 subset (`M2Subset`: each field's type ∈ {signer, unchecked, system,
-program} and each explicit constraint ∈ {mut, signer, owner}). Proved once, parameterized
-over the user's annotation. `#print axioms` reports `[propext, Quot.sound]` only — no
-`sorryAx`, no `Classical.choice`. Three per-constraint lemmas
-(`genConstraint_{signer,mut,owner}_iff`) connect each `gen*` to the corresponding M1
-`satisfies` case.
+struct in the **M4 subset**. Proved once, parameterized over the user's annotation.
+`#print axioms` reports `[propext, Quot.sound]` only — no `sorryAx`, no `Classical.choice`,
+no `native_decide`. Per-constraint lemmas (`genConstraint_{signer,mut,owner,discriminator,hasOne,seeds}_iff`,
+plus `bumpMatchesB_iff`) connect each `gen*` to the corresponding M1 `satisfies` case.
 
-`M2Subset` deliberately excludes the typed `Account<T>` (`AccountType.account`), because that
-type implies a `discriminator` constraint outside the M2 subset — that arrives in Milestone 3.
-
-M4 extends this to `M4Subset`, which additionally admits `.seeds`: `genValidate_sound` now
-holds at `M4Subset` (= M3Subset + `.seeds`), still `[propext, Quot.sound]` only.
+The subset grew with each milestone (the theorem was re-proved at each, never weakened):
+- **M2** (`mut`/`signer`/`owner`): only unchecked-style account types; excluded the typed
+  `Account<T>` because it implies a `discriminator` constraint.
+- **M3** adds `hasOne` + `discriminator`, so `M3Subset` admits the typed `Account<T>`.
+- **M4** adds `.seeds`, so `M4Subset` (= M3 + `.seeds`) is the current predicate. `M4Subset s`:
+  every field's `(impliedConstraints ++ constraints)` is one of {signer, mut, owner, hasOne,
+  discriminator, seeds}.
 
 ## What is transcription (documented + tested, not proven)
 
