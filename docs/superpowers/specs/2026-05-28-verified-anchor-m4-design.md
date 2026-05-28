@@ -60,7 +60,7 @@ lean/VerifiedAnchor/
 rust/
 ├── verified-anchor-macros/src/lib.rs (MODIFY) parse seeds/bump; emit PDA check + lean_spec
 ├── verified-anchor/
-│   ├── src/lib.rs                     (MODIFY) VAError += WrongPda/WrongBump; validate gains instr_data
+│   ├── src/lib.rs                     (MODIFY) VAError += WrongPda/WrongBump; Validate::validate gains instr_data + program_id
 │   └── tests/
 │       ├── behavior.rs               (MODIFY) seeds accept/reject (native, real find_program_address)
 │       ├── lean_spec.rs              (MODIFY) emitted Constraint.seeds shape
@@ -162,17 +162,22 @@ The existing `genValidate_sound` proof body is generic over the per-field subset
 ## 6. Part 4 — Rust macro + runtime tests
 
 ### 6.1 Codegen (`verified-anchor-macros`)
-- Parse `#[account(seeds = [<expr>, ...], bump)]` and `bump = <expr>`. Supported seed exprs map to the three `SeedSpec` variants: byte literals (`b"..."`), `field.key().as_ref()` (`fieldKey`), and instruction-data slices (`instrArg`). Unsupported seed exprs → a clear compile error.
-- Emit the PDA check inside `validate()`: assemble the seed slice, call `Pubkey::find_program_address(&seeds, program_id)` to get `(pda, canonical_bump)`, then `if accounts[i].key != &pda { return Err(VAError::WrongPda { .. }) }`; for `bump = db`, additionally `if canonical_bump != db { return Err(VAError::WrongBump { .. }) }`.
-- `lean_spec()` emits `Constraint.seeds [<SeedSpec>...] <BumpSpec>`, including `SeedSpec.instrArg off len` for instruction-arg seeds.
-- `VAError` gains `WrongPda` and `WrongBump`.
+- Parse `#[account(seeds = [<elem>, ...], bump)]` and `bump = <int>`. The three accepted seed-element forms map 1:1 to the `SeedSpec` variants (a clear, parseable subset — we do not match Anchor's full surface syntax, consistent with the project's documented transcription boundary):
+  - byte-string literal `b"vault"` → `SeedSpec.literal`
+  - `<field>.key()` (method call on a declared field) → `SeedSpec.fieldKey`
+  - `arg(<off>, <len>)` (call with two int literals) → `SeedSpec.instrArg`
 
-### 6.2 `validate` signature change (mirrors `Ctx.instrData`)
-The generated `validate` gains an instruction-data parameter:
+  Any other seed element → a clear compile error.
+- Emit the PDA check inside `validate()`: assemble the seed slice (`&b"vault"[..]`, `accounts[fidx].key.as_ref()`, `&instr_data[off..off+len]`), call `Pubkey::find_program_address(&seeds, program_id)` to get `(pda, canonical_bump)`, then `if accounts[i].key != &pda { return Err(VAError::WrongPda { field }) }`; for `bump = db`, additionally `if canonical_bump != db { return Err(VAError::WrongBump { field }) }`.
+- `lean_spec()` emits `Constraint.seeds [<SeedSpec>...] <BumpSpec>`: `SeedSpec.literal (ByteArray.mk #[..])`, `SeedSpec.fieldKey "field"`, `SeedSpec.instrArg off len`; `BumpSpec.canonical` for bare `bump`, `BumpSpec.declared <n>` for `bump = <n>`.
+- `VAError` gains `WrongPda { field }` and `WrongBump { field }`.
+
+### 6.2 `validate` signature change (mirrors `Ctx.instrData` + `s.programId`)
+The generated `validate` gains **two** runtime parameters — the instruction data and the program id. The program id is *required* for any PDA check (`find_program_address(seeds, program_id)`); it is the runtime carrier of the Lean `s.programId`, just as `instr_data` carries `c.instrData`:
 ```rust
-fn validate(accounts: &[AccountInfo], instr_data: &[u8]) -> Result<(), VAError>
+fn validate(accounts: &[AccountInfo], instr_data: &[u8], program_id: &Pubkey) -> Result<(), VAError>
 ```
-Added **uniformly** (every generated `validate`), even when no instr-arg seeds appear, for a single consistent trait signature; unused `instr_data` is simply ignored in those cases. The `Validate` trait and all existing call sites/tests update to pass `instr_data` (empty slice where irrelevant).
+Added **uniformly** (every generated `validate`), even when no seeds/instr-arg appear, for a single consistent trait signature; unused params are ignored (`let _ = (instr_data, program_id);`). The `Validate` trait and all existing call sites/tests update to pass them (`&[]` / a throwaway `Pubkey` where irrelevant).
 
 ### 6.3 Runtime tests
 - `behavior.rs` (native): construct accounts whose key is the real `find_program_address` of declared seeds → `validate` returns `Ok`; a wrong key and a wrong declared bump → the respective `Err`. (This exercises the *real* Solana `find_program_address`, cross-checking the Lean crypto model without BPF.)
@@ -187,14 +192,14 @@ Added **uniformly** (every generated `validate`), even when no instr-arg seeds a
 - **Proven:** `genValidate ≡ validates` extended to `.seeds` (`M4Subset`) — the modeled generated PDA check agrees with the M1 contract, canonical-only, parameterized over the declared seeds/bump. `[propext, Quot.sound]` only.
 - **Modeled (already, not new):** `findProgramAddress` is concrete over opaque `sha256`/`isOnCurve`. No new axioms in M4.
 - **Stricter than stock Anchor (documented boundary):** the verified subset accepts only canonical PDAs; a `declared` bump must equal the canonical bump. Anchor's `bump = <stored>` (cheap re-derivation via `create_program_address` with a possibly non-canonical bump) is intentionally outside the subset.
-- **Transcription (documented + runtime-tested):** the generated Rust `validate` PDA check matches `genSeeds`; the macro's mapping from typed seed expressions to `SeedSpec` (esp. typed instruction args → byte offset/length) is transcription — backed by native real-`find_program_address` tests + litesvm execution, not proven across the language boundary.
+- **Transcription (documented + runtime-tested):** the generated Rust `validate(accounts, instr_data, program_id)` PDA check matches `genSeeds` (with `instr_data`/`program_id` carrying the Lean `c.instrData`/`s.programId`); the macro's mapping from seed-element exprs to `SeedSpec` (esp. `arg(off,len)` → byte offset/length) is transcription — backed by native real-`find_program_address` tests + litesvm execution, not proven across the language boundary.
 - **Out of scope:** rustc/LLVM/sBPF codegen fidelity; the runtime's own `find_program_address` correctness (cross-checked empirically, not proven); non-canonical/stored-bump validation; Borsh deserialization of typed args (we model the resulting bytes as a concrete slice).
 
 ---
 
 ## 8. Scope / non-goals (M4)
 
-**In.** `Ctx` → structure with `instrData`; `SeedSpec.instrArg`; `resolveSeeds` instr-arg case; `genSeeds` + `genConstraint` wiring; `bumpMatchesB_iff` / `genConstraint_seeds_iff`; `isM4Constraint` / `M4Subset`; `genValidate_sound` @ `M4Subset`; Rust seeds/bump codegen + `validate` instr_data param + `WrongPda`/`WrongBump`; native + `lean_spec` + litesvm seeds tests; a seeds closed-loop example; the bridge addendum.
+**In.** `Ctx` → structure with `instrData`; `SeedSpec.instrArg`; `resolveSeeds` instr-arg case; `genSeeds` + `genConstraint` wiring; `bumpMatchesB_iff` / `genConstraint_seeds_iff`; `isM4Constraint` / `M4Subset`; `genValidate_sound` @ `M4Subset`; Rust seeds/bump codegen + `validate(accounts, instr_data, program_id)` signature + `WrongPda`/`WrongBump`; native + `lean_spec` + litesvm seeds tests; a seeds closed-loop example; the bridge addendum.
 
 **Out.** Non-canonical / stored-bump semantics; account-data-field seeds (`user.authority.as_ref()`); seeds derived from arbitrary expressions; full `anchor-lang` API + cargo plugin (M5); empirical historical-exploit study (M6); proving the runtime's `find_program_address`.
 
@@ -208,5 +213,5 @@ Added **uniformly** (every generated `validate`), even when no instr-arg seeds a
 4. A seeds closed-loop example: `genConstraint_seeds_iff` / `genValidate_sound` instantiated on a concrete struct (symbolic, given the `sha256` wall).
 5. `cargo build`/`cargo test -p verified-anchor` green: native seeds accept/reject (real `find_program_address`) + `lean_spec` shape.
 6. `verified-anchor-program` builds to `.so`; `runtime_seeds.rs` (litesvm): correct PDA → Ok, wrong/tampered PDA → on-chain error.
-7. `docs/verified-anchor-bridge.md` updated with the seeds correspondence row, the canonical-only boundary, and the `instr_data` signature change.
+7. `docs/verified-anchor-bridge.md` updated with the seeds correspondence row, the canonical-only boundary, and the `validate(accounts, instr_data, program_id)` signature change.
 ```
