@@ -50,3 +50,15 @@ fn rejects_too_few_accounts() {
     let accts = [v.info()];
     assert_eq!(Transfer::validate(&accts), Err(VAError::NotEnoughAccounts { expected: 2, got: 1 }));
 }
+// Documents the permissiveness gap noted in docs/verified-anchor-bridge.md: the generated
+// Rust accepts SURPLUS accounts (only the declared prefix is checked), whereas the Lean
+// model/contract require an exact count. This is a transcription difference, not a soundness
+// bug — the proof relates genValidate to the contract, both of which use exact equality.
+#[test]
+fn accepts_surplus_accounts() {
+    let mut v = acct(false, true);   // vault: writable
+    let mut a = acct(true, false);   // authority: signer
+    let mut extra = acct(false, false);
+    let accts = [v.info(), a.info(), extra.info()];   // 3 accounts, struct declares 2
+    assert_eq!(Transfer::validate(&accts), Ok(()));
+}
