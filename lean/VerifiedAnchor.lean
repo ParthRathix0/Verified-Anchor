@@ -12,4 +12,5 @@ import VerifiedAnchor.Decision.Agreement
 import VerifiedAnchor.Examples.Withdraw
 import VerifiedAnchor.Codegen.Generated
 import VerifiedAnchor.Codegen.Soundness
+import VerifiedAnchor.Codegen.Lifecycle
 import VerifiedAnchor.Codegen.ExampleGenerated
