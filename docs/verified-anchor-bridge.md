@@ -1,4 +1,4 @@
-# Verified Anchor — the Rust↔Lean bridge (Milestone 2)
+# Verified Anchor — the Rust↔Lean bridge (through Milestone 3)
 
 How the generated Rust validator relates to the machine-checked Lean proof, and exactly
 what is and isn't proven.
@@ -12,8 +12,8 @@ what is and isn't proven.
 | `if accounts[i].owner != &expected { Err(WrongOwner) }` | `genOwner e a := decide (a.owner = e)` | `satisfies … (.owner e)` |
 | `if accounts.len() < n { Err(NotEnoughAccounts) }` | `decide (c.length = s.fields.length)` | `WellFormed` |
 | `if data[8..40] != target.key { Err(WrongHasOne) }` (M3) | `genHasOne` (read 32B @ offset 8, compare to looked-up key) | `satisfies … (.hasOne field)` |
-| `invoke(create_account(...)) + write disc` (M3) | `applyInit` (state transformer) | `init_establishes_post` ⇒ M1 `.init` post |
-| `dest.lamports += t.lamports; t.lamports = 0; mark` (M3) | `applyClose` (state transformer) | `close_establishes_post` ⇒ M1 `.close` post |
+| `invoke(create_account(...)) + write disc` (M3) | `applyInit` (state transformer) | `init_establishes_post`: post-state has owner set + ≥ `space+8` bytes |
+| `dest.lamports += t.lamports; t.lamports = 0; mark` (M3) | `applyClose` (state transformer) | `close_establishes_post`: post-state has lamports 0 + closed marker |
 
 The generated `validate` has signature `fn validate(accounts: &[AccountInfo]) -> Result<(), VAError>`
 (an associated method of the `Validate` trait — no `&self`; the struct is a compile-time
@@ -63,8 +63,15 @@ admits typed `Account<T>` — bringing the implied `discriminator`, opaque under
 
 `init`/`close` are **effects**, not checks, so they get a separate Hoare-style treatment in
 `Codegen/Lifecycle.lean`: `applyInit`/`applyClose : Ctx → Option Ctx` model the state
-transition, and `init_establishes_post`/`close_establishes_post` prove the post-state
-satisfies the M1 `init`/`close` post-conditions (`[propext, Quot.sound]` only). The generated
+transition, and `init_establishes_post`/`close_establishes_post` prove the post-state has the
+**core** M1 post-condition properties — for `init`, the target's owner is set and its data is
+≥ `space+8` bytes; for `close`, the target's lamports are 0 and its data carries the
+closed-account marker (`[propext, Quot.sound]` only). The remaining clauses bundled into the
+M1 `satisfies (.init/.close)` proposition (payer is signer+writable; the close destination
+resolves) are *guarded preconditions* of the transformer that it preserves rather than
+post-effects; proving the literal `satisfies` proposition as a corollary is a tracked
+follow-up (`docs/superpowers/m3-followups.md`). The full `satisfies (.close …)` was verified
+to hold on a concrete post-state during review. The generated
 effectful Rust (`execute_lifecycle`) is **executed under litesvm** (`tests/runtime_lifecycle.rs`):
 `init` is asserted to create a program-owned, funded, 8-byte account; `close` to move all
 lamports to the destination and drain the target — i.e. the model is empirically
