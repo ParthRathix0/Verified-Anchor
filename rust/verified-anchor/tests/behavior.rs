@@ -90,3 +90,35 @@ fn rejects_wrong_owner() {
     let accts = [v.info()];
     assert_eq!(OwnedVault::validate(&accts), Err(VAError::WrongOwner { field: "vault" }));
 }
+
+#[derive(VerifiedAccounts)]
+struct CheckOwner {
+    #[account(has_one = authority)]
+    vault: u8,
+    authority: u8,
+}
+
+fn acct_with_data(key: Pubkey, data: Vec<u8>) -> Acct {
+    Acct { key, owner: Pubkey::new_unique(), lamports: 1, data, is_signer: false, is_writable: false }
+}
+
+#[test]
+fn has_one_accepts_match() {
+    let auth_key = Pubkey::new_unique();
+    let mut data = vec![0u8; 8];                 // 8-byte discriminator
+    data.extend_from_slice(auth_key.as_ref());   // authority Pubkey at offset 8
+    let mut vault = acct_with_data(Pubkey::new_unique(), data);
+    let mut authority = acct_with_data(auth_key, vec![]);
+    let accts = [vault.info(), authority.info()];
+    assert_eq!(CheckOwner::validate(&accts), Ok(()));
+}
+
+#[test]
+fn has_one_rejects_mismatch() {
+    let mut data = vec![0u8; 8];
+    data.extend_from_slice(Pubkey::new_unique().as_ref());   // wrong stored authority
+    let mut vault = acct_with_data(Pubkey::new_unique(), data);
+    let mut authority = acct_with_data(Pubkey::new_unique(), vec![]);
+    let accts = [vault.info(), authority.info()];
+    assert_eq!(CheckOwner::validate(&accts), Err(VAError::WrongHasOne { field: "vault", target: "authority" }));
+}
