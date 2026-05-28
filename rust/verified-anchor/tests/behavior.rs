@@ -123,3 +123,49 @@ fn has_one_rejects_mismatch() {
     let accts = [vault.info(), authority.info()];
     assert_eq!(CheckOwner::validate(&accts, &[], &any_pid()), Err(VAError::WrongHasOne { field: "vault", target: "authority" }));
 }
+
+#[derive(VerifiedAccounts)]
+struct PdaAccount {
+    #[account(seeds = [b"vault", arg(0, 4)], bump)]
+    pda: u8,
+}
+
+#[test]
+fn seeds_accepts_canonical_pda() {
+    let program_id = Pubkey::new_unique();
+    let arg = [1u8, 2, 3, 4];
+    let (pda, _bump) = Pubkey::find_program_address(&[b"vault", &arg], &program_id);
+    let mut a = Acct { key: pda, owner: Pubkey::new_unique(), lamports: 1, data: vec![], is_signer: false, is_writable: false };
+    let accts = [a.info()];
+    assert_eq!(PdaAccount::validate(&accts, &arg, &program_id), Ok(()));
+}
+
+#[test]
+fn seeds_rejects_wrong_pda() {
+    let program_id = Pubkey::new_unique();
+    let arg = [1u8, 2, 3, 4];
+    let mut a = Acct { key: Pubkey::new_unique(), owner: Pubkey::new_unique(), lamports: 1, data: vec![], is_signer: false, is_writable: false };
+    let accts = [a.info()];
+    assert_eq!(PdaAccount::validate(&accts, &arg, &program_id), Err(VAError::WrongPda { field: "pda" }));
+}
+
+#[derive(VerifiedAccounts)]
+struct PdaDeclaredBump {
+    #[account(seeds = [b"vault"], bump = 0)]
+    pda: u8,
+}
+
+#[test]
+fn seeds_declared_bump_rejects_non_canonical() {
+    let program_id = Pubkey::new_unique();
+    let (pda, bump) = Pubkey::find_program_address(&[b"vault"], &program_id);
+    // declared bump is 0; this fails unless the canonical bump happens to be 0.
+    let mut a = Acct { key: pda, owner: Pubkey::new_unique(), lamports: 1, data: vec![], is_signer: false, is_writable: false };
+    let accts = [a.info()];
+    let res = PdaDeclaredBump::validate(&accts, &[], &program_id);
+    if bump == 0 {
+        assert_eq!(res, Ok(()));
+    } else {
+        assert_eq!(res, Err(VAError::WrongBump { field: "pda" }));
+    }
+}
