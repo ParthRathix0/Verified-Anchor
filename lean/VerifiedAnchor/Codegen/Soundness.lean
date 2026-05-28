@@ -27,6 +27,18 @@ theorem genConstraint_hasOne_iff (s c idx f field) :
     genConstraint s c idx f (Constraint.hasOne field) = true ↔ satisfies s c idx f (Constraint.hasOne field) := by
   simp only [genConstraint, genHasOne, satisfies, Option.allB_iff, decide_eq_true_iff]
 
+theorem bumpMatchesB_iff (b : BumpSpec) (x : UInt8) :
+    bumpMatchesB b x = true ↔ bumpMatches b x := by
+  cases b with
+  | declared db => simp [bumpMatchesB, bumpMatches]
+  | canonical   => simp [bumpMatchesB, bumpMatches]
+
+theorem genConstraint_seeds_iff (s c idx f ss b) :
+    genConstraint s c idx f (Constraint.seeds ss b) = true
+      ↔ satisfies s c idx f (Constraint.seeds ss b) := by
+  simp only [genConstraint, genSeeds, satisfies, Option.allB_iff, Bool.and_eq_true,
+    decide_eq_true_iff, bumpMatchesB_iff]
+
 /-- Constraint kinds M3's generated validator handles. -/
 def isM3Constraint : Constraint → Bool
   | .signer | .mut | .owner _ | .hasOne _ | .discriminator _ => true
@@ -49,18 +61,42 @@ theorem genConstraint_iff_satisfies_M3 (s c idx f k) (hk : isM3Constraint k = tr
   | discriminator d => exact genConstraint_discriminator_iff s c idx f d
   | _             => simp [isM3Constraint] at hk
 
+/-- Constraint kinds M4's generated validator handles (M3 + seeds). -/
+def isM4Constraint : Constraint → Bool
+  | .signer | .mut | .owner _ | .hasOne _ | .discriminator _ | .seeds _ _ => true
+  | _ => false
+
+/-- The M4 subset: every field's (implied ++ explicit) constraints are M4 validation
+    constraints. Admits typed `.account` (implied owner+discriminator) AND `.seeds`. -/
+def M4Subset (s : AccountsStruct) : Prop :=
+  ∀ f ∈ s.fields, ∀ k ∈ (f.ty.impliedConstraints ++ f.constraints), isM4Constraint k = true
+
+instance (s : AccountsStruct) : Decidable (M4Subset s) := by unfold M4Subset; infer_instance
+
+/-- Dispatcher: under M4, the generated check of any constraint agrees with `satisfies`. -/
+theorem genConstraint_iff_satisfies_M4 (s c idx f k) (hk : isM4Constraint k = true) :
+    genConstraint s c idx f k = true ↔ satisfies s c idx f k := by
+  cases k with
+  | signer          => exact genConstraint_signer_iff s c idx f
+  | «mut»           => exact genConstraint_mut_iff s c idx f
+  | owner e         => exact genConstraint_owner_iff s c idx f e
+  | hasOne field    => exact genConstraint_hasOne_iff s c idx f field
+  | discriminator d => exact genConstraint_discriminator_iff s c idx f d
+  | seeds ss b      => exact genConstraint_seeds_iff s c idx f ss b
+  | _               => simp [isM4Constraint] at hk
+
 theorem genFieldValidate_iff (s c idx f)
-    (hcons : ∀ k ∈ (f.ty.impliedConstraints ++ f.constraints), isM3Constraint k = true) :
+    (hcons : ∀ k ∈ (f.ty.impliedConstraints ++ f.constraints), isM4Constraint k = true) :
     genFieldValidate s c idx f = true ↔ fieldValidates s c idx f := by
   unfold genFieldValidate fieldValidates
   rw [List.all_eq_true]
   constructor
-  · intro hall k hk; exact (genConstraint_iff_satisfies_M3 s c idx f k (hcons k hk)).mp (hall k hk)
-  · intro hall k hk; exact (genConstraint_iff_satisfies_M3 s c idx f k (hcons k hk)).mpr (hall k hk)
+  · intro hall k hk; exact (genConstraint_iff_satisfies_M4 s c idx f k (hcons k hk)).mp (hall k hk)
+  · intro hall k hk; exact (genConstraint_iff_satisfies_M4 s c idx f k (hcons k hk)).mpr (hall k hk)
 
-/-- THE M3 THEOREM: the generated validator agrees with the M1 contract for every struct in
-    the M3 subset. -/
-theorem genValidate_sound (s : AccountsStruct) (c : Ctx) (h : M3Subset s) :
+/-- THE M4 THEOREM: the generated validator agrees with the M1 contract for every struct in
+    the M4 subset. -/
+theorem genValidate_sound (s : AccountsStruct) (c : Ctx) (h : M4Subset s) :
     genValidate s c = true ↔ validates s c := by
   unfold genValidate validates
   rw [Bool.and_eq_true, decide_eq_true_iff]
