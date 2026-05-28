@@ -9,6 +9,7 @@ structure Ctx where
   accounts  : List AccountInfo
   instrData : ByteArray := ByteArray.empty
   deriving Inhabited
+-- DecidableEq not derived: ByteArray lacks it; equality on Ctx is not needed yet.
 
 /-- Build a Ctx from just accounts (instrData empty). Keeps existing examples terse. -/
 def Ctx.ofAccounts (l : List AccountInfo) : Ctx := { accounts := l }
