@@ -12,6 +12,8 @@ pub enum VAError {
     /// Fewer accounts were supplied than the struct declares.
     NotEnoughAccounts { expected: usize, got: usize },
     WrongHasOne { field: &'static str, target: &'static str },
+    InitFailed { field: &'static str },
+    CloseFailed { field: &'static str },
 }
 
 impl core::fmt::Display for VAError {
@@ -24,6 +26,8 @@ impl core::fmt::Display for VAError {
                 write!(f, "expected {expected} accounts, got {got}"),
             VAError::WrongHasOne { field, target } =>
                 write!(f, "account `{field}` field does not match `{target}`"),
+            VAError::InitFailed { field } => write!(f, "init failed for `{field}`"),
+            VAError::CloseFailed { field } => write!(f, "close failed for `{field}`"),
         }
     }
 }
