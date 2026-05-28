@@ -1,5 +1,6 @@
 //! Verified Anchor runtime support (Milestone 2).
 use solana_program::account_info::AccountInfo;
+use solana_program::pubkey::Pubkey;
 
 pub use verified_anchor_macros::VerifiedAccounts;
 
@@ -37,5 +38,9 @@ impl std::error::Error for VAError {}
 /// Implemented by `#[derive(VerifiedAccounts)]`. Validation is positional over the
 /// runtime account slice (index = field declaration order), matching the Lean `Ctx`.
 pub trait Validate {
-    fn validate(accounts: &[AccountInfo]) -> Result<(), VAError>;
+    fn validate(
+        accounts: &[AccountInfo],
+        instr_data: &[u8],
+        program_id: &Pubkey,
+    ) -> Result<(), VAError>;
 }

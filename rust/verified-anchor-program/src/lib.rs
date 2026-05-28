@@ -27,14 +27,14 @@ entrypoint!(process);
 pub fn process(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]) -> ProgramResult {
     match data.first() {
         Some(0) => {
-            InitOne::validate(accounts).map_err(|_| ProgramError::InvalidArgument)?;
+            InitOne::validate(accounts, &[], program_id).map_err(|_| ProgramError::InvalidArgument)?;
             // rent-exempt-ish lamports for 8 bytes; the test funds the payer generously
             InitOne::execute_lifecycle(accounts, program_id, 1_000_000)
                 .map_err(|_| ProgramError::InvalidArgument)?;
             Ok(())
         }
         Some(1) => {
-            CloseOne::validate(accounts).map_err(|_| ProgramError::InvalidArgument)?;
+            CloseOne::validate(accounts, &[], program_id).map_err(|_| ProgramError::InvalidArgument)?;
             CloseOne::execute_lifecycle(accounts, program_id, 0)
                 .map_err(|_| ProgramError::InvalidArgument)?;
             Ok(())
