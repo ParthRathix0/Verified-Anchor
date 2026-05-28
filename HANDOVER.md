@@ -15,7 +15,7 @@ proof-producing Rust proc-macros that generate Solana validation/lifecycle code 
 is proven to implement that contract. 7 milestones total; built sequentially, each its own
 brainstorm → spec → plan → subagent-driven execution → review → merge cycle.
 
-## Status: M1, M2, M3 COMPLETE (all merged to `master`)
+## Status: M1, M2, M3, M4 COMPLETE (all merged to `master`)
 
 - **M1 — Lean validation contract.** `lean/VerifiedAnchor/`: concrete Solana model
   (`Solana/`: Pubkey, AccountInfo, real PDA algorithm; only `sha256`/`isOnCurve` axiomatized),
@@ -32,22 +32,30 @@ brainstorm → spec → plan → subagent-driven execution → review → merge 
   `init_establishes_post`/`close_establishes_post`). Effectful Rust `execute_lifecycle` codegen.
   BPF program crate `rust/verified-anchor-program/` + **litesvm runtime tests**
   (`rust/verified-anchor/tests/runtime_lifecycle.rs`) that execute the generated init/close.
+- **M4 — `seeds`/PDA derivation (canonical-only).** `Ctx` is now a structure
+  `{ accounts, instrData }`. Third seed source `SeedSpec.instrArg off len` (concrete slice of
+  raw instruction data). `genSeeds` mirrors `satisfies (.seeds)` over the concrete
+  `findProgramAddress` (opaque `sha256`, **no new axioms**); `genValidate_sound` re-proved at
+  `M4Subset` (= M3 + `.seeds`). **Canonical-only**: a declared bump must equal the canonical
+  bump — deliberately stricter than stock Anchor's `bump = <stored>` (documented in the bridge
+  doc). Generated Rust `validate(accounts, instr_data, program_id)`; macro parses
+  `seeds = [b"..", field.key(), arg(off,len)], bump`/`bump = n`. Native tests cross-check the
+  real `Pubkey::find_program_address`; litesvm `tests/runtime_seeds.rs` asserts on-chain
+  accept/reject.
 
 All theorems depend only on `[propext, Quot.sound]` (zero `sorry`/`sorryAx`); verify with
 `#print axioms <thm>`.
 
-## Next: M4 → M7
+## Next: M5 → M7
 
-- **M4 — `seeds`/PDA derivation.** Verify the generated PDA-derivation code matches declared
-  seeds. Axiomatize `find_program_address` (already modeled concretely over opaque crypto in
-  `Solana/Crypto.lean`). Extend the subset + codegen + (likely) a `seeds`-specific soundness.
 - **M5 — cargo integration + full `anchor-lang` API compat.** A cargo plugin / build flow that
   runs `lake build` alongside `cargo build`; real Anchor-compatible API surface.
 - **M6 — empirical validation** against a historical Solana exploit (use the litesvm harness).
 - **M7 — release + QEDGen integration.**
 
-Before extending the AST for M4, see the follow-ups (esp. tightening
-`Constraint.discriminator` to `Vector UInt8 8`).
+See the follow-ups before extending further (`docs/superpowers/m{1,2,3,4}-followups.md`): esp.
+tighten `Constraint.discriminator` to `Vector UInt8 8`; prove the literal `satisfies` corollary
+for the Hoare theorems; add a `fieldKey`-seed test (the path is wired but untested).
 
 ## Repo layout
 
@@ -55,20 +63,20 @@ Before extending the AST for M4, see the follow-ups (esp. tightening
 verified_anchor_proposal.md          the source proposal
 lean/                                Lean 4 library (lake); root import: VerifiedAnchor.lean
   VerifiedAnchor/Solana/             account model + crypto (opaque sha256/isOnCurve)
-  VerifiedAnchor/Constraints/        Ast.lean (the seam) + Context.lean
-  VerifiedAnchor/Contract/           satisfies + validates
+  VerifiedAnchor/Constraints/        Ast.lean (the seam; SeedSpec/BumpSpec) + Context.lean (Ctx = {accounts, instrData})
+  VerifiedAnchor/Contract/           satisfies (incl. .seeds, canonical-only) + validates
   VerifiedAnchor/Decision/           validatesBool + agreement
-  VerifiedAnchor/Codegen/            Generated, Soundness, Lifecycle, ExampleGenerated
+  VerifiedAnchor/Codegen/            Generated (genSeeds), Soundness (M4Subset), Lifecycle, ExampleGenerated
   VerifiedAnchor/Examples/Withdraw.lean
 rust/                                cargo workspace
-  verified-anchor-macros/            #[derive(VerifiedAccounts)] (syn/quote)
-  verified-anchor/                   Validate trait, VAError, tests/ (behavior, lean_spec, runtime_lifecycle)
-  verified-anchor-program/           BPF program exercising init/close (cdylib)
+  verified-anchor-macros/            #[derive(VerifiedAccounts)] (syn/quote); parses seeds/bump
+  verified-anchor/                   Validate trait (validate(accounts, instr_data, program_id)), VAError, tests/ (behavior, lean_spec, runtime_lifecycle, runtime_seeds)
+  verified-anchor-program/           BPF program exercising init/close + a seeds PDA instruction (cdylib)
 docs/
   verified-anchor-bridge.md          Rust↔Lean correspondence + trust boundary (READ THIS)
-  superpowers/specs/                 design docs: 2026-05-27 M1, M2; 2026-05-28 M3
-  superpowers/plans/                 implementation plans: M1, M2, M3
-  superpowers/m{1,2,3}-followups.md  deferred items per milestone
+  superpowers/specs/                 design docs: 2026-05-27 M1, M2; 2026-05-28 M3, M4
+  superpowers/plans/                 implementation plans: M1, M2, M3, M4
+  superpowers/m{1,2,3,4}-followups.md  deferred items per milestone
 HANDOVER.md                          this file
 ```
 
@@ -129,6 +137,6 @@ before designing** to avoid churn.
 
 ## To resume in a new chat
 
-Say e.g. "continue Verified Anchor — start M4 (seeds/PDA)". The assistant should: read this file
-+ `verified_anchor_proposal.md` (Milestone 4 section) + `docs/verified-anchor-bridge.md` +
-`docs/superpowers/m3-followups.md`, confirm the build is green (recipes above), then brainstorm M4.
+Say e.g. "continue Verified Anchor — start M5 (cargo integration)". The assistant should: read this
+file + `verified_anchor_proposal.md` (Milestone 5 section) + `docs/verified-anchor-bridge.md` +
+`docs/superpowers/m4-followups.md`, confirm the build is green (recipes above), then brainstorm M5.
