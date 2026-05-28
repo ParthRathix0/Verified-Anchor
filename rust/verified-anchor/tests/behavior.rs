@@ -62,3 +62,31 @@ fn accepts_surplus_accounts() {
     let accts = [v.info(), a.info(), extra.info()];   // 3 accounts, struct declares 2
     assert_eq!(Transfer::validate(&accts), Ok(()));
 }
+
+// Behavioral coverage for the owner constraint (the third M2 constraint kind). Distinct
+// struct so it doesn't perturb Transfer's test vectors.
+const PROG_OWNER: Pubkey = Pubkey::new_from_array([7u8; 32]);
+
+#[derive(VerifiedAccounts)]
+struct OwnedVault {
+    #[account(owner = PROG_OWNER)]
+    vault: u8,
+}
+
+fn acct_owned(owner: Pubkey) -> Acct {
+    Acct { key: Pubkey::new_unique(), owner, lamports: 1, data: vec![], is_signer: false, is_writable: false }
+}
+
+#[test]
+fn accepts_matching_owner() {
+    let mut v = acct_owned(PROG_OWNER);
+    let accts = [v.info()];
+    assert_eq!(OwnedVault::validate(&accts), Ok(()));
+}
+
+#[test]
+fn rejects_wrong_owner() {
+    let mut v = acct_owned(Pubkey::new_from_array([9u8; 32]));   // not PROG_OWNER
+    let accts = [v.info()];
+    assert_eq!(OwnedVault::validate(&accts), Err(VAError::WrongOwner { field: "vault" }));
+}
