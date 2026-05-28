@@ -23,6 +23,13 @@ struct CloseOne {
     dest: u8,
 }
 
+/// validate a PDA. Accounts: [pda]. Instruction data: [2, arg0, arg1, arg2, arg3].
+#[derive(VerifiedAccounts)]
+struct CheckPda {
+    #[account(seeds = [b"vault", arg(0, 4)], bump)]
+    pda: u8,
+}
+
 entrypoint!(process);
 pub fn process(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]) -> ProgramResult {
     match data.first() {
@@ -36,6 +43,12 @@ pub fn process(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]) -> Pr
         Some(1) => {
             CloseOne::validate(accounts, &[], program_id).map_err(|_| ProgramError::InvalidArgument)?;
             CloseOne::execute_lifecycle(accounts, program_id, 0)
+                .map_err(|_| ProgramError::InvalidArgument)?;
+            Ok(())
+        }
+        Some(2) => {
+            // instr_data after the 1-byte tag carries the 4-byte seed arg
+            CheckPda::validate(accounts, &data[1..], program_id)
                 .map_err(|_| ProgramError::InvalidArgument)?;
             Ok(())
         }
