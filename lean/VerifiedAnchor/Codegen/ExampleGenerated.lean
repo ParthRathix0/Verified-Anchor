@@ -37,14 +37,14 @@ def tamperedCtx : Ctx := Ctx.ofAccounts [vaultAcct, { authAcct with isSigner := 
 #guard genValidate transfer goodCtx = true
 #guard genValidate transfer tamperedCtx = false
 
-/-- `transfer` is in the M3 subset (only unchecked types, only mut/signer). -/
-theorem transfer_M3 : M3Subset transfer := by decide
+/-- `transfer` is in the M4 subset (only unchecked types, only mut/signer). -/
+theorem transfer_M4 : M4Subset transfer := by decide
 
 /-- THE CLOSED LOOP: the generated validator accepting the good context PROVES the M1
     contract holds — via the generic soundness theorem. Rust struct → emitted Lean spec →
     machine-checked contract obligation. -/
 theorem transfer_good_validates : validates transfer goodCtx :=
-  (genValidate_sound transfer goodCtx transfer_M3).mp (by decide)
+  (genValidate_sound transfer goodCtx transfer_M4).mp (by decide)
 
 /-! ## has_one closed-loop (relational, M3)
 
@@ -96,5 +96,42 @@ theorem lc_init_establishes :
     ∀ c', applyInit 0 1 0 Pubkey.zero lcDisc 500 lcPre = some c' →
       ∃ a, c'.accounts[0]? = some a ∧ a.owner = Pubkey.zero ∧ 0 + 8 ≤ a.data.size :=
   fun c' h => init_establishes_post 0 1 0 Pubkey.zero lcDisc 500 lcPre c' (by decide) (by decide) h
+
+/-! ## seeds / PDA closed-loop (M4)
+
+PDA derivation hashes through the opaque `sha256`, so `genSeeds` does NOT reduce under
+`decide` (same wall as `discriminator`). We therefore demonstrate two honest halves:
+* `resolveSeeds` is crypto-free, so the instruction-arg slice + literal resolution reduces
+  concretely (the new M4 seed plumbing, computed);
+* the soundness arrow is the symbolic `genValidate_sound` instantiation on a concrete
+  seeds-bearing struct. The empirical PDA accept/reject lives in the Rust tests against the
+  real `find_program_address`. -/
+def pdaProg : Pubkey := Pubkey.ofBytes (List.replicate 32 7)
+def pdaField : AccountField :=
+  { name := "pda", ty := AccountType.uncheckedAccount,
+    constraints := [Constraint.seeds [SeedSpec.literal "vault".toUTF8,
+                                       SeedSpec.instrArg 0 4] BumpSpec.canonical] }
+def withSeeds : AccountsStruct :=
+  { programId := pdaProg, fields := [pdaField] }
+
+/-- The instruction-arg seed slices the first 4 bytes of `instrData`; the literal resolves
+    verbatim. (Crypto-free — this reduces.) -/
+def seedCtx : Ctx :=
+  { accounts := [ { key := Pubkey.zero, lamports := 0, data := ByteArray.empty,
+                    owner := Pubkey.zero, rentEpoch := 0, isSigner := false,
+                    isWritable := false, executable := false } ],
+    instrData := (⟨#[10, 20, 30, 40, 50, 60]⟩ : ByteArray) }
+#guard (resolveSeeds withSeeds seedCtx
+          [SeedSpec.literal "vault".toUTF8, SeedSpec.instrArg 0 4]).length = 2
+#guard (resolveSeeds withSeeds seedCtx [SeedSpec.instrArg 0 4])[0]? =
+          some (⟨#[10, 20, 30, 40]⟩ : ByteArray)
+
+/-- `withSeeds` is in the M4 subset. -/
+theorem withSeeds_M4 : M4Subset withSeeds := by decide
+
+/-- THE SEEDS CLOSED LOOP (symbolic): for any context, the generated PDA validator agrees
+    with the M1 contract — the soundness theorem instantiated at the seeds-bearing struct. -/
+theorem withSeeds_sound (c : Ctx) : genValidate withSeeds c = true ↔ validates withSeeds c :=
+  genValidate_sound withSeeds c withSeeds_M4
 
 end VerifiedAnchor.Codegen.Examples
