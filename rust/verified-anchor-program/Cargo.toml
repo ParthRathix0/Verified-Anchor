@@ -1,0 +1,11 @@
+[package]
+name = "verified-anchor-program"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+
+[dependencies]
+solana-program = "2"
+verified-anchor = { path = "../verified-anchor" }
