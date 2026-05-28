@@ -1,6 +1,6 @@
 import VerifiedAnchor.Codegen.Soundness
 
-namespace VerifiedAnchor.Examples
+namespace VerifiedAnchor.Codegen.Examples
 open VerifiedAnchor
 
 /-- Opaque placeholder for an `owner = EXPR` whose pubkey is unknown at macro time.
@@ -44,4 +44,4 @@ theorem transfer_M2 : M2Subset transfer := by decide
 theorem transfer_good_validates : validates transfer goodCtx :=
   (genValidate_sound transfer goodCtx transfer_M2).mp (by decide)
 
-end VerifiedAnchor.Examples
+end VerifiedAnchor.Codegen.Examples
