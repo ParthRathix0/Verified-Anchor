@@ -35,13 +35,13 @@ def tamperedCtx : Ctx := [vaultAcct, { authAcct with isSigner := false }]
 #guard genValidate transfer goodCtx = true
 #guard genValidate transfer tamperedCtx = false
 
-/-- `transfer` is in the M2 subset (only unchecked types, only mut/signer). -/
-theorem transfer_M2 : M2Subset transfer := by decide
+/-- `transfer` is in the M3 subset (only unchecked types, only mut/signer). -/
+theorem transfer_M3 : M3Subset transfer := by decide
 
 /-- THE CLOSED LOOP: the generated validator accepting the good context PROVES the M1
     contract holds — via the generic soundness theorem. Rust struct → emitted Lean spec →
     machine-checked contract obligation. -/
 theorem transfer_good_validates : validates transfer goodCtx :=
-  (genValidate_sound transfer goodCtx transfer_M2).mp (by decide)
+  (genValidate_sound transfer goodCtx transfer_M3).mp (by decide)
 
 end VerifiedAnchor.Codegen.Examples
