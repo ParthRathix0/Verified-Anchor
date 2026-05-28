@@ -35,12 +35,12 @@ def applyClose (idx destIdx : Nat) (c : Ctx) : Option Ctx :=
 
 /-- Read-back lemma for `Ctx.update`: an index reads through `g` exactly when it is the
     updated index (and stays in range), otherwise it is untouched. -/
-theorem Ctx.accounts_update (c : Ctx) (i j : Nat) (g : AccountInfo → AccountInfo) :
+theorem Ctx.accounts_getElem?_update (c : Ctx) (i j : Nat) (g : AccountInfo → AccountInfo) :
     (c.update j g).accounts[i]? = if i = j then (c.accounts[i]?).map g else c.accounts[i]? := by
   unfold Ctx.update
   cases hj : c.accounts[j]? with
   | none =>
-    have : ¬ j < c.accounts.length := by
+    have : ¬ j < c.length := by
       intro hlt; rw [List.getElem?_eq_getElem hlt] at hj; exact (Option.some_ne_none _) hj
     by_cases hij : i = j
     · subst hij; simp [hj]
@@ -48,10 +48,9 @@ theorem Ctx.accounts_update (c : Ctx) (i j : Nat) (g : AccountInfo → AccountIn
   | some a =>
     by_cases hij : i = j
     · subst hij
-      have hlt : i < c.accounts.length := by
+      have hlt : i < c.length := by
         rw [List.getElem?_eq_some_iff] at hj; exact hj.1
-      have hget : c.accounts[i] = a := (List.getElem_eq_iff hlt).mpr hj
-      simp [hlt, hget]
+      simp [List.getElem?_set_self hlt, hj]
     · simp [List.getElem?_set_ne (Ne.symm hij), hij]
 
 /-- `applyInit` establishes the M1 `init` post-condition for the target account:
@@ -69,7 +68,7 @@ theorem init_establishes_post
       injection h with hc'
       subst hc'
       -- read back idx through the two updates: outer at payerIdx (skip), inner at idx (hit)
-      rw [Ctx.accounts_update, if_neg hne, Ctx.accounts_update, if_pos rfl, ha,
+      rw [Ctx.accounts_getElem?_update, if_neg hne, Ctx.accounts_getElem?_update, if_pos rfl, ha,
         Option.map_some]
       -- witness is now pinned by `rfl`; owner is `rfl`, data size remains
       refine ⟨_, rfl, rfl, ?_⟩
@@ -94,7 +93,7 @@ theorem close_establishes_post
     injection h with hc'
     subst hc'
     -- read back idx: outer update is at idx (hit), inner at destIdx (skip)
-    rw [Ctx.accounts_update, if_pos rfl, Ctx.accounts_update, if_neg hne, ha,
+    rw [Ctx.accounts_getElem?_update, if_pos rfl, Ctx.accounts_getElem?_update, if_neg hne, ha,
       Option.map_some]
     -- witness pinned by `rfl`; lamports is `rfl`, discriminator remains
     refine ⟨_, rfl, rfl, ?_⟩
