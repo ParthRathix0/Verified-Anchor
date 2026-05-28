@@ -35,6 +35,8 @@ def resolveSeeds (s : AccountsStruct) (c : Ctx) : List SeedSpec → List ByteArr
       (match Ctx.lookup s c name with
        | some a => ByteArray.mk a.key.toArray
        | none => ByteArray.empty) :: resolveSeeds s c rest
+  | .instrArg off len :: rest =>
+      c.instrData.extract off (off + len) :: resolveSeeds s c rest
 
 /-- Anchor's `CLOSED_ACCOUNT_DISCRIMINATOR`: 8 bytes of `0xff` written to a closed
     account's data so it can never be re-deserialized as a live account. -/

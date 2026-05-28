@@ -2,11 +2,10 @@ import VerifiedAnchor.Contract.Satisfies
 
 namespace VerifiedAnchor
 
-/-- Update the account at index `i` (no-op if out of range). `List.set`-based so
-    `List.getElem?_set_self`/`_ne` give clean read-back. -/
+/-- Update the account at index `i` (no-op if out of range), preserving `instrData`. -/
 def Ctx.update (c : Ctx) (i : Nat) (g : AccountInfo → AccountInfo) : Ctx :=
-  match c[i]? with
-  | some a => c.set i (g a)
+  match c.accounts[i]? with
+  | some a => { c with accounts := c.accounts.set i (g a) }
   | none => c
 
 /-- Model of Anchor `init`: system create_account funded by `payer`, then discriminator
@@ -16,7 +15,7 @@ def Ctx.update (c : Ctx) (i : Nat) (g : AccountInfo → AccountInfo) : Ctx :=
 def applyInit (idx payerIdx : Nat) (space : Nat) (owner : Pubkey) (disc : ByteArray)
     (rent : UInt64) (c : Ctx) : Option Ctx :=
   if idx = payerIdx then none else
-  match c[idx]?, c[payerIdx]? with
+  match c.accounts[idx]?, c.accounts[payerIdx]? with
   | some a, some p =>
     if p.isSigner = true ∧ p.isWritable = true ∧ rent ≤ p.lamports ∧ a.data.size = 0 then
       let newData := disc ++ ByteArray.mk (Array.replicate (space + 8 - disc.size) 0)
@@ -28,7 +27,7 @@ def applyInit (idx payerIdx : Nat) (space : Nat) (owner : Pubkey) (disc : ByteAr
 /-- Model of Anchor `close`: move all target lamports to `dest`, write the closed marker. -/
 def applyClose (idx destIdx : Nat) (c : Ctx) : Option Ctx :=
   if idx = destIdx then none else
-  match c[idx]?, c[destIdx]? with
+  match c.accounts[idx]?, c.accounts[destIdx]? with
   | some a, some _ =>
     let c1 := c.update destIdx (fun d => { d with lamports := d.lamports + a.lamports })
     some (c1.update idx (fun a => { a with lamports := 0, data := closedAccountDiscriminator }))
@@ -36,28 +35,30 @@ def applyClose (idx destIdx : Nat) (c : Ctx) : Option Ctx :=
 
 /-- Read-back lemma for `Ctx.update`: an index reads through `g` exactly when it is the
     updated index (and stays in range), otherwise it is untouched. -/
-theorem Ctx.getElem?_update (c : Ctx) (i j : Nat) (g : AccountInfo → AccountInfo) :
-    (c.update j g)[i]? = if i = j then (c[i]?).map g else c[i]? := by
+theorem Ctx.accounts_getElem?_update (c : Ctx) (i j : Nat) (g : AccountInfo → AccountInfo) :
+    (c.update j g).accounts[i]? = if i = j then (c.accounts[i]?).map g else c.accounts[i]? := by
   unfold Ctx.update
-  split
-  · next a hj =>
-    by_cases h : i = j
-    · subst h
-      rw [List.getElem?_set_self (List.getElem?_eq_some_iff.mp hj).1, hj]
-      simp
-    · rw [List.getElem?_set_ne (fun heq => h heq.symm)]
-      simp [h]
-  · next hj =>
-    by_cases h : i = j
-    · subst h; simp [hj]
-    · simp [h]
+  cases hj : c.accounts[j]? with
+  | none =>
+    have : ¬ j < c.length := by
+      intro hlt; rw [List.getElem?_eq_getElem hlt] at hj; exact (Option.some_ne_none _) hj
+    by_cases hij : i = j
+    · subst hij; simp [hj]
+    · simp [hij]
+  | some a =>
+    by_cases hij : i = j
+    · subst hij
+      have hlt : i < c.length := by
+        rw [List.getElem?_eq_some_iff] at hj; exact hj.1
+      simp [List.getElem?_set_self hlt, hj]
+    · simp [List.getElem?_set_ne (Ne.symm hij), hij]
 
 /-- `applyInit` establishes the M1 `init` post-condition for the target account:
     it exists, is owned by `owner`, and has data of size at least `space + 8`. -/
 theorem init_establishes_post
     (idx payerIdx space owner disc rent c c') (hne : idx ≠ payerIdx) (hdisc : disc.size = 8)
     (h : applyInit idx payerIdx space owner disc rent c = some c') :
-    ∃ a, c'[idx]? = some a ∧ a.owner = owner ∧ space + 8 ≤ a.data.size := by
+    ∃ a, c'.accounts[idx]? = some a ∧ a.owner = owner ∧ space + 8 ≤ a.data.size := by
   simp only [applyInit, if_neg hne] at h
   split at h
   · next a p ha hp =>
@@ -67,7 +68,7 @@ theorem init_establishes_post
       injection h with hc'
       subst hc'
       -- read back idx through the two updates: outer at payerIdx (skip), inner at idx (hit)
-      rw [Ctx.getElem?_update, if_neg hne, Ctx.getElem?_update, if_pos rfl, ha,
+      rw [Ctx.accounts_getElem?_update, if_neg hne, Ctx.accounts_getElem?_update, if_pos rfl, ha,
         Option.map_some]
       -- witness is now pinned by `rfl`; owner is `rfl`, data size remains
       refine ⟨_, rfl, rfl, ?_⟩
@@ -85,14 +86,14 @@ theorem init_establishes_post
 theorem close_establishes_post
     (idx destIdx c c') (hne : idx ≠ destIdx)
     (h : applyClose idx destIdx c = some c') :
-    ∃ a, c'[idx]? = some a ∧ a.lamports = 0 ∧ hasDiscriminator a closedAccountDiscriminator := by
+    ∃ a, c'.accounts[idx]? = some a ∧ a.lamports = 0 ∧ hasDiscriminator a closedAccountDiscriminator := by
   simp only [applyClose, if_neg hne] at h
   split at h
   · next a d ha hd =>
     injection h with hc'
     subst hc'
     -- read back idx: outer update is at idx (hit), inner at destIdx (skip)
-    rw [Ctx.getElem?_update, if_pos rfl, Ctx.getElem?_update, if_neg hne, ha,
+    rw [Ctx.accounts_getElem?_update, if_pos rfl, Ctx.accounts_getElem?_update, if_neg hne, ha,
       Option.map_some]
     -- witness pinned by `rfl`; lamports is `rfl`, discriminator remains
     refine ⟨_, rfl, rfl, ?_⟩
