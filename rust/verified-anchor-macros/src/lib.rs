@@ -4,6 +4,13 @@ use quote::quote;
 use syn::parse::{Parse, ParseStream};
 use syn::{parse_macro_input, punctuated::Punctuated, Data, DeriveInput, Expr, Fields, Token};
 
+/// One element of a `seeds = [...]` list.
+enum SeedElem {
+    Literal(syn::LitByteStr),   // b"vault"
+    FieldKey(syn::Ident),       // field.key()
+    InstrArg(usize, usize),     // arg(off, len)
+}
+
 /// One M2/M3 constraint parsed from a field's `#[account(...)]`.
 enum Constraint {
     Signer,
@@ -15,6 +22,9 @@ enum Constraint {
     Payer(syn::Ident),
     Space(usize),
     Close(syn::Ident),
+    Seeds(Vec<SeedElem>),
+    BumpCanonical,
+    BumpDeclared(u8),
 }
 
 impl Parse for Constraint {
@@ -51,11 +61,64 @@ impl Parse for Constraint {
                 input.parse::<Token![=]>()?;
                 Ok(Constraint::Close(input.parse()?))
             }
+            "seeds" => {
+                input.parse::<Token![=]>()?;
+                let arr: syn::ExprArray = input.parse()?;
+                let mut elems = Vec::new();
+                for e in arr.elems {
+                    elems.push(parse_seed_elem(e)?);
+                }
+                Ok(Constraint::Seeds(elems))
+            }
+            "bump" => {
+                if input.peek(Token![=]) {
+                    input.parse::<Token![=]>()?;
+                    let lit: syn::LitInt = input.parse()?;
+                    Ok(Constraint::BumpDeclared(lit.base10_parse()?))
+                } else {
+                    Ok(Constraint::BumpCanonical)
+                }
+            }
             other => Err(syn::Error::new(
                 ident.span(),
-                format!("unsupported constraint `{other}` (supported: signer, mut, owner, has_one, init, payer, space, close)"),
+                format!("unsupported constraint `{other}` (supported: signer, mut, owner, has_one, init, payer, space, close, seeds, bump)"),
             )),
         }
+    }
+}
+
+fn parse_seed_elem(e: Expr) -> syn::Result<SeedElem> {
+    match e {
+        Expr::Lit(syn::ExprLit { lit: syn::Lit::ByteStr(b), .. }) => Ok(SeedElem::Literal(b)),
+        Expr::MethodCall(mc) if mc.method == "key" && mc.args.is_empty() => {
+            if let Expr::Path(p) = mc.receiver.as_ref() {
+                if let Some(id) = p.path.get_ident() {
+                    return Ok(SeedElem::FieldKey(id.clone()));
+                }
+            }
+            Err(syn::Error::new_spanned(mc.receiver, "seed `.key()` must be on a field name"))
+        }
+        Expr::Call(call) => {
+            let is_arg = matches!(call.func.as_ref(),
+                Expr::Path(p) if p.path.is_ident("arg"));
+            if !is_arg {
+                return Err(syn::Error::new_spanned(call.func, "unsupported seed call (expected `arg(off, len)`)"));
+            }
+            let mut it = call.args.iter();
+            let off = lit_usize(it.next())?;
+            let len = lit_usize(it.next())?;
+            Ok(SeedElem::InstrArg(off, len))
+        }
+        other => Err(syn::Error::new_spanned(other,
+            "unsupported seed (expected b\"..\", field.key(), or arg(off, len))")),
+    }
+}
+
+fn lit_usize(e: Option<&Expr>) -> syn::Result<usize> {
+    match e {
+        Some(Expr::Lit(syn::ExprLit { lit: syn::Lit::Int(i), .. })) => i.base10_parse(),
+        _ => Err(syn::Error::new(proc_macro2::Span::call_site(),
+            "arg(off, len) needs two integer literals")),
     }
 }
 
@@ -96,6 +159,18 @@ fn lean_constraint(c: &Constraint) -> String {
         Constraint::HasOne(t) => format!("Constraint.hasOne \"{}\"", t),
         // Lifecycle markers: not validation constraints; skip in lean_spec output.
         Constraint::InitMarker | Constraint::Payer(_) | Constraint::Space(_) | Constraint::Close(_) => String::new(),
+        Constraint::Seeds(elems) => {
+            let seeds: Vec<String> = elems.iter().map(|se| match se {
+                SeedElem::Literal(b) => {
+                    let bytes: Vec<String> = b.value().iter().map(|x| x.to_string()).collect();
+                    format!("SeedSpec.literal (ByteArray.mk #[{}])", bytes.join(", "))
+                }
+                SeedElem::FieldKey(id) => format!("SeedSpec.fieldKey \"{}\"", id),
+                SeedElem::InstrArg(off, len) => format!("SeedSpec.instrArg {} {}", off, len),
+            }).collect();
+            format!("Constraint.seeds [{}] @@BUMP@@", seeds.join(", "))
+        }
+        Constraint::BumpCanonical | Constraint::BumpDeclared(_) => String::new(),
     }
 }
 
@@ -112,11 +187,17 @@ fn lean_spec_string(specs: &[FieldSpec]) -> String {
             if let Constraint::HasOne(t) = c { Some(t.to_string()) } else { None }
         }).map(|t| format!("AccountType.account \"Vault\" [(\"{}\", 8)] Pubkey.zero", t))
           .unwrap_or_else(|| "AccountType.uncheckedAccount".to_string());
+        let bump_str = spec.constraints.iter().find_map(|c| match c {
+            Constraint::BumpCanonical => Some("BumpSpec.canonical".to_string()),
+            Constraint::BumpDeclared(d) => Some(format!("BumpSpec.declared {}", d)),
+            _ => None,
+        }).unwrap_or_else(|| "BumpSpec.canonical".to_string());
+        let cs_joined = cs.join(", ").replace("@@BUMP@@", &bump_str);
         fields.push(format!(
             "{{ name := \"{}\", ty := {}, constraints := [{}] }}",
             spec.name,
             ty,
-            cs.join(", ")
+            cs_joined
         ));
     }
     let body = if fields.is_empty() {
@@ -178,12 +259,62 @@ fn validate_body(specs: &[FieldSpec]) -> TokenStream2 {
                 Constraint::InitMarker | Constraint::Payer(_) | Constraint::Space(_) | Constraint::Close(_) => {
                     continue;
                 }
+                // Seeds/bump are handled in the per-field PDA block below.
+                Constraint::Seeds(_) | Constraint::BumpCanonical | Constraint::BumpDeclared(_) => {
+                    continue;
+                }
             };
             checks.push(check);
         }
+
+        // seeds/bump: emit one PDA check per field that declares `seeds`.
+        if let Some(Constraint::Seeds(elems)) = spec.constraints.iter()
+            .find(|c| matches!(c, Constraint::Seeds(_)))
+        {
+            let fname = name;
+            let seed_exprs: Vec<TokenStream2> = elems.iter().map(|se| match se {
+                SeedElem::Literal(b) => quote! { &#b[..] },
+                SeedElem::FieldKey(id) => {
+                    let fi = *index_of.get(&id.to_string())
+                        .unwrap_or_else(|| panic!("seed field `{}` is not a field of this struct", id));
+                    quote! { accounts[#fi].key.as_ref() }
+                }
+                SeedElem::InstrArg(off, len) => {
+                    let end = off + len;
+                    quote! { &instr_data[#off..#end] }
+                }
+            }).collect();
+            let bump_check = match spec.constraints.iter().find_map(|c| match c {
+                Constraint::BumpCanonical => Some(None),
+                Constraint::BumpDeclared(d) => Some(Some(*d)),
+                _ => None,
+            }) {
+                Some(Some(d)) => quote! {
+                    if __bump != #d {
+                        return Err(::verified_anchor::VAError::WrongBump { field: #fname });
+                    }
+                },
+                _ => quote! {},
+            };
+            checks.push(quote! {
+                {
+                    let __seeds: &[&[u8]] = &[ #(#seed_exprs),* ];
+                    let (__pda, __bump) = ::solana_program::pubkey::Pubkey::find_program_address(__seeds, program_id);
+                    if accounts[#i].key != &__pda {
+                        return Err(::verified_anchor::VAError::WrongPda { field: #fname });
+                    }
+                    #bump_check
+                }
+            });
+        }
     }
     quote! {
-        fn validate(accounts: &[::solana_program::account_info::AccountInfo]) -> ::core::result::Result<(), ::verified_anchor::VAError> {
+        fn validate(
+            accounts: &[::solana_program::account_info::AccountInfo],
+            instr_data: &[u8],
+            program_id: &::solana_program::pubkey::Pubkey,
+        ) -> ::core::result::Result<(), ::verified_anchor::VAError> {
+            let _ = (instr_data, program_id);
             if accounts.len() < #n {
                 return Err(::verified_anchor::VAError::NotEnoughAccounts { expected: #n, got: accounts.len() });
             }

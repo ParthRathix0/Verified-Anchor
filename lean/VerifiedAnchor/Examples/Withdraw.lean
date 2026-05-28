@@ -70,10 +70,10 @@ def withdraw : AccountsStruct where
   fields := [vaultField, authorityField]
 
 /-- GOOD context: writable, owned by the program, correct discriminator, real signer. -/
-def goodCtx : Ctx := [mkVault authKey progId, authorityAccount]
+def goodCtx : Ctx := Ctx.ofAccounts [mkVault authKey progId, authorityAccount]
 
 /-- TAMPERED context: the vault is owned by some other program (owner check must fail). -/
-def tamperedCtx : Ctx := [mkVault authKey (Pubkey.ofBytes (List.replicate 32 3)), authorityAccount]
+def tamperedCtx : Ctx := Ctx.ofAccounts [mkVault authKey (Pubkey.ofBytes (List.replicate 32 3)), authorityAccount]
 
 -- For human eyes:
 #eval validatesBool withdraw goodCtx       -- expect true
@@ -115,11 +115,11 @@ def withdrawTyped : AccountsStruct where
   fields := [vaultFieldTyped, authorityField]
 
 /-- GOOD: the vault's stored authority matches the signer. -/
-def goodCtxT : Ctx := [mkVault authKey progId, authorityAccount]
+def goodCtxT : Ctx := Ctx.ofAccounts [mkVault authKey progId, authorityAccount]
 
 /-- TAMPERED: the vault's stored authority does NOT match the signer
     (the classic missing/forged `has_one` exploit). -/
-def tamperedCtxT : Ctx := [mkVault (Pubkey.ofBytes (List.replicate 32 2)) progId, authorityAccount]
+def tamperedCtxT : Ctx := Ctx.ofAccounts [mkVault (Pubkey.ofBytes (List.replicate 32 2)) progId, authorityAccount]
 
 -- The relational `has_one` accepts the matching context and rejects the forged one:
 #guard checkConstraint withdrawTyped goodCtxT 0 vaultFieldTyped (Constraint.hasOne "authority") = true

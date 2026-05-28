@@ -12,10 +12,11 @@ what is and isn't proven.
 | `if accounts[i].owner != &expected { Err(WrongOwner) }` | `genOwner e a := decide (a.owner = e)` | `satisfies … (.owner e)` |
 | `if accounts.len() < n { Err(NotEnoughAccounts) }` | `decide (c.length = s.fields.length)` | `WellFormed` |
 | `if data[8..40] != target.key { Err(WrongHasOne) }` (M3) | `genHasOne` (read 32B @ offset 8, compare to looked-up key) | `satisfies … (.hasOne field)` |
+| `let (pda,_)=find_program_address(seeds,program_id); if accounts[i].key != pda { Err(WrongPda) }` (M4) | `genSeeds` (canonical PDA = key, bump matches) | `satisfies … (.seeds ss bump)` |
 | `invoke(create_account(...)) + write disc` (M3) | `applyInit` (state transformer) | `init_establishes_post`: post-state has owner set + ≥ `space+8` bytes |
 | `dest.lamports += t.lamports; t.lamports = 0; mark` (M3) | `applyClose` (state transformer) | `close_establishes_post`: post-state has lamports 0 + closed marker |
 
-The generated `validate` has signature `fn validate(accounts: &[AccountInfo]) -> Result<(), VAError>`
+The generated `validate` has signature `fn validate(accounts: &[AccountInfo], instr_data: &[u8], program_id: &Pubkey) -> Result<(), VAError>`
 (an associated method of the `Validate` trait — no `&self`; the struct is a compile-time
 spec carrier and validation is positional over the runtime account slice, index = field
 declaration order, matching the Lean `Ctx`). Per field it checks every constraint in order
@@ -25,17 +26,20 @@ fields.
 
 ## What is proven
 
-`theorem genValidate_sound (s c) (h : M2Subset s) : genValidate s c = true ↔ validates s c`
+`theorem genValidate_sound (s c) (h : M4Subset s) : genValidate s c = true ↔ validates s c`
 — the Lean model of the generated validator agrees with the Milestone-1 contract for every
-struct in the M2 subset (`M2Subset`: each field's type ∈ {signer, unchecked, system,
-program} and each explicit constraint ∈ {mut, signer, owner}). Proved once, parameterized
-over the user's annotation. `#print axioms` reports `[propext, Quot.sound]` only — no
-`sorryAx`, no `Classical.choice`. Three per-constraint lemmas
-(`genConstraint_{signer,mut,owner}_iff`) connect each `gen*` to the corresponding M1
-`satisfies` case.
+struct in the **M4 subset**. Proved once, parameterized over the user's annotation.
+`#print axioms` reports `[propext, Quot.sound]` only — no `sorryAx`, no `Classical.choice`,
+no `native_decide`. Per-constraint lemmas (`genConstraint_{signer,mut,owner,discriminator,hasOne,seeds}_iff`,
+plus `bumpMatchesB_iff`) connect each `gen*` to the corresponding M1 `satisfies` case.
 
-`M2Subset` deliberately excludes the typed `Account<T>` (`AccountType.account`), because that
-type implies a `discriminator` constraint outside the M2 subset — that arrives in Milestone 3.
+The subset grew with each milestone (the theorem was re-proved at each, never weakened):
+- **M2** (`mut`/`signer`/`owner`): only unchecked-style account types; excluded the typed
+  `Account<T>` because it implies a `discriminator` constraint.
+- **M3** adds `hasOne` + `discriminator`, so `M3Subset` admits the typed `Account<T>`.
+- **M4** adds `.seeds`, so `M4Subset` (= M3 + `.seeds`) is the current predicate. `M4Subset s`:
+  every field's `(impliedConstraints ++ constraints)` is one of {signer, mut, owner, hasOne,
+  discriminator, seeds}.
 
 ## What is transcription (documented + tested, not proven)
 
@@ -81,6 +85,35 @@ cross-checked against a real Solana VM, not just documented.
 on-chain effect on account state matches `applyInit` (its documented effect — owner assigned,
 space allocated, lamports moved). We model the *effect*, not the CPI dispatch. The litesvm
 runtime tests reduce the risk that this model diverges from reality.
+
+## PDA derivation / seeds (M4)
+
+`seeds`/`bump` is a pure validation check, so it extends `genValidate`: `genSeeds` mirrors
+`satisfies (.seeds ss bump)` and `genValidate_sound` now holds at `M4Subset` (= M3 + `.seeds`),
+`[propext, Quot.sound]` only. PDA derivation runs through the concrete `findProgramAddress`
+over opaque `sha256`/`isOnCurve` — **no new axioms** — so `.seeds` is decidable but does not
+reduce under `decide` (the same wall as `discriminator`); the Lean example shows the crypto-free
+`resolveSeeds` slicing concretely and the soundness arrow symbolically.
+
+**Canonical-only (stricter than stock Anchor).** The verified subset derives via
+`find_program_address` (the canonical bump) and a `declared` bump must equal that canonical
+bump. Anchor's `bump = <stored>` (re-derive via `create_program_address` with a possibly
+non-canonical bump) is intentionally outside the subset.
+
+**Instruction-arg seeds.** A seed may be a concrete slice of the instruction data
+(`SeedSpec.instrArg off len`, Lean `Ctx.instrData`; Rust `arg(off, len)` → `&instr_data[off..off+len]`).
+Offsets into fixed-size leading Borsh fields are deterministic, so this adds no new trusted
+assumption.
+
+**Signature change.** The generated `validate` is now
+`validate(accounts: &[AccountInfo], instr_data: &[u8], program_id: &Pubkey)` — `instr_data`
+and `program_id` carry the Lean `c.instrData` and `s.programId` that `genValidate`/`genSeeds`
+consume. Unused for structs without seeds/instr-arg.
+
+**Transcription (documented + runtime-tested):** the generated PDA check matches `genSeeds`;
+the macro's seed-element mapping (`arg(off,len)` → offset/length) is transcription — backed by
+native tests against the real `find_program_address` and a litesvm on-chain accept/reject
+(`tests/runtime_seeds.rs`), not proven across the language boundary.
 
 ## What is out of scope
 
