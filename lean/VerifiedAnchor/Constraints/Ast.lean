@@ -8,6 +8,7 @@ namespace VerifiedAnchor
 inductive SeedSpec where
   | literal (bytes : ByteArray)        -- e.g. b"vault"
   | fieldKey (field : String)          -- another account's key bytes
+  | instrArg (off : Nat) (len : Nat)   -- a concrete slice of the instruction data
   deriving Inhabited
 
 inductive BumpSpec where
