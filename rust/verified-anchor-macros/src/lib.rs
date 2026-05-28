@@ -183,7 +183,12 @@ fn validate_body(specs: &[FieldSpec]) -> TokenStream2 {
         }
     }
     quote! {
-        fn validate(accounts: &[::solana_program::account_info::AccountInfo]) -> ::core::result::Result<(), ::verified_anchor::VAError> {
+        fn validate(
+            accounts: &[::solana_program::account_info::AccountInfo],
+            instr_data: &[u8],
+            program_id: &::solana_program::pubkey::Pubkey,
+        ) -> ::core::result::Result<(), ::verified_anchor::VAError> {
+            let _ = (instr_data, program_id);
             if accounts.len() < #n {
                 return Err(::verified_anchor::VAError::NotEnoughAccounts { expected: #n, got: accounts.len() });
             }
