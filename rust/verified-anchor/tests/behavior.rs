@@ -22,33 +22,34 @@ impl Acct {
 fn acct(is_signer: bool, is_writable: bool) -> Acct {
     Acct { key: Pubkey::new_unique(), owner: Pubkey::new_unique(), lamports: 1, data: vec![], is_signer, is_writable }
 }
+fn any_pid() -> Pubkey { Pubkey::new_unique() }
 
 #[test]
 fn accepts_valid() {
     let mut v = acct(false, true);
     let mut a = acct(true, false);
     let accts = [v.info(), a.info()];
-    assert_eq!(Transfer::validate(&accts), Ok(()));
+    assert_eq!(Transfer::validate(&accts, &[], &any_pid()), Ok(()));
 }
 #[test]
 fn rejects_non_writable_vault() {
     let mut v = acct(false, false);
     let mut a = acct(true, false);
     let accts = [v.info(), a.info()];
-    assert_eq!(Transfer::validate(&accts), Err(VAError::NotWritable { field: "vault" }));
+    assert_eq!(Transfer::validate(&accts, &[], &any_pid()), Err(VAError::NotWritable { field: "vault" }));
 }
 #[test]
 fn rejects_non_signer_authority() {
     let mut v = acct(false, true);
     let mut a = acct(false, false);
     let accts = [v.info(), a.info()];
-    assert_eq!(Transfer::validate(&accts), Err(VAError::MissingSigner { field: "authority" }));
+    assert_eq!(Transfer::validate(&accts, &[], &any_pid()), Err(VAError::MissingSigner { field: "authority" }));
 }
 #[test]
 fn rejects_too_few_accounts() {
     let mut v = acct(false, true);
     let accts = [v.info()];
-    assert_eq!(Transfer::validate(&accts), Err(VAError::NotEnoughAccounts { expected: 2, got: 1 }));
+    assert_eq!(Transfer::validate(&accts, &[], &any_pid()), Err(VAError::NotEnoughAccounts { expected: 2, got: 1 }));
 }
 // Documents the permissiveness gap noted in docs/verified-anchor-bridge.md: the generated
 // Rust accepts SURPLUS accounts (only the declared prefix is checked), whereas the Lean
@@ -60,7 +61,7 @@ fn accepts_surplus_accounts() {
     let mut a = acct(true, false);   // authority: signer
     let mut extra = acct(false, false);
     let accts = [v.info(), a.info(), extra.info()];   // 3 accounts, struct declares 2
-    assert_eq!(Transfer::validate(&accts), Ok(()));
+    assert_eq!(Transfer::validate(&accts, &[], &any_pid()), Ok(()));
 }
 
 // Behavioral coverage for the owner constraint (the third M2 constraint kind). Distinct
@@ -81,14 +82,14 @@ fn acct_owned(owner: Pubkey) -> Acct {
 fn accepts_matching_owner() {
     let mut v = acct_owned(PROG_OWNER);
     let accts = [v.info()];
-    assert_eq!(OwnedVault::validate(&accts), Ok(()));
+    assert_eq!(OwnedVault::validate(&accts, &[], &any_pid()), Ok(()));
 }
 
 #[test]
 fn rejects_wrong_owner() {
     let mut v = acct_owned(Pubkey::new_from_array([9u8; 32]));   // not PROG_OWNER
     let accts = [v.info()];
-    assert_eq!(OwnedVault::validate(&accts), Err(VAError::WrongOwner { field: "vault" }));
+    assert_eq!(OwnedVault::validate(&accts, &[], &any_pid()), Err(VAError::WrongOwner { field: "vault" }));
 }
 
 #[derive(VerifiedAccounts)]
@@ -110,7 +111,7 @@ fn has_one_accepts_match() {
     let mut vault = acct_with_data(Pubkey::new_unique(), data);
     let mut authority = acct_with_data(auth_key, vec![]);
     let accts = [vault.info(), authority.info()];
-    assert_eq!(CheckOwner::validate(&accts), Ok(()));
+    assert_eq!(CheckOwner::validate(&accts, &[], &any_pid()), Ok(()));
 }
 
 #[test]
@@ -120,5 +121,5 @@ fn has_one_rejects_mismatch() {
     let mut vault = acct_with_data(Pubkey::new_unique(), data);
     let mut authority = acct_with_data(Pubkey::new_unique(), vec![]);
     let accts = [vault.info(), authority.info()];
-    assert_eq!(CheckOwner::validate(&accts), Err(VAError::WrongHasOne { field: "vault", target: "authority" }));
+    assert_eq!(CheckOwner::validate(&accts, &[], &any_pid()), Err(VAError::WrongHasOne { field: "vault", target: "authority" }));
 }
