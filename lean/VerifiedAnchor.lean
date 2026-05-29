@@ -13,4 +13,5 @@ import VerifiedAnchor.Examples.Withdraw
 import VerifiedAnchor.Codegen.Generated
 import VerifiedAnchor.Codegen.Soundness
 import VerifiedAnchor.Codegen.Lifecycle
+import VerifiedAnchor.Codegen.StructLifecycle
 import VerifiedAnchor.Codegen.ExampleGenerated
