@@ -449,6 +449,9 @@ pub fn derive_verified_accounts(input: TokenStream) -> TokenStream {
 
             #lifecycle
         }
+        // Host-only: `inventory` corrupts the Solana SBF ELF, so this registration must NOT
+        // be compiled into a BPF program. Gated by target_os, matching verified-anchor's lib.
+        #[cfg(not(target_os = "solana"))]
         ::verified_anchor::inventory::submit! {
             ::verified_anchor::SpecEntry {
                 name: #name_str,
