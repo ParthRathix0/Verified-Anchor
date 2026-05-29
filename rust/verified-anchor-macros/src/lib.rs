@@ -79,10 +79,22 @@ impl Parse for Constraint {
                     Ok(Constraint::BumpCanonical)
                 }
             }
-            other => Err(syn::Error::new(
-                ident.span(),
-                format!("unsupported constraint `{other}` (supported: signer, mut, owner, has_one, init, payer, space, close, seeds, bump)"),
-            )),
+            other => {
+                let known_unsupported = [
+                    "realloc", "zero", "rent_exempt", "constraint", "token", "mint",
+                    "associated_token", "executable", "address", "owner_program",
+                    "token_program", "seeds_program",
+                ];
+                let hint = if known_unsupported.contains(&other) {
+                    format!("`{other}` is a stock-Anchor constraint that verified-anchor does not support")
+                } else {
+                    format!("unknown constraint `{other}`")
+                };
+                Err(syn::Error::new(
+                    ident.span(),
+                    format!("{hint}; verified-anchor supports: signer, mut, owner, has_one, init, payer, space, close, seeds, bump. See docs/migrating-from-anchor.md"),
+                ))
+            }
         }
     }
 }
@@ -181,6 +193,22 @@ fn lean_spec_string(specs: &[FieldSpec]) -> String {
             .map(lean_constraint)
             .filter(|s| !s.is_empty())
             .collect();
+        let mut cs = cs;   // make mutable
+        // init: assemble InitMarker + Payer + Space -> Constraint.init "<payer>" <space> Pubkey.zero
+        if spec.constraints.iter().any(|c| matches!(c, Constraint::InitMarker)) {
+            let payer = spec.constraints.iter().find_map(|c|
+                if let Constraint::Payer(p) = c { Some(p.to_string()) } else { None });
+            let space = spec.constraints.iter().find_map(|c|
+                if let Constraint::Space(n) = c { Some(*n) } else { None });
+            if let (Some(payer), Some(space)) = (payer, space) {
+                cs.push(format!("Constraint.init \"{}\" {} Pubkey.zero", payer, space));
+            }
+        }
+        // close: Close(dest) -> Constraint.close "<dest>"
+        if let Some(dest) = spec.constraints.iter().find_map(|c|
+            if let Constraint::Close(d) = c { Some(d.to_string()) } else { None }) {
+            cs.push(format!("Constraint.close \"{}\"", dest));
+        }
         // If this field has a has_one constraint, emit a richer AccountType so the Lean
         // layout resolver can locate the stored Pubkey at offset 8 (after the discriminator).
         let ty = spec.constraints.iter().find_map(|c| {
@@ -212,7 +240,7 @@ fn lean_spec_string(specs: &[FieldSpec]) -> String {
         lines.push_str(" ]");
         lines
     };
-    format!("{{ programId := Pubkey.zero\n, fields :={} }}", body)
+    format!("{{ programId := Pubkey.zero, fields :={} }}", body)
 }
 
 fn validate_body(specs: &[FieldSpec]) -> TokenStream2 {
@@ -406,6 +434,9 @@ pub fn derive_verified_accounts(input: TokenStream) -> TokenStream {
     let body = validate_body(&specs);
     let lean = lean_spec_string(&specs);
     let lifecycle = lifecycle_body(&specs);
+    let has_lifecycle = specs.iter().any(|s| s.constraints.iter().any(|c|
+        matches!(c, Constraint::InitMarker | Constraint::Close(_))));
+    let name_str = name.to_string();
     let expanded = quote! {
         impl ::verified_anchor::Validate for #name {
             #body
@@ -417,6 +448,13 @@ pub fn derive_verified_accounts(input: TokenStream) -> TokenStream {
             }
 
             #lifecycle
+        }
+        ::verified_anchor::inventory::submit! {
+            ::verified_anchor::SpecEntry {
+                name: #name_str,
+                lean_spec: #name::lean_spec,
+                has_lifecycle: #has_lifecycle,
+            }
         }
     };
     expanded.into()
