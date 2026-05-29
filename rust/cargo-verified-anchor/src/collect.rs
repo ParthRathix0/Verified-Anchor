@@ -16,7 +16,8 @@ pub fn collect(crate_name: Option<&str>, spec_dir: &Path) -> Result<Vec<Spec>, S
     cmd.env("VERIFIED_ANCHOR_SPEC_DIR", spec_dir);
     let out = cmd.output().map_err(|e| format!("running cargo test: {e}"))?;
     if !out.status.success() {
-        return Err(format!("cargo test (spec emitter) failed:\n{}", String::from_utf8_lossy(&out.stderr)));
+        return Err(format!("cargo test (spec emitter) failed:\n{}{}",
+            String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)));
     }
 
     let mut specs = Vec::new();
