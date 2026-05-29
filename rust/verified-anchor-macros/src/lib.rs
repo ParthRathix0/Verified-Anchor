@@ -240,7 +240,7 @@ fn lean_spec_string(specs: &[FieldSpec]) -> String {
         lines.push_str(" ]");
         lines
     };
-    format!("{{ programId := Pubkey.zero\n, fields :={} }}", body)
+    format!("{{ programId := Pubkey.zero, fields :={} }}", body)
 }
 
 fn validate_body(specs: &[FieldSpec]) -> TokenStream2 {
