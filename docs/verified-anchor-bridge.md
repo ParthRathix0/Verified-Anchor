@@ -120,4 +120,16 @@ native tests against the real `find_program_address` and a litesvm on-chain acce
 rustc/LLVM/sBPF code generation fidelity — that the compiled binary faithfully executes the
 Rust source. This is the standard boundary of source-level verification (cf. CompCert), and
 is not addressed by Verified Anchor at any milestone.
-```
+
+## Automated checking (M5)
+
+The Rust→Lean flow is now mechanical: `#[derive(VerifiedAccounts)]` auto-registers each struct
+(`inventory`); `verified_anchor::emit_specs!()` writes each struct's `lean_spec()`; and
+`cargo verified-anchor check` generates a `check.lean` of per-struct obligations and runs
+`lake env lean`. Each obligation is a single `decide`:
+- validation structs → `M4Subset spec` (the generic `genValidate_sound` applies);
+- lifecycle structs → `StructLifecycleWF spec` (the generic `lifecycle_sound` applies).
+
+This automates *generation + checking* of obligations that were always the spec; it does not
+widen the proven surface. The hand-copying of `lean_spec` into Lean is gone; the correspondence
+remains transcription (now regenerated each run). No new modeling axioms.
