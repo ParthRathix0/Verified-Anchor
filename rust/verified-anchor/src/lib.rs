@@ -49,10 +49,18 @@ pub trait Validate {
     ) -> Result<(), VAError>;
 }
 
+// The spec-collection machinery uses `inventory`, whose `#[used]` link-section statics
+// corrupt the Solana SBF ELF (invalid PT_DYNAMIC -> loader rejects with InvalidAccountData).
+// It is host-only: gate ALL of it out of the `target_os = "solana"` (BPF) build, the same way
+// Anchor gates host-only code. Native builds (the example crate + `cargo verified-anchor check`,
+// which runs `cargo test --lib` natively) keep it.
+
 /// Re-exported so the derive macro can emit `::verified_anchor::inventory::submit!`.
+#[cfg(not(target_os = "solana"))]
 pub use inventory;
 
 /// One registered `#[derive(VerifiedAccounts)]` struct.
+#[cfg(not(target_os = "solana"))]
 pub struct SpecEntry {
     pub name: &'static str,
     /// The Milestone-1 `AccountsStruct` literal (Lean source).
@@ -61,9 +69,11 @@ pub struct SpecEntry {
     pub has_lifecycle: bool,
 }
 
+#[cfg(not(target_os = "solana"))]
 inventory::collect!(SpecEntry);
 
 /// All registered structs in the current compilation artifact.
+#[cfg(not(target_os = "solana"))]
 pub fn collect_specs() -> Vec<&'static SpecEntry> {
     inventory::iter::<SpecEntry>.into_iter().collect()
 }
@@ -71,6 +81,7 @@ pub fn collect_specs() -> Vec<&'static SpecEntry> {
 /// Write one spec file per registered struct into `dir`. Filename is `<name>.<kind>` where
 /// kind is `lifecycle` or `validation`; the file content is the `lean_spec()` literal.
 /// (No JSON — the literal is the whole content, so there's nothing to escape.)
+#[cfg(not(target_os = "solana"))]
 pub fn write_spec_files(dir: &std::path::Path) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)?;
     for e in collect_specs() {
