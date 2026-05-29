@@ -48,3 +48,69 @@ pub trait Validate {
         program_id: &Pubkey,
     ) -> Result<(), VAError>;
 }
+
+/// Re-exported so the derive macro can emit `::verified_anchor::inventory::submit!`.
+pub use inventory;
+
+/// One registered `#[derive(VerifiedAccounts)]` struct.
+pub struct SpecEntry {
+    pub name: &'static str,
+    /// The Milestone-1 `AccountsStruct` literal (Lean source).
+    pub lean_spec: fn() -> String,
+    /// True if any field carries an `init`/`close` constraint (selects the obligation kind).
+    pub has_lifecycle: bool,
+}
+
+inventory::collect!(SpecEntry);
+
+/// All registered structs in the current compilation artifact.
+pub fn collect_specs() -> Vec<&'static SpecEntry> {
+    inventory::iter::<SpecEntry>.into_iter().collect()
+}
+
+/// Write one spec file per registered struct into `dir`. Filename is `<name>.<kind>` where
+/// kind is `lifecycle` or `validation`; the file content is the `lean_spec()` literal.
+/// (No JSON — the literal is the whole content, so there's nothing to escape.)
+pub fn write_spec_files(dir: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    for e in collect_specs() {
+        let kind = if e.has_lifecycle { "lifecycle" } else { "validation" };
+        std::fs::write(dir.join(format!("{}.{}", e.name, kind)), (e.lean_spec)())?;
+    }
+    Ok(())
+}
+
+/// Drop ONE call in your crate's lib (e.g. bottom of `src/lib.rs`). Expands to a test that,
+/// when `VERIFIED_ANCHOR_SPEC_DIR` is set (by `cargo verified-anchor check`), writes spec
+/// files for every derived struct in this crate. Placing it in the lib is REQUIRED: the
+/// emitter must be same-crate as the `inventory::submit!`s (cross-crate harnesses dead-strip).
+#[macro_export]
+macro_rules! emit_specs {
+    () => {
+        #[cfg(test)]
+        #[test]
+        fn __verified_anchor_emit_specs() {
+            if let Ok(dir) = ::std::env::var("VERIFIED_ANCHOR_SPEC_DIR") {
+                ::verified_anchor::write_spec_files(::std::path::Path::new(&dir)).unwrap();
+            }
+        }
+    };
+}
+
+#[cfg(test)]
+mod spec_collection_tests {
+    use super::*;
+
+    // A manually-registered entry (same crate → inventory sees it).
+    inventory::submit! { SpecEntry { name: "FakeStruct", lean_spec: || "FAKE-SPEC".to_string(), has_lifecycle: false } }
+
+    #[test]
+    fn write_spec_files_emits_one_file_per_entry() {
+        let dir = std::env::temp_dir().join("va-m1-spec-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        write_spec_files(&dir).unwrap();
+        let f = dir.join("FakeStruct.validation");
+        assert!(f.exists(), "expected {f:?}");
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), "FAKE-SPEC");
+    }
+}
