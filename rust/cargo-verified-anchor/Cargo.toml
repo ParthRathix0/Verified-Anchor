@@ -1,0 +1,8 @@
+[package]
+name = "cargo-verified-anchor"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "cargo-verified-anchor"
+path = "src/main.rs"
