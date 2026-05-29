@@ -79,10 +79,22 @@ impl Parse for Constraint {
                     Ok(Constraint::BumpCanonical)
                 }
             }
-            other => Err(syn::Error::new(
-                ident.span(),
-                format!("unsupported constraint `{other}` (supported: signer, mut, owner, has_one, init, payer, space, close, seeds, bump)"),
-            )),
+            other => {
+                let known_unsupported = [
+                    "realloc", "zero", "rent_exempt", "constraint", "token", "mint",
+                    "associated_token", "executable", "address", "owner_program",
+                    "token_program", "seeds_program",
+                ];
+                let hint = if known_unsupported.contains(&other) {
+                    format!("`{other}` is a stock-Anchor constraint that verified-anchor does not support")
+                } else {
+                    format!("unknown constraint `{other}`")
+                };
+                Err(syn::Error::new(
+                    ident.span(),
+                    format!("{hint}; verified-anchor supports: signer, mut, owner, has_one, init, payer, space, close, seeds, bump. See docs/migrating-from-anchor.md"),
+                ))
+            }
         }
     }
 }
