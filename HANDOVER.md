@@ -121,12 +121,30 @@ The platform-tools rustc (has `sbf-solana-solana` target) MUST be first on PATH;
 
 **litesvm runtime tests** (build the .so first, then):
 ```bash
-cd rust && cargo test -p verified-anchor --test runtime_lifecycle
+cd rust && cargo test -p verified-anchor --test runtime_lifecycle --test runtime_seeds
 ```
 `litesvm = "0.6"` + the split `solana-*` crates (NOT a monolithic `solana-sdk`). Note: system
 `libssl-dev` is absent; if a future dep needs OpenSSL, add `openssl = { version="0.10",
 features=["vendored"] }` (cc/perl/make are present). litesvm needs a compiled `.so` (BPF), which
 is why the SBF toolchain was installed.
+
+**MANDATORY full gate — run ALL of these before declaring any milestone/fix done.** The native
+fast tests are NOT sufficient: a change to `verified-anchor` or `verified-anchor-macros` flows
+into the BPF program (`verified-anchor-program` depends on `verified-anchor` + derives), so it
+can break the `.so` without any native test noticing. (This actually happened: M5's `inventory`
+dep + the derive's `inventory::submit!` corrupted the SBF ELF — caught only because a later
+sanity pass re-ran the runtime suites. Inventory is now gated by `#[cfg(not(target_os =
+"solana"))]`.) Always rebuild the `.so` and run the litesvm suites as part of the gate:
+```bash
+export PATH="$HOME/.elan/bin:$PATH"; cd lean && lake build && grep -rn "sorry\|admit" VerifiedAnchor/   # lean (must be empty)
+cd ../rust && cargo test --workspace --exclude verified-anchor   # native fast tests... (or below)
+# THEN the load-bearing part — rebuild .so + runtime:
+export PATH="$HOME/.cache/solana/v1.53/platform-tools/rust/bin:$HOME/.local/share/solana/install/active_release/bin:$HOME/.elan/bin:$PATH"
+cd rust/verified-anchor-program && cargo-build-sbf --no-rustup-override
+cd .. && cargo test --workspace   # incl. runtime_lifecycle + runtime_seeds + the cli e2e (needs lake on PATH)
+```
+Rule of thumb: **if you touched anything under `rust/`, rebuild the `.so` and run `cargo test
+--workspace` with both the SBF tools and elan on PATH.**
 
 ## Conventions / invariants
 
@@ -139,6 +157,12 @@ is why the SBF toolchain was installed.
   literal; the generated validator's logic is modeled by `genValidate`/`apply*` and proven ≡ contract.
 - **Honest trust boundary:** we model effects (e.g. `create_account`), not the CPI dispatch or
   rustc/sBPF codegen. litesvm tests empirically cross-check the effect models.
+- **Host-only deps must be BPF-gated.** `verified-anchor` is a dependency of the on-chain
+  `verified-anchor-program`, so anything host-only (currently `inventory`, used by the M5
+  spec-collection API + the derive's `inventory::submit!`) MUST be behind
+  `#[cfg(not(target_os = "solana"))]` — otherwise it gets compiled into the BPF `.so` and can
+  corrupt the ELF (inventory's `#[used]` link-section statics → invalid PT_DYNAMIC → loader
+  `InvalidAccountData`). Verify with the litesvm runtime tests (see the MANDATORY full gate).
 
 ## How the work is run (process)
 
