@@ -263,9 +263,8 @@ fn try_accounts_deserializes_typed_data() {
         is_writable: false,
     };
     let accts = [a.info()];
-    let result: Result<VaultDataStruct, VAError> =
-        <VaultDataStruct as Accounts>::try_accounts(&crate::ID, &accts, &[]);
-    let parsed = result.expect("try_accounts should succeed with valid disc + payload");
+    let result = <VaultDataStruct as Accounts>::try_accounts(&crate::ID, &accts, &[]);
+    let (parsed, _bumps) = result.expect("try_accounts should succeed with valid disc + payload");
     assert_eq!(parsed.vault.data.amount, 999);
     assert_eq!(parsed.vault.data.authority, Pubkey::new_from_array([7u8; 32]));
 }
@@ -284,8 +283,7 @@ fn try_accounts_borsh_failed_on_truncated_data() {
         is_writable: false,
     };
     let accts = [a.info()];
-    let result: Result<VaultDataStruct, VAError> =
-        <VaultDataStruct as Accounts>::try_accounts(&crate::ID, &accts, &[]);
+    let result = <VaultDataStruct as Accounts>::try_accounts(&crate::ID, &accts, &[]);
     assert_eq!(result.err(), Some(VAError::BorshFailed { field: "vault" }));
 }
 

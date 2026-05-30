@@ -664,9 +664,11 @@ pub fn derive_verified_accounts(input: TokenStream) -> TokenStream {
                 program_id: &::solana_program::pubkey::Pubkey,
                 accounts: &'info [::solana_program::account_info::AccountInfo<'info>],
                 instr_data: &[u8],
-            ) -> ::core::result::Result<Self, ::verified_anchor::VAError> {
+            ) -> ::core::result::Result<(Self, Self::Bumps), ::verified_anchor::VAError> {
                 <Self as ::verified_anchor::Validate>::validate(accounts, instr_data, program_id)?;
-                ::core::result::Result::Ok(Self { #(#field_inits),* })
+                let __self = Self { #(#field_inits),* };
+                let __bumps = #bumps_struct_name;
+                ::core::result::Result::Ok((__self, __bumps))
             }
         }
         // Host-only: `inventory` corrupts the Solana SBF ELF, so this registration must NOT
