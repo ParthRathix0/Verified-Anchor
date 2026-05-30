@@ -10,6 +10,7 @@ proc-macro = true
 syn = { version = "2", features = ["full"] }
 quote = "1"
 proc-macro2 = "1"
+sha2 = "0.10"
 
 [dev-dependencies]
 trybuild = "1.0"
