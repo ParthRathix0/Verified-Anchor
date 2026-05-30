@@ -371,3 +371,17 @@ fn program_rejects_wrong_key() {
         Err(VAError::WrongOwner { field: "sys" })
     );
 }
+
+#[verified_anchor::account]
+pub struct VaultAttr { pub authority: solana_program::pubkey::Pubkey, pub amount: u64 }
+
+#[test]
+fn account_attribute_implies_borsh_and_discriminator() {
+    let d = <VaultAttr as verified_anchor::AccountData>::DISCRIMINATOR;
+    assert_eq!(d, disc("VaultAttr"));
+    let v = VaultAttr { authority: solana_program::pubkey::Pubkey::new_from_array([7u8; 32]), amount: 42 };
+    let bytes = borsh::to_vec(&v).unwrap();
+    let v2: VaultAttr = borsh::from_slice(&bytes).unwrap();
+    assert_eq!(v2.amount, 42);
+    assert_eq!(v2.authority, v.authority);
+}
