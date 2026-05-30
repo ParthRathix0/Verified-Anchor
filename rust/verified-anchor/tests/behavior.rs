@@ -2,15 +2,15 @@ use sha2::{Digest, Sha256};
 use solana_program::account_info::AccountInfo;
 use solana_program::pubkey::Pubkey;
 use verified_anchor::{Validate, VAError, VerifiedAccounts};
+use verified_anchor::{Signer, UncheckedAccount};
 
 // Spec carrier: field names + #[account(..)] attrs define the constraints.
-// Field types are ignored by M2 codegen.
+// Field types are driven by the wrapper kind; Signer<'info> implies signer check.
 #[derive(VerifiedAccounts)]
-struct Transfer {
+struct Transfer<'info> {
     #[account(mut)]
-    vault: u8,
-    #[account(signer)]
-    authority: u8,
+    vault: UncheckedAccount<'info>,
+    authority: Signer<'info>,
 }
 
 struct Acct { key: Pubkey, owner: Pubkey, lamports: u64, data: Vec<u8>, is_signer: bool, is_writable: bool }
@@ -70,9 +70,9 @@ fn accepts_surplus_accounts() {
 const PROG_OWNER: Pubkey = Pubkey::new_from_array([7u8; 32]);
 
 #[derive(VerifiedAccounts)]
-struct OwnedVault {
+struct OwnedVault<'info> {
     #[account(owner = PROG_OWNER)]
-    vault: u8,
+    vault: UncheckedAccount<'info>,
 }
 
 fn acct_owned(owner: Pubkey) -> Acct {
@@ -94,10 +94,10 @@ fn rejects_wrong_owner() {
 }
 
 #[derive(VerifiedAccounts)]
-struct CheckOwner {
+struct CheckOwner<'info> {
     #[account(has_one = authority)]
-    vault: u8,
-    authority: u8,
+    vault: UncheckedAccount<'info>,
+    authority: UncheckedAccount<'info>,
 }
 
 fn acct_with_data(key: Pubkey, data: Vec<u8>) -> Acct {
@@ -126,9 +126,9 @@ fn has_one_rejects_mismatch() {
 }
 
 #[derive(VerifiedAccounts)]
-struct PdaAccount {
+struct PdaAccount<'info> {
     #[account(seeds = [b"vault", arg(0, 4)], bump)]
-    pda: u8,
+    pda: UncheckedAccount<'info>,
 }
 
 #[test]
@@ -151,9 +151,9 @@ fn seeds_rejects_wrong_pda() {
 }
 
 #[derive(VerifiedAccounts)]
-struct PdaDeclaredBump {
+struct PdaDeclaredBump<'info> {
     #[account(seeds = [b"vault"], bump = 0)]
-    pda: u8,
+    pda: UncheckedAccount<'info>,
 }
 
 #[test]
@@ -182,9 +182,9 @@ fn disc(name: &str) -> [u8; 8] {
 }
 
 #[derive(VerifiedAccounts)]
-struct DiscOnly {
+struct DiscOnly<'info> {
     #[account(discriminator = "Vault")]
-    vault: u8,
+    vault: UncheckedAccount<'info>,
 }
 
 #[test]
