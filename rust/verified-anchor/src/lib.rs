@@ -5,6 +5,9 @@ use solana_program::pubkey::Pubkey;
 pub mod account_data;
 pub use account_data::{AccountData, ProgramId, System};
 
+pub mod account;
+pub use account::{Account, Signer, Program, SystemAccount, UncheckedAccount};
+
 pub use verified_anchor_macros::VerifiedAccounts;
 
 /// Why account validation failed. `field` is the struct field name that failed.
