@@ -1,6 +1,6 @@
 # Verified Anchor — Handover
 
-Context snapshot so a fresh chat can continue without re-deriving anything. Last updated 2026-05-28.
+Context snapshot so a fresh chat can continue without re-deriving anything. Last updated 2026-05-30.
 
 / project memory at `~/.claude/projects/-home-parth-Desktop-PARTH-Verification/memory/verified-anchor-project.md`
 auto-loads each session from this directory — this file is the fuller version. /
@@ -15,7 +15,7 @@ proof-producing Rust proc-macros that generate Solana validation/lifecycle code 
 is proven to implement that contract. 7 milestones total; built sequentially, each its own
 brainstorm → spec → plan → subagent-driven execution → review → merge cycle.
 
-## Status: M1, M2, M3, M4, M5, M6 COMPLETE (all merged to `master`)
+## Status: M1, M2, M3, M4, M5, M6, M7a COMPLETE (all merged to `master`)
 
 - **M1 — Lean validation contract.** `lean/VerifiedAnchor/`: concrete Solana model
   (`Solana/`: Pubkey, AccountInfo, real PDA algorithm; only `sha256`/`isOnCurve` axiomatized),
@@ -67,15 +67,32 @@ brainstorm → spec → plan → subagent-driven execution → review → merge 
   `sha256("account:"+Name)[..8]` (real Anchor wire format → interop with real Anchor accounts),
   `VAError::WrongDiscriminator`. Report at `docs/exploit-case-studies.md`.
 
+- **M7a — real Account<'info, T> typing (full drop-in Anchor compatibility).** The macro
+  now accepts 6 typed wrappers (`Account<'info, T>`, `Signer<'info>`, `Program<'info, P>`,
+  `SystemAccount<'info>`, `UncheckedAccount<'info>`, `AccountInfo<'info>`); bare `u8` is a
+  `compile_error!`. A new `#[derive(AccountData)]` proc-macro computes the real Anchor
+  `DISCRIMINATOR = sha256("account:" + Name)[..8]` (`rust/verified-anchor-macros/src/account_data_derive.rs`).
+  Each derived struct gets BOTH `impl Validate` (proven, unchanged) AND `impl<'info> Accounts<'info>`
+  (new developer surface) whose `try_accounts` calls `validate` first, then Borsh-deserialises
+  every `Account<'info, T>` field's data. `Context<'a, 'b, 'c, 'info, T>` mirrors stock Anchor.
+  `lean_spec` emits real type names (closes the M3 "Vault hardcode" follow-up). Migration is
+  clean-break: all ~22 derived structs across the workspace migrated to typed wrappers; new
+  trybuild fixture at `rust/verified-anchor-macros/tests/ui/bare_u8.rs` asserts the new error.
+  **No Lean source changes; M1-M5 headline theorems' axioms still `[propext, Quot.sound]`** (audited
+  on the merge commit). Docs: `docs/migrating-from-anchor.md` "Syntax mapping (M7a)" section,
+  `docs/verified-anchor-bridge.md` "Developer surface (M7a)" addendum.
+
 All theorems depend only on `[propext, Quot.sound]` (zero `sorry`/`sorryAx`); verify with
 `#print axioms <thm>`.
 
-## Next: M7
+## Next: M7b/M7c
 
-- **M7 — release + ecosystem integration.** Full `anchor-lang` `Account<'info, T>` API typing
-  (the M5-deferred item — currently spec-carrier `u8` fields with explicit constraints; M7 lifts
-  this to real typed accounts so verified-anchor matches real Anchor's developer surface),
-  QEDGen integration, and the publishable release.
+- **M7b — release packaging.** Publish to crates.io (verified-anchor, verified-anchor-macros,
+  cargo-verified-anchor). Add an Anchor-style attribute macro `#[account]` that bundles
+  `BorshSerialize + BorshDeserialize + AccountData` so users don't have to write all three derives
+  (current M7a require all three explicitly). Polish `Bumps` to a richer per-seed type (current
+  M7a emits an empty marker struct).
+- **M7c — QEDGen integration + announcement.** The publishable cut.
 
 See the follow-ups before extending further (`docs/superpowers/m{1,2,3,4,5}-followups.md`): esp.
 tighten `Constraint.discriminator` to `Vector UInt8 8`; prove the literal `satisfies` corollary
