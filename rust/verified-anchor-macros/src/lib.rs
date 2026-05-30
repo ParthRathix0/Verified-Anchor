@@ -254,7 +254,6 @@ fn lit_usize(e: Option<&Expr>) -> syn::Result<usize> {
 struct FieldSpec {
     name: String,
     constraints: Vec<Constraint>,
-    #[allow(dead_code)]
     kind: WrapperKind,
 }
 
@@ -602,8 +601,6 @@ pub fn derive_verified_accounts(input: TokenStream) -> TokenStream {
         matches!(c, Constraint::InitMarker | Constraint::Close(_))));
     let name_str = name.to_string();
 
-    let n_specs = specs.len();
-    let _ = n_specs; // kept for clarity; not used in codegen below
     let has_info = !specs.is_empty();
     let bumps_struct_name = syn::Ident::new(&format!("{}Bumps", name), name.span());
 
