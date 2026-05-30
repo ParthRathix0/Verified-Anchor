@@ -7,6 +7,7 @@ edition = "2021"
 solana-program = "2"
 verified-anchor-macros = { path = "../verified-anchor-macros" }
 inventory = "0.3"
+borsh = "1"
 
 [dev-dependencies]
 sha2 = "0.10"
