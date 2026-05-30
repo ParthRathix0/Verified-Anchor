@@ -3,8 +3,8 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Verified Anchor — formally verified account validation for Solana</title>
-<meta name="description" content="A drop-in safer Anchor for Solana. Every check the framework generates ships with a Lean 4 proof that it matches a formally specified contract." />
+<title>Verified Anchor — formally verified account validation for Solana programs</title>
+<meta name="description" content="Solana's de facto framework — Anchor — is unverified procedural-macro code. Verified Anchor is a drop-in safer replacement where every #[derive(Accounts)] expansion ships with a Lean 4 proof, built specifically for the Solana account model (PDAs, sysvars, SBF runtime)." />
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -360,6 +360,49 @@
     color: var(--accent);
   }
 
+  /* ===== Solana stack table ===== */
+  .stack {
+    margin-top: 24px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+    background: var(--bg-card);
+  }
+  .stack .row {
+    display: grid;
+    grid-template-columns: 60px 1fr 1fr;
+    align-items: center;
+    padding: 14px 18px;
+    border-bottom: 1px solid var(--border);
+    gap: 16px;
+  }
+  .stack .row:last-child { border-bottom: none; }
+  .stack .row.header {
+    background: var(--bg-elev);
+    font-family: var(--mono);
+    font-size: 0.78rem;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+  }
+  .stack .layer-n {
+    font-family: var(--mono);
+    color: var(--text-faint);
+    font-size: 0.85rem;
+  }
+  .stack .layer-name { font-weight: 500; font-size: 0.95rem; }
+  .stack .layer-status { font-size: 0.88rem; color: var(--text-dim); }
+  .stack .row.focus {
+    background: linear-gradient(90deg, rgba(74, 222, 128, 0.08) 0%, transparent 100%);
+  }
+  .stack .row.focus .layer-n { color: var(--accent); }
+  .stack .row.focus .layer-name { color: var(--accent); font-weight: 600; }
+  .stack .row.focus .layer-status { color: var(--text); }
+  @media (max-width: 600px) {
+    .stack .row { grid-template-columns: 40px 1fr; }
+    .stack .row .layer-status { grid-column: 1 / -1; padding-left: 56px; font-size: 0.82rem; }
+  }
+
   /* ===== Boundary list ===== */
   .boundary {
     display: grid;
@@ -415,6 +458,7 @@
     <div class="brand">Verified <span class="v">⊢</span> Anchor</div>
     <div class="nav-links">
       <a href="#what">What</a>
+      <a href="#stack">Stack</a>
       <a href="#why">Why</a>
       <a href="#how">How</a>
       <a href="#audit">Audit</a>
@@ -426,8 +470,8 @@
 <section class="hero">
   <div class="container">
     <span class="badge">v0.1.0 · zero sorry · axioms [propext, Quot.sound]</span>
-    <h1>A safer <span class="accent">Anchor</span> for Solana.<br/>Checked by Lean&nbsp;4, not&nbsp;by&nbsp;hope.</h1>
-    <p class="lede">Every account-validation macro ships with a machine-checked proof that the generated Rust does what your struct said it should. You write the same code; the compiler now refuses to build if the framework can't prove it.</p>
+    <h1>Formally verified account validation for&nbsp;<span class="accent">Solana</span>.<br/>Checked by Lean&nbsp;4, not&nbsp;by&nbsp;hope.</h1>
+    <p class="lede">A drop-in replacement for the Anchor macro that gates every Solana transaction in production — except every macro expansion ships with a machine-checked proof that the generated Rust does what your struct said it should. You write the same Solana program code; the compiler now refuses to build if the framework can't prove it.</p>
 
     <div class="cta">
       <a class="btn btn-primary" href="https://github.com/ParthRathix0/Verified-Anchor">View on GitHub →</a>
@@ -445,17 +489,56 @@
 <section id="what">
   <div class="container">
     <h2>What it is</h2>
-    <p class="section-title">A drop-in replacement for <code>#[derive(Accounts)]</code> with proofs attached.</p>
-    <p class="section-lede">In stock Anchor, when you describe accounts in a struct ("this one must sign, this one must be writable, this one must be a PDA…"), the framework generates the checking code at compile time and your program runs those checks on every transaction. <strong>That generating code itself has never been formally verified.</strong> A bug there is a bug in every Anchor program in production.</p>
-    <p class="section-lede">Verified Anchor is the same framework, except every macro expansion comes with a Lean&nbsp;4 proof that the generated check is equivalent to a contract that defines what "valid accounts" means. You write the same struct. The proof is checked at build time. If it doesn't check, your program doesn't compile.</p>
+    <p class="section-title">A drop-in replacement for Solana's <code>#[derive(Accounts)]</code> macro — with proofs attached.</p>
+    <p class="section-lede">Anchor is the framework almost every Solana program in production is built on. When you describe accounts in a struct ("this one must sign, this one must be writable, this one must be a PDA derived from these seeds…"), Anchor generates the checking code at compile time and your program runs those checks on every Solana transaction — before any lamport movement, before any business logic, before anything. <strong>That generating code itself has never been formally verified.</strong> A bug there is a bug in every Anchor-based Solana program in production.</p>
+    <p class="section-lede">Verified Anchor is the same framework, with the same Anchor-style syntax (<code>Account&lt;'info, T&gt;</code>, <code>Signer&lt;'info&gt;</code>, <code>Program&lt;'info, P&gt;</code>, <code>Context&lt;T&gt;</code>), except every macro expansion comes with a Lean&nbsp;4 proof that the generated check is equivalent to a contract that defines what "valid accounts" means in the Solana account model. You write the same Solana program code. The proof is checked at build time. If it doesn't check, your program doesn't compile.</p>
+    <p class="section-lede" style="color: var(--text-faint); font-size: 0.92rem; padding-top: 8px; border-top: 1px solid var(--border);"><strong style="color: var(--text-dim);">Is this Solana-specific?</strong> Yes. Anchor was built at Solana Labs and only compiles for the Solana runtime. The Lean library models concrete Solana primitives — real <code>findProgramAddress</code> PDA derivation, lamports, rent, owner/executable flags — under the <code>VerifiedAnchor.Solana</code> namespace, designed to interoperate with the existing Solana formal-methods stack (<code>QEDGen.Solana</code>, <code>lean_solana</code>). The runtime tests compile to SBF via <code>cargo-build-sbf</code> and run on litesvm, an in-process Solana VM. The four CVE case studies below are all Solana mainnet incidents.</p>
+  </div>
+</section>
+
+<section id="stack">
+  <div class="container">
+    <h2>Where this fits</h2>
+    <p class="section-title">The silent gap in Solana's correctness chain.</p>
+    <p class="section-lede">Solana's correctness depends on a chain of trust. Layers 1, 2, and 4 receive substantial attention from the Solana ecosystem. Layer 3 — Anchor's macro expansion, which gates almost every Solana transaction in production — does not. That's the layer Verified Anchor closes.</p>
+
+    <div class="stack">
+      <div class="row header">
+        <div>Layer</div>
+        <div>Component</div>
+        <div>Verification status</div>
+      </div>
+      <div class="row">
+        <div class="layer-n">L1</div>
+        <div class="layer-name">Validator runtime</div>
+        <div class="layer-status">Agave / Firedancer — audited, battle-tested</div>
+      </div>
+      <div class="row">
+        <div class="layer-n">L2</div>
+        <div class="layer-name">SBF execution (compiler + VM)</div>
+        <div class="layer-status">Assumed faithful to source semantics</div>
+      </div>
+      <div class="row focus">
+        <div class="layer-n">L3</div>
+        <div class="layer-name">Anchor <code>#[derive(Accounts)]</code> macro</div>
+        <div class="layer-status">Silent gap — this project closes it</div>
+      </div>
+      <div class="row">
+        <div class="layer-n">L4</div>
+        <div class="layer-name">Program business logic</div>
+        <div class="layer-status">Per-program: QEDGen, audits, fuzzing</div>
+      </div>
+    </div>
+
+    <p class="section-lede" style="margin-top:28px;">Anchor is universal Solana infrastructure: a class of bug eliminated at the framework level is a class eliminated across the ecosystem. The Lean library composes directly with <code>QEDGen.Solana</code> — Verified Anchor proves <em>account validation</em>; QEDGen proves <em>business logic</em>; together they give Solana an end-to-end proof story no other major blockchain currently offers at the framework level.</p>
   </div>
 </section>
 
 <section id="why">
   <div class="container">
     <h2>Why it matters</h2>
-    <p class="section-title">Hundreds of millions of dollars to one family of bug.</p>
-    <p class="section-lede">Solana programs have lost — and continue to lose — large sums of money to attacks that aren't exotic. They're variations on the same theme: the program <em>thought</em> it was checking an account, but the check was either missing, malformed, or trivially bypassable. <strong>Exactly the class of bug Anchor's <code>#[derive(Accounts)]</code> is supposed to prevent.</strong> The reason the framework doesn't is that the framework itself is unverified. Four examples, all real, all reproduced in this repository as before-and-after litesvm tests:</p>
+    <p class="section-title">Over $50M lost on Solana mainnet to one family of bug.</p>
+    <p class="section-lede">Solana programs have lost — and continue to lose — large sums of money to attacks that aren't exotic. They're variations on the same theme: the program <em>thought</em> it was checking an account, but the check was either missing, malformed, or trivially bypassable. <strong>Exactly the class of bug Anchor's <code>#[derive(Accounts)]</code> is supposed to prevent.</strong> The reason the framework doesn't is that the framework itself is unverified. Four examples, all real Solana mainnet incidents, all reproduced in this repository as before-and-after litesvm tests:</p>
 
     <div class="grid-2">
       <div class="exploit-card">
