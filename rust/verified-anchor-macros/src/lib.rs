@@ -19,6 +19,71 @@ enum SeedElem {
     InstrArg(usize, usize),     // arg(off, len)
 }
 
+/// Recognised field-type wrapper categories.
+#[derive(Clone)]
+#[allow(dead_code)]
+enum WrapperKind {
+    /// `Account<'info, T>` — type name is the inner T's ident.
+    Account(syn::Ident),
+    /// `Signer<'info>`.
+    Signer,
+    /// `Program<'info, P>` — type name is P.
+    Program(syn::Ident),
+    /// `SystemAccount<'info>`.
+    SystemAccount,
+    /// `UncheckedAccount<'info>` or `AccountInfo<'info>`.
+    Unchecked,
+    /// Bare `u8` (transitional, removed in M1b).
+    BareU8,
+}
+
+/// Recognise a field's type as a wrapper. Returns `BareU8` for `u8` (transitional)
+/// and an error span otherwise.
+fn classify_field_type(ty: &syn::Type) -> syn::Result<WrapperKind> {
+    use syn::{PathArguments, Type, TypePath};
+    if let Type::Path(TypePath { qself: None, path }) = ty {
+        if path.is_ident("u8") {
+            return Ok(WrapperKind::BareU8);
+        }
+        let last = path.segments.last().ok_or_else(||
+            syn::Error::new_spanned(ty, "verified-anchor: unrecognised field type"))?;
+        let ident_str = last.ident.to_string();
+        match ident_str.as_str() {
+            "Account" => {
+                if let PathArguments::AngleBracketed(args) = &last.arguments {
+                    for ga in &args.args {
+                        if let syn::GenericArgument::Type(Type::Path(TypePath { qself: None, path: p })) = ga {
+                            if let Some(seg) = p.segments.last() {
+                                return Ok(WrapperKind::Account(seg.ident.clone()));
+                            }
+                        }
+                    }
+                }
+                Err(syn::Error::new_spanned(ty, "Account<'info, T> requires a type argument"))
+            }
+            "Signer" => Ok(WrapperKind::Signer),
+            "SystemAccount" => Ok(WrapperKind::SystemAccount),
+            "UncheckedAccount" | "AccountInfo" => Ok(WrapperKind::Unchecked),
+            "Program" => {
+                if let PathArguments::AngleBracketed(args) = &last.arguments {
+                    for ga in &args.args {
+                        if let syn::GenericArgument::Type(Type::Path(TypePath { qself: None, path: p })) = ga {
+                            if let Some(seg) = p.segments.last() {
+                                return Ok(WrapperKind::Program(seg.ident.clone()));
+                            }
+                        }
+                    }
+                }
+                Err(syn::Error::new_spanned(ty, "Program<'info, P> requires a type argument"))
+            }
+            _ => Err(syn::Error::new_spanned(ty,
+                format!("verified-anchor: unrecognised field wrapper `{ident_str}`; use one of Account<'info, T>, Signer<'info>, Program<'info, P>, SystemAccount<'info>, UncheckedAccount<'info>, AccountInfo<'info>"))),
+        }
+    } else {
+        Err(syn::Error::new_spanned(ty, "verified-anchor: unrecognised field type"))
+    }
+}
+
 /// One M2/M3 constraint parsed from a field's `#[account(...)]`.
 enum Constraint {
     Signer,
@@ -157,6 +222,8 @@ fn lit_usize(e: Option<&Expr>) -> syn::Result<usize> {
 struct FieldSpec {
     name: String,
     constraints: Vec<Constraint>,
+    #[allow(dead_code)]
+    kind: WrapperKind,
 }
 
 fn collect_fields(input: &DeriveInput) -> syn::Result<Vec<FieldSpec>> {
@@ -178,7 +245,8 @@ fn collect_fields(input: &DeriveInput) -> syn::Result<Vec<FieldSpec>> {
                 constraints.extend(parsed);
             }
         }
-        specs.push(FieldSpec { name, constraints });
+        let kind = classify_field_type(&field.ty)?;
+        specs.push(FieldSpec { name, constraints, kind });
     }
     Ok(specs)
 }
