@@ -1,3 +1,4 @@
+use sha2::{Digest, Sha256};
 use solana_program::account_info::AccountInfo;
 use solana_program::pubkey::Pubkey;
 use verified_anchor::{Validate, VAError, VerifiedAccounts};
@@ -168,4 +169,46 @@ fn seeds_declared_bump_rejects_non_canonical() {
     } else {
         assert_eq!(res, Err(VAError::WrongBump { field: "pda" }));
     }
+}
+
+fn disc(name: &str) -> [u8; 8] {
+    let mut h = Sha256::new();
+    h.update(b"account:");
+    h.update(name.as_bytes());
+    let out = h.finalize();
+    let mut d = [0u8; 8];
+    d.copy_from_slice(&out[..8]);
+    d
+}
+
+#[derive(VerifiedAccounts)]
+struct DiscOnly {
+    #[account(discriminator = "Vault")]
+    vault: u8,
+}
+
+#[test]
+fn discriminator_accepts_matching_prefix() {
+    let mut v = Acct { key: Pubkey::new_unique(), owner: Pubkey::new_unique(), lamports: 1,
+                       data: disc("Vault").to_vec(), is_signer: false, is_writable: false };
+    let accts = [v.info()];
+    assert_eq!(DiscOnly::validate(&accts, &[], &any_pid()), Ok(()));
+}
+
+#[test]
+fn discriminator_rejects_wrong_prefix() {
+    let mut v = Acct { key: Pubkey::new_unique(), owner: Pubkey::new_unique(), lamports: 1,
+                       data: vec![0u8; 8], is_signer: false, is_writable: false };  // wrong disc (all zeros)
+    let accts = [v.info()];
+    assert_eq!(DiscOnly::validate(&accts, &[], &any_pid()),
+               Err(VAError::WrongDiscriminator { field: "vault" }));
+}
+
+#[test]
+fn discriminator_rejects_short_data() {
+    let mut v = Acct { key: Pubkey::new_unique(), owner: Pubkey::new_unique(), lamports: 1,
+                       data: vec![0u8; 4], is_signer: false, is_writable: false };  // too short
+    let accts = [v.info()];
+    assert_eq!(DiscOnly::validate(&accts, &[], &any_pid()),
+               Err(VAError::WrongDiscriminator { field: "vault" }));
 }
