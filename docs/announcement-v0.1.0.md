@@ -122,4 +122,4 @@ This runs `lake env lean` against a generated `decide M4Subset` proof. `cargo bu
 - **v0.2 (next):** QEDGen composition demo. Verified-anchor handles account validation; QEDGen handles business logic; the combined proof is checked end-to-end on a real program.
 - **Later:** widening the verified constraint subset (realloc, token, zero-copy), `AccountLoader<T>`, `Sysvar<T>`, IDE/LSP surfacing of unmet obligations.
 
-Source: `<repository URL>`. Issues, PRs, and audit attempts welcome.
+Source: <https://github.com/ParthRathix0/Verified-Anchor>. Issues, PRs, and audit attempts welcome.
