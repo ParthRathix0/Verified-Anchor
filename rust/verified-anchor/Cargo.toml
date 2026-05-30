@@ -12,7 +12,7 @@ categories = ["development-tools", "cryptography"]
 
 [dependencies]
 solana-program = "2"
-verified-anchor-macros = { path = "../verified-anchor-macros" }
+verified-anchor-macros = { path = "../verified-anchor-macros", version = "0.1.0" }
 inventory = "0.3"
 borsh = "1"
 
