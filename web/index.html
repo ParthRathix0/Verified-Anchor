@@ -1,0 +1,645 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Verified Anchor — formally verified account validation for Solana</title>
+<meta name="description" content="A drop-in safer Anchor for Solana. Every check the framework generates ships with a Lean 4 proof that it matches a formally specified contract." />
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+
+<style>
+  :root {
+    --bg: #0b0d10;
+    --bg-elev: #14171c;
+    --bg-card: #181c22;
+    --border: #2a2f37;
+    --border-strong: #3a4049;
+    --text: #e6e8eb;
+    --text-dim: #9aa0a8;
+    --text-faint: #6b7280;
+    --accent: #4ade80;
+    --accent-dim: #22c55e;
+    --danger: #f87171;
+    --warn: #fbbf24;
+    --link: #60a5fa;
+    --mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, monospace;
+    --sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; }
+  body {
+    font-family: var(--sans);
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  a { color: var(--link); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  code, pre, .mono { font-family: var(--mono); font-size: 0.92em; }
+  pre { overflow-x: auto; }
+
+  .container {
+    max-width: 1080px;
+    margin: 0 auto;
+    padding: 0 24px;
+  }
+
+  /* ===== Nav ===== */
+  nav {
+    position: sticky;
+    top: 0;
+    background: rgba(11, 13, 16, 0.85);
+    backdrop-filter: blur(12px);
+    border-bottom: 1px solid var(--border);
+    z-index: 100;
+  }
+  nav .container {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding-top: 14px;
+    padding-bottom: 14px;
+  }
+  .brand {
+    font-weight: 700;
+    font-size: 1.05rem;
+    color: var(--text);
+  }
+  .brand .v {
+    color: var(--accent);
+  }
+  .nav-links {
+    display: flex;
+    gap: 24px;
+    font-size: 0.9rem;
+  }
+  .nav-links a {
+    color: var(--text-dim);
+  }
+  .nav-links a:hover {
+    color: var(--text);
+    text-decoration: none;
+  }
+
+  /* ===== Hero ===== */
+  .hero {
+    padding: 96px 0 64px;
+    border-bottom: 1px solid var(--border);
+    background:
+      radial-gradient(ellipse 70% 50% at 50% 0%, rgba(74, 222, 128, 0.08), transparent 60%),
+      var(--bg);
+  }
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 12px;
+    border: 1px solid var(--accent);
+    border-radius: 999px;
+    font-family: var(--mono);
+    font-size: 0.78rem;
+    color: var(--accent);
+    margin-bottom: 24px;
+  }
+  .badge::before {
+    content: "";
+    width: 6px;
+    height: 6px;
+    background: var(--accent);
+    border-radius: 50%;
+    box-shadow: 0 0 8px var(--accent);
+  }
+  h1 {
+    font-size: clamp(2rem, 5vw, 3.2rem);
+    font-weight: 700;
+    letter-spacing: -0.025em;
+    line-height: 1.1;
+    margin-bottom: 20px;
+  }
+  h1 .accent { color: var(--accent); }
+  .lede {
+    font-size: 1.15rem;
+    color: var(--text-dim);
+    max-width: 700px;
+    margin-bottom: 32px;
+  }
+  .cta {
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 18px;
+    border-radius: 8px;
+    font-weight: 500;
+    font-size: 0.95rem;
+    transition: all 0.15s ease;
+    cursor: pointer;
+    text-decoration: none;
+  }
+  .btn-primary {
+    background: var(--accent);
+    color: #052e14;
+    border: 1px solid var(--accent);
+  }
+  .btn-primary:hover {
+    background: var(--accent-dim);
+    text-decoration: none;
+  }
+  .btn-secondary {
+    background: transparent;
+    color: var(--text);
+    border: 1px solid var(--border-strong);
+  }
+  .btn-secondary:hover {
+    background: var(--bg-elev);
+    border-color: var(--text-dim);
+    text-decoration: none;
+  }
+  .axiom-line {
+    margin-top: 40px;
+    padding: 14px 18px;
+    background: var(--bg-elev);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    font-family: var(--mono);
+    font-size: 0.86rem;
+    color: var(--text-dim);
+    max-width: 680px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .axiom-line .arrow { color: var(--text-faint); }
+  .axiom-line .out { color: var(--accent); }
+
+  /* ===== Sections ===== */
+  section {
+    padding: 80px 0;
+    border-bottom: 1px solid var(--border);
+  }
+  section h2 {
+    font-size: 0.85rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    color: var(--accent);
+    margin-bottom: 12px;
+  }
+  section .section-title {
+    font-size: clamp(1.6rem, 3.5vw, 2.2rem);
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    margin-bottom: 20px;
+    line-height: 1.2;
+  }
+  section .section-lede {
+    color: var(--text-dim);
+    font-size: 1.05rem;
+    max-width: 740px;
+    margin-bottom: 40px;
+  }
+
+  /* ===== Problem cards ===== */
+  .grid-2 {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 16px;
+  }
+  .exploit-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 24px;
+    transition: border-color 0.15s ease;
+  }
+  .exploit-card:hover { border-color: var(--border-strong); }
+  .exploit-card .name {
+    font-family: var(--mono);
+    font-size: 0.85rem;
+    color: var(--danger);
+    margin-bottom: 4px;
+  }
+  .exploit-card .impact {
+    font-size: 0.78rem;
+    color: var(--text-faint);
+    margin-bottom: 14px;
+  }
+  .exploit-card .body {
+    font-size: 0.95rem;
+    color: var(--text-dim);
+  }
+  .exploit-card .root {
+    margin-top: 14px;
+    padding-top: 14px;
+    border-top: 1px solid var(--border);
+    font-size: 0.85rem;
+    color: var(--text-faint);
+  }
+  .exploit-card .root .tag {
+    font-family: var(--mono);
+    color: var(--accent);
+  }
+
+  /* ===== Code blocks ===== */
+  .code-compare {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+  }
+  @media (max-width: 760px) { .code-compare { grid-template-columns: 1fr; } }
+  .code-block {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+  }
+  .code-block header {
+    padding: 10px 14px;
+    background: var(--bg-elev);
+    border-bottom: 1px solid var(--border);
+    font-family: var(--mono);
+    font-size: 0.78rem;
+    color: var(--text-dim);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .code-block.naive header { color: var(--danger); }
+  .code-block.verified header { color: var(--accent); }
+  .code-block pre {
+    padding: 18px 16px;
+    margin: 0;
+    font-size: 0.85rem;
+    line-height: 1.55;
+    color: var(--text);
+  }
+  .kw { color: #c084fc; }
+  .ty { color: #93c5fd; }
+  .attr { color: var(--warn); }
+  .str { color: #fde68a; }
+  .fn { color: #67e8f9; }
+  .com { color: var(--text-faint); font-style: italic; }
+  .num { color: #fca5a5; }
+
+  /* ===== Chain diagram ===== */
+  .chain {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 32px;
+    margin-top: 24px;
+  }
+  .chain-step {
+    display: flex;
+    align-items: flex-start;
+    gap: 18px;
+    padding: 16px 0;
+    border-bottom: 1px dashed var(--border);
+  }
+  .chain-step:last-child { border-bottom: none; }
+  .chain-step .idx {
+    flex-shrink: 0;
+    width: 28px;
+    height: 28px;
+    border-radius: 6px;
+    background: var(--bg-elev);
+    border: 1px solid var(--border-strong);
+    font-family: var(--mono);
+    font-size: 0.82rem;
+    color: var(--accent);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .chain-step .label {
+    font-family: var(--mono);
+    font-size: 0.82rem;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    margin-bottom: 4px;
+  }
+  .chain-step .text {
+    color: var(--text);
+    font-size: 0.95rem;
+  }
+  .chain-step .text code { color: var(--accent); }
+
+  /* ===== Audit block ===== */
+  .audit {
+    background: linear-gradient(180deg, var(--bg-card) 0%, var(--bg-elev) 100%);
+    border: 1px solid var(--accent);
+    border-radius: 12px;
+    padding: 32px;
+    margin-top: 32px;
+  }
+  .audit p { color: var(--text-dim); margin-bottom: 14px; }
+  .audit pre {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px;
+    font-size: 0.85rem;
+    color: var(--text);
+  }
+  .audit .out {
+    margin-top: 8px;
+    color: var(--accent);
+  }
+
+  /* ===== Boundary list ===== */
+  .boundary {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 14px;
+    margin-top: 24px;
+  }
+  .boundary div {
+    padding: 16px 18px;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    font-size: 0.92rem;
+  }
+  .boundary div.in {
+    border-left: 3px solid var(--accent);
+  }
+  .boundary div.out {
+    border-left: 3px solid var(--warn);
+  }
+  .boundary .h {
+    font-family: var(--mono);
+    font-size: 0.78rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    margin-bottom: 6px;
+  }
+  .boundary div.in .h { color: var(--accent); }
+  .boundary div.out .h { color: var(--warn); }
+  .boundary p { color: var(--text-dim); }
+
+  /* ===== Footer ===== */
+  footer {
+    padding: 40px 0;
+    color: var(--text-faint);
+    font-size: 0.88rem;
+    text-align: center;
+  }
+  footer .links {
+    display: flex;
+    gap: 18px;
+    justify-content: center;
+    margin-bottom: 14px;
+    flex-wrap: wrap;
+  }
+  footer .links a { color: var(--text-dim); }
+</style>
+</head>
+<body>
+
+<nav>
+  <div class="container">
+    <div class="brand">Verified <span class="v">⊢</span> Anchor</div>
+    <div class="nav-links">
+      <a href="#what">What</a>
+      <a href="#why">Why</a>
+      <a href="#how">How</a>
+      <a href="#audit">Audit</a>
+      <a href="https://github.com/ParthRathix0/Verified-Anchor">GitHub</a>
+    </div>
+  </div>
+</nav>
+
+<section class="hero">
+  <div class="container">
+    <span class="badge">v0.1.0 · zero sorry · axioms [propext, Quot.sound]</span>
+    <h1>A safer <span class="accent">Anchor</span> for Solana.<br/>Checked by Lean&nbsp;4, not&nbsp;by&nbsp;hope.</h1>
+    <p class="lede">Every account-validation macro ships with a machine-checked proof that the generated Rust does what your struct said it should. You write the same code; the compiler now refuses to build if the framework can't prove it.</p>
+
+    <div class="cta">
+      <a class="btn btn-primary" href="https://github.com/ParthRathix0/Verified-Anchor">View on GitHub →</a>
+      <a class="btn btn-secondary" href="#how">How it works</a>
+    </div>
+
+    <div class="axiom-line">
+      <span>$&nbsp;lake env lean -c '#print axioms VerifiedAnchor.genValidate_sound'</span>
+      <span class="arrow">→</span>
+      <span class="out">[propext, Quot.sound]</span>
+    </div>
+  </div>
+</section>
+
+<section id="what">
+  <div class="container">
+    <h2>What it is</h2>
+    <p class="section-title">A drop-in replacement for <code>#[derive(Accounts)]</code> with proofs attached.</p>
+    <p class="section-lede">In stock Anchor, when you describe accounts in a struct ("this one must sign, this one must be writable, this one must be a PDA…"), the framework generates the checking code at compile time and your program runs those checks on every transaction. <strong>That generating code itself has never been formally verified.</strong> A bug there is a bug in every Anchor program in production.</p>
+    <p class="section-lede">Verified Anchor is the same framework, except every macro expansion comes with a Lean&nbsp;4 proof that the generated check is equivalent to a contract that defines what "valid accounts" means. You write the same struct. The proof is checked at build time. If it doesn't check, your program doesn't compile.</p>
+  </div>
+</section>
+
+<section id="why">
+  <div class="container">
+    <h2>Why it matters</h2>
+    <p class="section-title">Hundreds of millions of dollars to one family of bug.</p>
+    <p class="section-lede">Solana programs have lost — and continue to lose — large sums of money to attacks that aren't exotic. They're variations on the same theme: the program <em>thought</em> it was checking an account, but the check was either missing, malformed, or trivially bypassable. <strong>Exactly the class of bug Anchor's <code>#[derive(Accounts)]</code> is supposed to prevent.</strong> The reason the framework doesn't is that the framework itself is unverified. Four examples, all real, all reproduced in this repository as before-and-after litesvm tests:</p>
+
+    <div class="grid-2">
+      <div class="exploit-card">
+        <div class="name">Cashio</div>
+        <div class="impact">March 2022 · ~$48M lost</div>
+        <div class="body">The program forgot to check that an account's <code>bank</code> field matched the bank account passed in the same instruction. Attacker passed a forged collateral account whose <code>bank</code> field pointed at an attacker-controlled mint.</div>
+        <div class="root">Root cause: missing <span class="tag">has_one</span> + <span class="tag">owner</span> + <span class="tag">discriminator</span></div>
+      </div>
+
+      <div class="exploit-card">
+        <div class="name">Crema Finance</div>
+        <div class="impact">July 2022 · ~$8.8M lost</div>
+        <div class="body">The program loaded a "price account" without checking who owned it. Attacker passed an account they owned and forged the price.</div>
+        <div class="root">Root cause: missing <span class="tag">owner</span> check</div>
+      </div>
+
+      <div class="exploit-card">
+        <div class="name">Type Confusion</div>
+        <div class="impact">multiple incidents</div>
+        <div class="body">Two account types owned by the same program look identical at the owner level. Only an 8-byte discriminator distinguishes them. Programs that skipped the tag check could be tricked into treating one type as another.</div>
+        <div class="root">Root cause: missing <span class="tag">discriminator</span> check</div>
+      </div>
+
+      <div class="exploit-card">
+        <div class="name">PDA Seeds Misuse</div>
+        <div class="impact">multiple incidents</div>
+        <div class="body">Programs that forget to check that an account <em>is</em> the canonical PDA for a given seed set let attackers pass any account in the PDA slot — including accounts they themselves control.</div>
+        <div class="root">Root cause: missing <span class="tag">seeds</span> + <span class="tag">bump</span> check</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="how">
+  <div class="container">
+    <h2>What you write</h2>
+    <p class="section-title">Same syntax as stock Anchor. The proof comes free.</p>
+    <p class="section-lede">If you've used Anchor, you already know how to use Verified Anchor. The wrapper types, the attribute macros, the <code>Context&lt;T&gt;</code> shape — all signature-identical to stock Anchor. The only thing that changes is what happens at build time.</p>
+
+    <div class="code-compare">
+      <div class="code-block naive">
+        <header>● user crate · stock Anchor</header>
+<pre><span class="kw">use</span> anchor_lang::prelude::*;
+
+<span class="attr">#[account]</span>
+<span class="kw">pub struct</span> <span class="ty">Vault</span> {
+    <span class="kw">pub</span> authority: <span class="ty">Pubkey</span>,
+    <span class="kw">pub</span> amount: <span class="ty">u64</span>,
+}
+
+<span class="attr">#[derive(Accounts)]</span>
+<span class="kw">pub struct</span> <span class="ty">Transfer</span>&lt;<span class="ty">'info</span>&gt; {
+    <span class="attr">#[account(mut, has_one = authority)]</span>
+    <span class="kw">pub</span> vault: <span class="ty">Account</span>&lt;<span class="ty">'info</span>, <span class="ty">Vault</span>&gt;,
+    <span class="kw">pub</span> authority: <span class="ty">Signer</span>&lt;<span class="ty">'info</span>&gt;,
+}</pre>
+      </div>
+
+      <div class="code-block verified">
+        <header>● user crate · verified-anchor</header>
+<pre><span class="kw">use</span> verified_anchor::prelude::*;
+
+<span class="attr">#[account]</span>
+<span class="kw">pub struct</span> <span class="ty">Vault</span> {
+    <span class="kw">pub</span> authority: <span class="ty">Pubkey</span>,
+    <span class="kw">pub</span> amount: <span class="ty">u64</span>,
+}
+
+<span class="attr">#[derive(VerifiedAccounts)]</span>
+<span class="kw">pub struct</span> <span class="ty">Transfer</span>&lt;<span class="ty">'info</span>&gt; {
+    <span class="attr">#[account(mut, has_one = authority)]</span>
+    <span class="kw">pub</span> vault: <span class="ty">Account</span>&lt;<span class="ty">'info</span>, <span class="ty">Vault</span>&gt;,
+    <span class="kw">pub</span> authority: <span class="ty">Signer</span>&lt;<span class="ty">'info</span>&gt;,
+}</pre>
+      </div>
+    </div>
+
+    <p class="section-lede" style="margin-top:32px;"><strong>The only diff is one identifier.</strong> Both compile to runtime checks that look the same. The verified-anchor version additionally emits a Lean obligation that a checker (run via <code>cargo verified-anchor check</code>) discharges against the proven library.</p>
+  </div>
+</section>
+
+<section id="chain">
+  <div class="container">
+    <h2>How it works</h2>
+    <p class="section-title">The verification chain.</p>
+    <p class="section-lede">The macro emits the Rust check and a Lean obligation from the <em>same</em> struct description. The Rust check runs on chain at transaction time. The Lean obligation is discharged at build time against the proven library. Both are observably equivalent by construction.</p>
+
+    <div class="chain">
+      <div class="chain-step">
+        <div class="idx">1</div>
+        <div>
+          <div class="label">User source</div>
+          <div class="text">You write a struct annotated with <code>#[derive(VerifiedAccounts)]</code>.</div>
+        </div>
+      </div>
+      <div class="chain-step">
+        <div class="idx">2</div>
+        <div>
+          <div class="label">Macro expansion</div>
+          <div class="text">At compile time the macro emits two artifacts: (a) the Rust <code>validate()</code> function, (b) a Lean <code>AccountsStruct</code> literal describing the same constraints.</div>
+        </div>
+      </div>
+      <div class="chain-step">
+        <div class="idx">3</div>
+        <div>
+          <div class="label">Lean checker</div>
+          <div class="text">The Lean library defines <code>genValidate</code> on <code>AccountsStruct</code>. The same struct literal flows into the Rust check and into <code>genValidate</code> — they iterate the same constraints in the same order.</div>
+        </div>
+      </div>
+      <div class="chain-step">
+        <div class="idx">4</div>
+        <div>
+          <div class="label">The theorem</div>
+          <div class="text">For any struct in the supported subset: <code>genValidate s c = true ↔ validates s c</code>. The generated checker is equivalent to the validation contract. Proven once, for all structs.</div>
+        </div>
+      </div>
+      <div class="chain-step">
+        <div class="idx">5</div>
+        <div>
+          <div class="label">Discharge at build time</div>
+          <div class="text"><code>cargo verified-anchor check</code> runs <code>lake env lean</code> and discharges a per-struct obligation by <code>decide M4Subset</code>. If the obligation fails, your build fails.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="audit">
+  <div class="container">
+    <h2>Audit it yourself</h2>
+    <p class="section-title">Two commands. No trust required.</p>
+    <p class="section-lede">The proofs are open. You can verify them yourself — no need to trust the README. The headline theorems' axiom dependencies are <code>[propext, Quot.sound]</code>, the standard Lean propositional-extensionality and quotient-soundness axioms. No <code>sorry</code>, no <code>Classical.choice</code>, no escape hatches.</p>
+
+    <div class="audit">
+      <p>Clone the repo, install elan + lake, then:</p>
+<pre>$ cd lean &amp;&amp; lake build
+$ lake env lean -c '#print axioms VerifiedAnchor.genValidate_sound'</pre>
+      <div class="out">
+        <pre>'VerifiedAnchor.genValidate_sound' depends on axioms: [propext, Quot.sound]</pre>
+      </div>
+      <p style="margin-top: 14px;">Same audit for <code>lifecycle_sound</code> (the <code>init</code>/<code>close</code> Hoare theorem). Same answer.</p>
+    </div>
+  </div>
+</section>
+
+<section id="boundary">
+  <div class="container">
+    <h2>Honest boundaries</h2>
+    <p class="section-title">What's proven, what isn't.</p>
+    <p class="section-lede">The claim isn't "your Solana program is now bug-free." The claim is: this <em>specific class</em> of bug — the framework-level account-validation bug that ate Cashio, Crema, and the type-confusion incidents — is eliminated for the supported constraint subset.</p>
+
+    <div class="boundary">
+      <div class="in">
+        <div class="h">In the proof</div>
+        <p><code>signer</code>, <code>mut</code>, <code>owner</code>, <code>has_one</code>, <code>seeds</code> + <code>bump</code>, <code>discriminator</code> (the M4 subset). Plus the <code>init</code>/<code>close</code> lifecycle as a Hoare theorem.</p>
+      </div>
+      <div class="out">
+        <div class="h">Outside the proof</div>
+        <p>Borsh deserialization of typed payloads (<code>BorshFailed</code> is an honest runtime error, not a silent gap). CPI effects beyond <code>init</code>/<code>close</code>. The Solana runtime contract itself.</p>
+      </div>
+      <div class="out">
+        <div class="h">Anchor constraints we don't model</div>
+        <p><code>realloc</code>, <code>zero</code>, token / mint / associated-token, custom constraint expressions. The macro emits a <code>compile_error!</code> with a migration-guide pointer if you try to use one.</p>
+      </div>
+      <div class="in">
+        <div class="h">Empirically validated</div>
+        <p>Four real CVE classes are reproduced as litesvm before-and-after tests. Naive version → attacker wins. Verified version → attacker rejected on chain.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="container">
+    <div class="links">
+      <a href="https://github.com/ParthRathix0/Verified-Anchor">GitHub</a>
+      <a href="https://github.com/ParthRathix0/Verified-Anchor/blob/master/docs/verified-anchor-bridge.md">Trust boundary</a>
+      <a href="https://github.com/ParthRathix0/Verified-Anchor/blob/master/docs/exploit-case-studies.md">Case studies</a>
+      <a href="https://github.com/ParthRathix0/Verified-Anchor/blob/master/docs/migrating-from-anchor.md">Migration guide</a>
+      <a href="https://github.com/ParthRathix0/Verified-Anchor/blob/master/docs/announcement-v0.1.0.md">v0.1.0 post</a>
+    </div>
+    <div>Verified Anchor · v0.1.0 · CC BY-NC-ND 4.0</div>
+  </div>
+</footer>
+
+</body>
+</html>
