@@ -118,8 +118,7 @@ This runs `lake env lean` against a generated `decide M4Subset` proof. `cargo bu
 
 ## Roadmap
 
-- **v0.1.0 (this release):** M1–M7b complete. Lean contract, proof-producing macros, PDA derivation, cargo integration, M4 subset proven sound, empirical M6 case studies, typed-wrapper API, `#[account]` attribute, per-seed `Bumps`, crates.io packaging.
-- **v0.2 (next):** QEDGen composition demo. Verified-anchor handles account validation; QEDGen handles business logic; the combined proof is checked end-to-end on a real program.
-- **Later:** widening the verified constraint subset (realloc, token, zero-copy), `AccountLoader<T>`, `Sysvar<T>`, IDE/LSP surfacing of unmet obligations.
+- **v0.1.0 (this release):** M1–M7 complete. Lean contract, proof-producing macros, PDA derivation, cargo integration, M4 subset proven sound, empirical M6 case studies, typed-wrapper API, `#[account]` attribute, per-seed `Bumps`, dual-package release.
+- **Deferred:** QEDGen composition demo (gated on QEDGen availability); widening the verified constraint subset (realloc, token, zero-copy), `AccountLoader<T>`, `Sysvar<T>`, IDE/LSP surfacing of unmet obligations.
 
 Source: <https://github.com/ParthRathix0/Verified-Anchor>. Issues and audit attempts welcome; substantive patches via prior agreement (see the repo README for license details — CC BY-NC-ND 4.0).
