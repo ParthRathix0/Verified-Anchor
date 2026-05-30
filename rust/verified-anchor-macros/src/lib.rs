@@ -34,17 +34,16 @@ enum WrapperKind {
     SystemAccount,
     /// `UncheckedAccount<'info>` or `AccountInfo<'info>`.
     Unchecked,
-    /// Bare `u8` (transitional, removed in M1b).
-    BareU8,
 }
 
-/// Recognise a field's type as a wrapper. Returns `BareU8` for `u8` (transitional)
-/// and an error span otherwise.
+/// Recognise a field's type as a wrapper. Returns an error for `u8` (bare u8 removed in M1b)
+/// and an error span for unrecognised types.
 fn classify_field_type(ty: &syn::Type) -> syn::Result<WrapperKind> {
     use syn::{PathArguments, Type, TypePath};
     if let Type::Path(TypePath { qself: None, path }) = ty {
         if path.is_ident("u8") {
-            return Ok(WrapperKind::BareU8);
+            return Err(syn::Error::new_spanned(ty,
+                "verified-anchor: bare `u8` field types are not supported; use a typed wrapper like `Account<'info, T>`, `Signer<'info>`, `UncheckedAccount<'info>`, etc. See docs/migrating-from-anchor.md"));
         }
         let last = path.segments.last().ok_or_else(||
             syn::Error::new_spanned(ty, "verified-anchor: unrecognised field type"))?;
@@ -89,7 +88,7 @@ fn classify_field_type(ty: &syn::Type) -> syn::Result<WrapperKind> {
 /// `Account<T>` implies owner=crate::ID + discriminator=sha256("account:T")[..8].
 /// `Signer` implies signer. `SystemAccount` implies owner=system_program::ID.
 /// `Program<P>` synthesises a `ProgramMarker(P)` checked in validate_body.
-/// `Unchecked`/`BareU8` imply nothing.
+/// `Unchecked` implies nothing.
 fn wrapper_implied(kind: &WrapperKind) -> Vec<Constraint> {
     match kind {
         WrapperKind::Account(t) => {
@@ -109,7 +108,7 @@ fn wrapper_implied(kind: &WrapperKind) -> Vec<Constraint> {
             Constraint::Owner(syn::parse_quote! { ::solana_program::system_program::ID }),
         ],
         WrapperKind::Program(p) => vec![Constraint::ProgramMarker(p.clone())],
-        WrapperKind::Unchecked | WrapperKind::BareU8 => vec![],
+        WrapperKind::Unchecked => vec![],
     }
 }
 
@@ -336,14 +335,6 @@ fn lean_spec_string(specs: &[FieldSpec]) -> String {
             cs.push(format!("Constraint.close \"{}\"", dest));
         }
         let ty = match &spec.kind {
-            WrapperKind::BareU8 => {
-                // Transitional: preserve the M3-era "Vault" hardcode for bare-u8 fields
-                // so existing tests are bit-identical. Removed in M1b when bare u8 errors.
-                spec.constraints.iter().find_map(|c| {
-                    if let Constraint::HasOne(t) = c { Some(t.to_string()) } else { None }
-                }).map(|t| format!("AccountType.account \"Vault\" [(\"{}\", 8)] Pubkey.zero", t))
-                  .unwrap_or_else(|| "AccountType.uncheckedAccount".to_string())
-            }
             WrapperKind::Account(t) => {
                 let layout = spec.constraints.iter().find_map(|c| {
                     if let Constraint::HasOne(target) = c { Some(target.to_string()) } else { None }
@@ -613,7 +604,7 @@ pub fn derive_verified_accounts(input: TokenStream) -> TokenStream {
 
     let n_specs = specs.len();
     let _ = n_specs; // kept for clarity; not used in codegen below
-    let has_info = specs.iter().any(|s| !matches!(s.kind, WrapperKind::BareU8));
+    let has_info = !specs.is_empty();
     let bumps_struct_name = syn::Ident::new(&format!("{}Bumps", name), name.span());
 
     let field_inits: Vec<TokenStream2> = specs.iter().enumerate().map(|(i, spec)| {
@@ -642,9 +633,6 @@ pub fn derive_verified_accounts(input: TokenStream) -> TokenStream {
             },
             WrapperKind::Unchecked => quote! {
                 #fname: ::verified_anchor::UncheckedAccount { info: &accounts[#i] }
-            },
-            WrapperKind::BareU8 => quote! {
-                #fname: 0u8   // transitional; removed when M1b errors on bare u8
             },
         }
     }).collect();
