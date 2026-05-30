@@ -74,7 +74,7 @@ pub trait Accounts<'info>: Sized {
         program_id: &Pubkey,
         accounts: &'info [AccountInfo<'info>],
         instr_data: &[u8],
-    ) -> Result<Self, VAError>;
+    ) -> Result<(Self, Self::Bumps), VAError>;
 }
 
 // The spec-collection machinery uses `inventory`, whose `#[used]` link-section statics
