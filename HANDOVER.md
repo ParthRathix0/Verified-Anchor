@@ -15,7 +15,7 @@ proof-producing Rust proc-macros that generate Solana validation/lifecycle code 
 is proven to implement that contract. 7 milestones total; built sequentially, each its own
 brainstorm → spec → plan → subagent-driven execution → review → merge cycle.
 
-## Status: M1, M2, M3, M4, M5, M6, M7a COMPLETE (all merged to `master`)
+## Status: M1, M2, M3, M4, M5, M6, M7a, M7b COMPLETE (all merged to `master`)
 
 - **M1 — Lean validation contract.** `lean/VerifiedAnchor/`: concrete Solana model
   (`Solana/`: Pubkey, AccountInfo, real PDA algorithm; only `sha256`/`isOnCurve` axiomatized),
@@ -85,14 +85,25 @@ brainstorm → spec → plan → subagent-driven execution → review → merge 
 All theorems depend only on `[propext, Quot.sound]` (zero `sorry`/`sorryAx`); verify with
 `#print axioms <thm>`.
 
-## Next: M7b/M7c
+- **M7b — release packaging.** Three additions: (1) `#[account]` attribute macro bundles
+  BorshSerialize + BorshDeserialize + AccountData so users write one line instead of three derives
+  (`rust/verified-anchor-macros/src/account_attr.rs`); `#[account(args)]` is a `compile_error!`.
+  (2) `Accounts::try_accounts` now returns `(Self, Self::Bumps)`; seeded structs emit
+  `pub struct <Name>Bumps { pub <field>: u8, ... }` populated from `find_program_address`,
+  non-seeded emit an empty marker — matches stock Anchor's `Context.bumps.pda` shape.
+  (3) Dual Apache-2.0 OR MIT license (`LICENSE-MIT`, `LICENSE-APACHE` at repo root), full
+  crates.io metadata on the 3 publishable crates (`verified-anchor`, `verified-anchor-macros`,
+  `cargo-verified-anchor`); test-fixture crates marked `publish = false`; top-level
+  crates.io-ready `README.md`; `docs/publish-checklist.md` documents the order-sensitive
+  publish steps. `cargo publish --dry-run` passes for `verified-anchor-macros` and
+  `cargo-verified-anchor`; `verified-anchor`'s dry-run is blocked by cargo's first-publish
+  chicken-and-egg (documented in checklist). All M1-M5 axioms unchanged.
 
-- **M7b — release packaging.** Publish to crates.io (verified-anchor, verified-anchor-macros,
-  cargo-verified-anchor). Add an Anchor-style attribute macro `#[account]` that bundles
-  `BorshSerialize + BorshDeserialize + AccountData` so users don't have to write all three derives
-  (current M7a require all three explicitly). Polish `Bumps` to a richer per-seed type (current
-  M7a emits an empty marker struct).
-- **M7c — QEDGen integration + announcement.** The publishable cut.
+## Next: M7c
+
+- **M7c — QEDGen integration + announcement.** The publishable cut: replace `REPLACE_ME` in
+  publish-checklist URLs with the real GitHub repo, hook up QEDGen, tag v0.1.0, run the
+  publish-checklist, announce.
 
 See the follow-ups before extending further (`docs/superpowers/m{1,2,3,4,5}-followups.md`): esp.
 tighten `Constraint.discriminator` to `Vector UInt8 8`; prove the literal `satisfies` corollary
