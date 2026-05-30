@@ -263,9 +263,8 @@ fn try_accounts_deserializes_typed_data() {
         is_writable: false,
     };
     let accts = [a.info()];
-    let result: Result<VaultDataStruct, VAError> =
-        <VaultDataStruct as Accounts>::try_accounts(&crate::ID, &accts, &[]);
-    let parsed = result.expect("try_accounts should succeed with valid disc + payload");
+    let result = <VaultDataStruct as Accounts>::try_accounts(&crate::ID, &accts, &[]);
+    let (parsed, _bumps) = result.expect("try_accounts should succeed with valid disc + payload");
     assert_eq!(parsed.vault.data.amount, 999);
     assert_eq!(parsed.vault.data.authority, Pubkey::new_from_array([7u8; 32]));
 }
@@ -284,8 +283,7 @@ fn try_accounts_borsh_failed_on_truncated_data() {
         is_writable: false,
     };
     let accts = [a.info()];
-    let result: Result<VaultDataStruct, VAError> =
-        <VaultDataStruct as Accounts>::try_accounts(&crate::ID, &accts, &[]);
+    let result = <VaultDataStruct as Accounts>::try_accounts(&crate::ID, &accts, &[]);
     assert_eq!(result.err(), Some(VAError::BorshFailed { field: "vault" }));
 }
 
@@ -370,4 +368,36 @@ fn program_rejects_wrong_key() {
         ProgField::validate(&accts, &[], &any_pid()),
         Err(VAError::WrongOwner { field: "sys" })
     );
+}
+
+#[derive(VerifiedAccounts)]
+struct WithPda<'info> {
+    #[account(seeds = [b"vault", arg(0, 4)], bump)]
+    pda: verified_anchor::UncheckedAccount<'info>,
+}
+
+#[test]
+fn bumps_struct_carries_canonical_bump() {
+    use verified_anchor::Accounts;
+    let program_id = Pubkey::new_unique();
+    let arg = [1u8, 2, 3, 4];
+    let (pda, expected_bump) = Pubkey::find_program_address(&[b"vault", &arg], &program_id);
+    let mut a = Acct { key: pda, owner: Pubkey::new_unique(), lamports: 1, data: vec![], is_signer: false, is_writable: false };
+    let accts = [a.info()];
+    let (_struct, bumps) = <WithPda as Accounts>::try_accounts(&program_id, &accts, &arg).unwrap();
+    assert_eq!(bumps.pda, expected_bump);
+}
+
+#[verified_anchor::account]
+pub struct VaultAttr { pub authority: solana_program::pubkey::Pubkey, pub amount: u64 }
+
+#[test]
+fn account_attribute_implies_borsh_and_discriminator() {
+    let d = <VaultAttr as verified_anchor::AccountData>::DISCRIMINATOR;
+    assert_eq!(d, disc("VaultAttr"));
+    let v = VaultAttr { authority: solana_program::pubkey::Pubkey::new_from_array([7u8; 32]), amount: 42 };
+    let bytes = borsh::to_vec(&v).unwrap();
+    let v2: VaultAttr = borsh::from_slice(&bytes).unwrap();
+    assert_eq!(v2.amount, 42);
+    assert_eq!(v2.authority, v.authority);
 }
