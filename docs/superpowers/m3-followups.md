@@ -23,7 +23,7 @@ final whole-implementation review.
    … = some c'` alone (the def guards `if idx = … then none`); derive it internally via
    `if_pos`/`absurd` and remove the parameter.
 
-3. **`lean_spec_string` hardcodes the Lean type name `"Vault"`** for any `has_one` field
+3. ✅ CLOSED in M7a — **`lean_spec_string` hardcodes the Lean type name `"Vault"`** for any `has_one` field
    (`rust/verified-anchor-macros/src/lib.rs` ~line 113), regardless of field name. Inert today
    (the offset-8 check ignores the type name, and no test asserts the has_one `lean_spec`), but it
    would misname multi-struct specs. Derive from the field name (capitalize `spec.name`).

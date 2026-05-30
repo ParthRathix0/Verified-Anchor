@@ -115,6 +115,19 @@ the macro's seed-element mapping (`arg(off,len)` → offset/length) is transcrip
 native tests against the real `find_program_address` and a litesvm on-chain accept/reject
 (`tests/runtime_seeds.rs`), not proven across the language boundary.
 
+## Developer surface (M7a)
+
+The Rust→Lean proof chain is unchanged: the macro emits an `impl Validate` whose body is the
+same per-constraint check sequence (signer/mut/owner/has_one/seeds/discriminator) that
+`genValidate` models in Lean, with `M4Subset s → (genValidate s c = true ↔ validates s c)`
+proved generically. M7a adds an `Accounts<'info>` trait alongside `Validate`: its
+`try_accounts` calls `Self::validate` first (the proven gate), then Borsh-deserialises each
+`Account<'info, T>` field's data into the typed struct. Borsh deserialisation is outside the
+proven surface (a transcription concern, like the M3 CPI-effect modelling) — a `BorshFailed`
+error is honest runtime feedback, not a verification hole. The `lean_spec` emission now uses
+the real type name from `Account<'info, T>` (closing the M3 "Vault hardcode" follow-up). No
+Lean source changes; M1–M5 headline theorems' `#print axioms` unchanged.
+
 ## What is out of scope
 
 rustc/LLVM/sBPF code generation fidelity — that the compiled binary faithfully executes the
