@@ -10,7 +10,10 @@ open VerifiedAnchor
     that DO use `owner` still elaborate.) -/
 private opaque ownerPlaceholder : Pubkey
 
--- verbatim output of `Transfer::lean_spec()` (Rust, Task 3)
+-- pre-M7a snapshot of `Transfer::lean_spec()` output (Rust, Task 3).
+-- NOTE: after M7a the macro also emits typed AccountType entries (account/signer/systemAccount)
+-- for Account<T>, Signer, SystemAccount, and Program wrappers.  The Transfer struct here
+-- uses UncheckedAccount only, so its lean_spec() output is unchanged; the proofs below still hold.
 def transfer : AccountsStruct :=
 { programId := Pubkey.zero
 , fields :=
