@@ -15,6 +15,7 @@ pub mod prelude;
 
 pub use verified_anchor_macros::VerifiedAccounts;
 pub use verified_anchor_macros::AccountData as AccountData;
+pub use verified_anchor_macros::account;
 
 /// Why account validation failed. `field` is the struct field name that failed.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -73,7 +74,7 @@ pub trait Accounts<'info>: Sized {
         program_id: &Pubkey,
         accounts: &'info [AccountInfo<'info>],
         instr_data: &[u8],
-    ) -> Result<Self, VAError>;
+    ) -> Result<(Self, Self::Bumps), VAError>;
 }
 
 // The spec-collection machinery uses `inventory`, whose `#[used]` link-section statics

@@ -1,10 +1,16 @@
 use proc_macro::TokenStream;
 
 mod account_data_derive;
+mod account_attr;
 
 #[proc_macro_derive(AccountData)]
 pub fn derive_account_data(input: TokenStream) -> TokenStream {
     account_data_derive::derive(input)
+}
+
+#[proc_macro_attribute]
+pub fn account(args: TokenStream, input: TokenStream) -> TokenStream {
+    account_attr::account(args, input)
 }
 use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
@@ -604,6 +610,59 @@ pub fn derive_verified_accounts(input: TokenStream) -> TokenStream {
     let has_info = !specs.is_empty();
     let bumps_struct_name = syn::Ident::new(&format!("{}Bumps", name), name.span());
 
+    // Identify seeded fields (those with a Constraint::Seeds), preserving order.
+    let seeded: Vec<(usize, &FieldSpec, &Vec<SeedElem>)> = specs.iter().enumerate()
+        .filter_map(|(i, s)| s.constraints.iter().find_map(|c| {
+            if let Constraint::Seeds(elems) = c { Some((i, s, elems)) } else { None }
+        }))
+        .collect();
+
+    // Build name→index map for resolving `field.key()` seeds in Bumps init.
+    let bumps_index_of: std::collections::HashMap<String, usize> =
+        specs.iter().enumerate().map(|(i, s)| (s.name.clone(), i)).collect();
+
+    // Per-seeded-field: (Bumps-field Ident, TokenStream Vec for the seed slice exprs).
+    let bumps_fields: Vec<(syn::Ident, Vec<TokenStream2>)> = seeded.iter().map(|(_, spec, elems)| {
+        let fname = syn::Ident::new(&spec.name, name.span());
+        let seed_exprs: Vec<TokenStream2> = elems.iter().map(|se| match se {
+            SeedElem::Literal(b) => quote! { &#b[..] },
+            SeedElem::FieldKey(id) => {
+                let fi = *bumps_index_of.get(&id.to_string())
+                    .unwrap_or_else(|| panic!("seed field `{}` is not a field of this struct", id));
+                quote! { accounts[#fi].key.as_ref() }
+            }
+            SeedElem::InstrArg(off, len) => {
+                let end = off + len;
+                quote! { &instr_data[#off..#end] }
+            }
+        }).collect();
+        (fname, seed_exprs)
+    }).collect();
+
+    let (bumps_struct_decl, bumps_struct_init) = if bumps_fields.is_empty() {
+        (
+            quote! { pub struct #bumps_struct_name; },
+            quote! { #bumps_struct_name },
+        )
+    } else {
+        let decl_fields: Vec<TokenStream2> = bumps_fields.iter().map(|(fname, _)| {
+            quote! { pub #fname: u8 }
+        }).collect();
+        let init_fields: Vec<TokenStream2> = bumps_fields.iter().map(|(fname, seed_exprs)| {
+            quote! {
+                #fname: {
+                    let __seeds: &[&[u8]] = &[ #(#seed_exprs),* ];
+                    let (_pda, __b) = ::solana_program::pubkey::Pubkey::find_program_address(__seeds, program_id);
+                    __b
+                }
+            }
+        }).collect();
+        (
+            quote! { pub struct #bumps_struct_name { #(#decl_fields),* } },
+            quote! { #bumps_struct_name { #(#init_fields),* } },
+        )
+    };
+
     let field_inits: Vec<TokenStream2> = specs.iter().enumerate().map(|(i, spec)| {
         let fname = syn::Ident::new(&spec.name, name.span());
         match &spec.kind {
@@ -651,16 +710,18 @@ pub fn derive_verified_accounts(input: TokenStream) -> TokenStream {
             }
             #lifecycle
         }
-        pub struct #bumps_struct_name;
+        #bumps_struct_decl
         impl<'info> ::verified_anchor::Accounts<'info> for #accounts_impl_target {
             type Bumps = #bumps_struct_name;
             fn try_accounts(
                 program_id: &::solana_program::pubkey::Pubkey,
                 accounts: &'info [::solana_program::account_info::AccountInfo<'info>],
                 instr_data: &[u8],
-            ) -> ::core::result::Result<Self, ::verified_anchor::VAError> {
+            ) -> ::core::result::Result<(Self, Self::Bumps), ::verified_anchor::VAError> {
                 <Self as ::verified_anchor::Validate>::validate(accounts, instr_data, program_id)?;
-                ::core::result::Result::Ok(Self { #(#field_inits),* })
+                let __self = Self { #(#field_inits),* };
+                let __bumps = #bumps_struct_init;
+                ::core::result::Result::Ok((__self, __bumps))
             }
         }
         // Host-only: `inventory` corrupts the Solana SBF ELF, so this registration must NOT
