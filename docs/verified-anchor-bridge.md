@@ -74,7 +74,7 @@ closed-account marker (`[propext, Quot.sound]` only). The remaining clauses bund
 M1 `satisfies (.init/.close)` proposition (payer is signer+writable; the close destination
 resolves) are *guarded preconditions* of the transformer that it preserves rather than
 post-effects; proving the literal `satisfies` proposition as a corollary is a tracked
-follow-up (`docs/superpowers/m3-followups.md`). The full `satisfies (.close …)` was verified
+follow-up. The full `satisfies (.close …)` was verified
 to hold on a concrete post-state during review. The generated
 effectful Rust (`execute_lifecycle`) is **executed under litesvm** (`tests/runtime_lifecycle.rs`):
 `init` is asserted to create a program-owned, funded, 8-byte account; `close` to move all
