@@ -1,0 +1,7 @@
+error: verified-anchor: `#[account]` takes no arguments in M7b; the bundled derives are fixed (BorshSerialize, BorshDeserialize, AccountData). Use the explicit 3-derive form if you need different derive flags.
+ --> tests/ui/account_with_args.rs:3:1
+  |
+3 | #[account(some_flag)]
+  | ^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: this error originates in the attribute macro `account` (in Nightly builds, run with -Z macro-backtrace for more info)
