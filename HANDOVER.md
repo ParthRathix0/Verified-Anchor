@@ -15,7 +15,7 @@ proof-producing Rust proc-macros that generate Solana validation/lifecycle code 
 is proven to implement that contract. 7 milestones total; built sequentially, each its own
 brainstorm → spec → plan → subagent-driven execution → review → merge cycle.
 
-## Status: M1, M2, M3, M4, M5 COMPLETE (all merged to `master`)
+## Status: M1, M2, M3, M4, M5, M6 COMPLETE (all merged to `master`)
 
 - **M1 — Lean validation contract.** `lean/VerifiedAnchor/`: concrete Solana model
   (`Solana/`: Pubkey, AccountInfo, real PDA algorithm; only `sha256`/`isOnCurve` axiomatized),
@@ -55,20 +55,32 @@ brainstorm → spec → plan → subagent-driven execution → review → merge 
   the opt-in step. inventory collection works **only same-crate** (so `emit_specs!` is a lib
   `#[cfg(test)] #[test]`).
 
+- **M6 — empirical validation + prod-ready discriminator codegen.** Four real macro-level
+  account-validation bug classes reproduced as litesvm before/after in
+  `rust/verified-anchor-exploits/` + `rust/verified-anchor/tests/runtime_exploits.rs`:
+  Cashio/`has_one`+`owner`+`discriminator`; account type-confusion/`discriminator`;
+  Crema/`owner`; PDA seeds. Each scenario asserts naive(attacker)→Ok with observable bad
+  on-chain effect, verified(attacker)→Err, verified(legit)→Ok with correct effect. The verified
+  versions use the real `#[derive(VerifiedAccounts)]` surface and `cargo verified-anchor check`
+  discharges their `M4Subset` contracts. **Closed a real Lean↔Rust gap**: the macro now generates
+  a runtime discriminator check from `#[account(discriminator = "Name")]` computing
+  `sha256("account:"+Name)[..8]` (real Anchor wire format → interop with real Anchor accounts),
+  `VAError::WrongDiscriminator`. Report at `docs/exploit-case-studies.md`.
+
 All theorems depend only on `[propext, Quot.sound]` (zero `sorry`/`sorryAx`); verify with
 `#print axioms <thm>`.
 
-## Next: M6 → M7
+## Next: M7
 
-- **M6 — empirical validation** against a historical Solana exploit: identify one whose root
-  cause was macro-level account validation, and show the verified-anchor version either fails to
-  compile (caught the misuse) or carries a proof its preconditions are unreachable. Use the
-  litesvm harness (M3) + the `cargo verified-anchor check` flow (M5).
-- **M7 — release + QEDGen integration.**
+- **M7 — release + ecosystem integration.** Full `anchor-lang` `Account<'info, T>` API typing
+  (the M5-deferred item — currently spec-carrier `u8` fields with explicit constraints; M7 lifts
+  this to real typed accounts so verified-anchor matches real Anchor's developer surface),
+  QEDGen integration, and the publishable release.
 
 See the follow-ups before extending further (`docs/superpowers/m{1,2,3,4,5}-followups.md`): esp.
 tighten `Constraint.discriminator` to `Vector UInt8 8`; prove the literal `satisfies` corollary
-for the Hoare theorems; add a `fieldKey`-seed test (the path is wired but untested).
+for the Hoare theorems; add a `fieldKey`-seed test (the path is wired but untested); replace the
+`has_one` offset-8 hardcode with a layout-aware codegen (flagged by M6's report).
 
 ## Repo layout
 
@@ -82,16 +94,18 @@ lean/                                Lean 4 library (lake); root import: Verifie
   VerifiedAnchor/Codegen/            Generated (genSeeds), Soundness (M4Subset), Lifecycle, StructLifecycle (lifecycle_sound), ExampleGenerated
   VerifiedAnchor/Examples/Withdraw.lean
 rust/                                cargo workspace
-  verified-anchor-macros/            #[derive(VerifiedAccounts)] (syn/quote); parses seeds/bump; inventory submit!; compile_error for unsupported
-  verified-anchor/                   Validate trait (validate(accounts, instr_data, program_id)), VAError, SpecEntry/inventory/emit_specs!, tests/ (behavior, lean_spec, runtime_lifecycle, runtime_seeds)
+  verified-anchor-macros/            #[derive(VerifiedAccounts)] (syn/quote); parses seeds/bump/discriminator; inventory submit!; compile_error for unsupported
+  verified-anchor/                   Validate trait (validate(accounts, instr_data, program_id)), VAError, SpecEntry/inventory/emit_specs!, tests/ (behavior, lean_spec, runtime_lifecycle, runtime_seeds, runtime_exploits)
   verified-anchor-program/           BPF program exercising init/close + a seeds PDA instruction (cdylib)
   cargo-verified-anchor/             `cargo verified-anchor check` subcommand (collect→generate→lake), std-only; tests/cli.rs e2e
   verified-anchor-example/           worked user crate (validation + lifecycle) using emit_specs!()
+  verified-anchor-exploits/          M6 empirical exploit-suite BPF program (4 scenarios: naive_* + verified_* instruction arms)
 docs/
   verified-anchor-bridge.md          Rust↔Lean correspondence + trust boundary (READ THIS)
   migrating-from-anchor.md           M5 migration guide (supported subset, workflow, boundaries)
-  superpowers/specs/                 design docs: 2026-05-27 M1, M2; 2026-05-28 M3, M4; 2026-05-29 M5
-  superpowers/plans/                 implementation plans: M1, M2, M3, M4, M5
+  exploit-case-studies.md            M6 empirical case studies (4 scenarios + tie-in + honest boundary)
+  superpowers/specs/                 design docs: 2026-05-27 M1, M2; 2026-05-28 M3, M4; 2026-05-29 M5, M6
+  superpowers/plans/                 implementation plans: M1, M2, M3, M4, M5, M6
   superpowers/m{1,2,3,4,5}-followups.md  deferred items per milestone
 HANDOVER.md                          this file
 ```
@@ -177,8 +191,10 @@ before designing** to avoid churn.
 
 ## To resume in a new chat
 
-Say e.g. "continue Verified Anchor — start M6 (empirical exploit study)". The assistant should: read
-this file + `verified_anchor_proposal.md` (Milestone 6 section) + `docs/verified-anchor-bridge.md` +
-`docs/superpowers/m5-followups.md`, confirm the build is green (recipes above), then brainstorm M6.
-For M6, the litesvm harness (M3) and the `cargo verified-anchor check` flow (M5) are the tools to
-reach for; pick a historical exploit whose root cause is macro-level account validation.
+Say e.g. "continue Verified Anchor — start M7 (release + Account<'info,T>)". The assistant should:
+read this file + `verified_anchor_proposal.md` (Milestone 7 section) + `docs/verified-anchor-bridge.md`
++ `docs/exploit-case-studies.md` (M6 boundary notes flag the spec-carrier API as M7 scope), confirm
+the build is green (recipes above), then brainstorm M7. The big M7 lift is **real `Account<'info, T>`
+typing** — verified-anchor currently uses `u8` spec-carrier fields with explicit `#[account(...)]`
+constraints; M7 lifts this to anchor-lang's typed-account surface so adopting verified-anchor is a
+nearly drop-in replacement for stock Anchor (the M5 migration guide describes the path).
