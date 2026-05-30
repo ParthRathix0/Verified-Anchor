@@ -11,10 +11,12 @@ Pre-publish steps (must be done before `cargo publish`):
    ```bash
    cd rust
    cargo publish --dry-run -p verified-anchor-macros
-   cargo publish --dry-run -p verified-anchor
    cargo publish --dry-run -p cargo-verified-anchor
+   # verified-anchor's dry-run cannot succeed until verified-anchor-macros is
+   # actually on crates.io (cargo resolves the dep against the live index even
+   # in dry-run). It will succeed at the real-publish step below.
    ```
-   All three must succeed.
+   The first two dry-runs must succeed before proceeding.
 4. **Publish.** Sleep ~60 seconds between publishes so the registry has time to index each crate (without this, the next `cargo publish` can fail because the registry lookup of the newly-uploaded dep hasn't propagated yet):
    ```bash
    cd rust
