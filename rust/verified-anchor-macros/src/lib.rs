@@ -13,6 +13,7 @@ use syn::parse::{Parse, ParseStream};
 use syn::{parse_macro_input, punctuated::Punctuated, Data, DeriveInput, Expr, Fields, Token};
 
 /// One element of a `seeds = [...]` list.
+#[derive(Clone)]
 enum SeedElem {
     Literal(syn::LitByteStr),   // b"vault"
     FieldKey(syn::Ident),       // field.key()
@@ -84,7 +85,36 @@ fn classify_field_type(ty: &syn::Type) -> syn::Result<WrapperKind> {
     }
 }
 
+/// The per-constraint implications of the field's wrapper kind.
+/// `Account<T>` implies owner=crate::ID + discriminator=sha256("account:T")[..8].
+/// `Signer` implies signer. `SystemAccount` implies owner=system_program::ID.
+/// `Program<P>` synthesises a `ProgramMarker(P)` checked in validate_body.
+/// `Unchecked`/`BareU8` imply nothing.
+fn wrapper_implied(kind: &WrapperKind) -> Vec<Constraint> {
+    match kind {
+        WrapperKind::Account(t) => {
+            let mut h = Sha256::new();
+            h.update(b"account:");
+            h.update(t.to_string().as_bytes());
+            let out = h.finalize();
+            let mut d = [0u8; 8];
+            d.copy_from_slice(&out[..8]);
+            vec![
+                Constraint::Owner(syn::parse_quote! { crate::ID }),
+                Constraint::Discriminator(d),
+            ]
+        }
+        WrapperKind::Signer => vec![Constraint::Signer],
+        WrapperKind::SystemAccount => vec![
+            Constraint::Owner(syn::parse_quote! { ::solana_program::system_program::ID }),
+        ],
+        WrapperKind::Program(p) => vec![Constraint::ProgramMarker(p.clone())],
+        WrapperKind::Unchecked | WrapperKind::BareU8 => vec![],
+    }
+}
+
 /// One M2/M3 constraint parsed from a field's `#[account(...)]`.
+#[derive(Clone)]
 enum Constraint {
     Signer,
     Mut,
@@ -99,6 +129,9 @@ enum Constraint {
     BumpCanonical,
     BumpDeclared(u8),
     Discriminator([u8; 8]),
+    /// Implied by `Program<'info, P>` field type — checks executable + key == P::ID.
+    /// Not parseable from `#[account(...)]`; emitted only by `wrapper_implied`.
+    ProgramMarker(syn::Ident),
 }
 
 impl Parse for Constraint {
@@ -275,6 +308,7 @@ fn lean_constraint(c: &Constraint) -> String {
             let bytes: Vec<String> = d.iter().map(|x| x.to_string()).collect();
             format!("Constraint.discriminator (ByteArray.mk #[{}])", bytes.join(", "))
         }
+        Constraint::ProgramMarker(_) => String::new(),
     }
 }
 
@@ -301,12 +335,29 @@ fn lean_spec_string(specs: &[FieldSpec]) -> String {
             if let Constraint::Close(d) = c { Some(d.to_string()) } else { None }) {
             cs.push(format!("Constraint.close \"{}\"", dest));
         }
-        // If this field has a has_one constraint, emit a richer AccountType so the Lean
-        // layout resolver can locate the stored Pubkey at offset 8 (after the discriminator).
-        let ty = spec.constraints.iter().find_map(|c| {
-            if let Constraint::HasOne(t) = c { Some(t.to_string()) } else { None }
-        }).map(|t| format!("AccountType.account \"Vault\" [(\"{}\", 8)] Pubkey.zero", t))
-          .unwrap_or_else(|| "AccountType.uncheckedAccount".to_string());
+        let ty = match &spec.kind {
+            WrapperKind::BareU8 => {
+                // Transitional: preserve the M3-era "Vault" hardcode for bare-u8 fields
+                // so existing tests are bit-identical. Removed in M1b when bare u8 errors.
+                spec.constraints.iter().find_map(|c| {
+                    if let Constraint::HasOne(t) = c { Some(t.to_string()) } else { None }
+                }).map(|t| format!("AccountType.account \"Vault\" [(\"{}\", 8)] Pubkey.zero", t))
+                  .unwrap_or_else(|| "AccountType.uncheckedAccount".to_string())
+            }
+            WrapperKind::Account(t) => {
+                let layout = spec.constraints.iter().find_map(|c| {
+                    if let Constraint::HasOne(target) = c { Some(target.to_string()) } else { None }
+                });
+                let lay = match layout {
+                    Some(target) => format!("[(\"{}\", 8)]", target),
+                    None => "[]".to_string(),
+                };
+                format!("AccountType.account \"{}\" {} Pubkey.zero", t, lay)
+            }
+            WrapperKind::Signer => "AccountType.signer".to_string(),
+            WrapperKind::SystemAccount => "AccountType.systemAccount".to_string(),
+            WrapperKind::Program(_) | WrapperKind::Unchecked => "AccountType.uncheckedAccount".to_string(),
+        };
         let bump_str = spec.constraints.iter().find_map(|c| match c {
             Constraint::BumpCanonical => Some("BumpSpec.canonical".to_string()),
             Constraint::BumpDeclared(d) => Some(format!("BumpSpec.declared {}", d)),
@@ -343,7 +394,11 @@ fn validate_body(specs: &[FieldSpec]) -> TokenStream2 {
     let mut checks = Vec::new();
     for (i, spec) in specs.iter().enumerate() {
         let name = &spec.name;
-        for c in &spec.constraints {
+        let implied = wrapper_implied(&spec.kind);
+        let effective: Vec<Constraint> = implied.into_iter()
+            .chain(spec.constraints.iter().cloned())
+            .collect();
+        for c in &effective {
             let check = match c {
                 Constraint::Signer => quote! {
                     if !accounts[#i].is_signer {
@@ -386,6 +441,18 @@ fn validate_body(specs: &[FieldSpec]) -> TokenStream2 {
                             if data.len() < 8 || data[0..8] != __DISC {
                                 return Err(::verified_anchor::VAError::WrongDiscriminator { field: #fname });
                             }
+                        }
+                    }
+                },
+                Constraint::ProgramMarker(p) => {
+                    let fname = name;
+                    let pid_ty = p;
+                    quote! {
+                        if !accounts[#i].executable {
+                            return Err(::verified_anchor::VAError::WrongOwner { field: #fname });
+                        }
+                        if accounts[#i].key != &<#pid_ty as ::verified_anchor::ProgramId>::ID {
+                            return Err(::verified_anchor::VAError::WrongOwner { field: #fname });
                         }
                     }
                 },
