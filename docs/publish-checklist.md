@@ -2,7 +2,9 @@
 
 Pre-publish steps (must be done before `cargo publish`):
 
-1. **Set the real GitHub URL.** Find all three publishable crates' Cargo.toml files and replace `REPLACE_ME` in `repository` and `homepage` with the real path:
+1. **Confirm `repository` / `homepage` URLs.** All three publishable Cargo.tomls
+   already point at <https://github.com/ParthRathix0/Verified-Anchor>. If the
+   repo ever moves, update these three files:
    - `rust/verified-anchor/Cargo.toml`
    - `rust/verified-anchor-macros/Cargo.toml`
    - `rust/cargo-verified-anchor/Cargo.toml`

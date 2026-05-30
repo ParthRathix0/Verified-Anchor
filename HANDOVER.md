@@ -99,11 +99,17 @@ All theorems depend only on `[propext, Quot.sound]` (zero `sorry`/`sorryAx`); ve
   `cargo-verified-anchor`; `verified-anchor`'s dry-run is blocked by cargo's first-publish
   chicken-and-egg (documented in checklist). All M1-M5 axioms unchanged.
 
-## Next: M7c
+## Next: M7c (in progress — announcement + publish prep done)
 
-- **M7c — QEDGen integration + announcement.** The publishable cut: replace `REPLACE_ME` in
-  publish-checklist URLs with the real GitHub repo, hook up QEDGen, tag v0.1.0, run the
-  publish-checklist, announce.
+M7c announcement post drafted at `docs/announcement-v0.1.0.md`; all three publishable
+Cargo.tomls now carry the live GitHub URL (<https://github.com/ParthRathix0/Verified-Anchor>);
+`v0.1.0` tag created locally. Remaining M7c work is gated on user action:
+
+- **Publish to crates.io.** Run `docs/publish-checklist.md` (cargo login → dry-runs → publish
+  in order: macros → 60s → verified-anchor → 60s → cargo-verified-anchor). The publish step
+  is irreversible and intentionally not automated.
+- **Push to GitHub.** `git push origin master --tags` once the remote is wired.
+- **QEDGen demo (deferred to v0.2).** Gated on QEDGen availability; not blocking v0.1.0.
 
 See the follow-ups before extending further (`docs/superpowers/m{1,2,3,4,5}-followups.md`): esp.
 tighten `Constraint.discriminator` to `Vector UInt8 8`; prove the literal `satisfies` corollary
