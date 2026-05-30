@@ -4,29 +4,28 @@ use verified_anchor::VerifiedAccounts;
 
 /// Validation: a PDA account derived from a literal + an instruction-arg seed.
 #[derive(VerifiedAccounts)]
-pub struct CheckPda {
+pub struct CheckPda<'info> {
     #[account(seeds = [b"vault", arg(0, 4)], bump)]
-    pub pda: u8,
+    pub pda: verified_anchor::UncheckedAccount<'info>,
 }
 
 /// Validation: signer + writable.
 #[derive(VerifiedAccounts)]
-pub struct Transfer {
+pub struct Transfer<'info> {
     #[account(mut)]
-    pub vault: u8,
-    #[account(signer)]
-    pub authority: u8,
+    pub vault: verified_anchor::UncheckedAccount<'info>,
+    pub authority: verified_anchor::Signer<'info>,
 }
 
 /// Lifecycle: init a new account, and close one to a destination.
 #[derive(VerifiedAccounts)]
-pub struct Lifecycle {
+pub struct Lifecycle<'info> {
     #[account(init, payer = payer, space = 0)]
-    pub new_acct: u8,
-    #[account(mut, signer)]
-    pub payer: u8,
+    pub new_acct: verified_anchor::UncheckedAccount<'info>,
+    #[account(mut)]
+    pub payer: verified_anchor::Signer<'info>,
     #[account(close = payer)]
-    pub old_acct: u8,
+    pub old_acct: verified_anchor::UncheckedAccount<'info>,
 }
 
 verified_anchor::emit_specs!();
