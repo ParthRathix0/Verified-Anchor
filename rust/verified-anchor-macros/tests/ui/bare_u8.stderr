@@ -1,0 +1,5 @@
+error: verified-anchor: bare `u8` field types are not supported; use a typed wrapper like `Account<'info, T>`, `Signer<'info>`, `UncheckedAccount<'info>`, etc. See docs/migrating-from-anchor.md
+ --> tests/ui/bare_u8.rs:5:12
+  |
+5 |     vault: u8,
+  |            ^^
