@@ -28,8 +28,8 @@ enum WrapperKind {
     Account(syn::Ident),
     /// `Signer<'info>`.
     Signer,
-    /// `Program<'info, P>` — type name is P.
-    Program(syn::Ident),
+    /// `Program<'info, P>` — full path of P (e.g. `verified_anchor::System`).
+    Program(syn::Path),
     /// `SystemAccount<'info>`.
     SystemAccount,
     /// `UncheckedAccount<'info>` or `AccountInfo<'info>`.
@@ -69,9 +69,9 @@ fn classify_field_type(ty: &syn::Type) -> syn::Result<WrapperKind> {
                 if let PathArguments::AngleBracketed(args) = &last.arguments {
                     for ga in &args.args {
                         if let syn::GenericArgument::Type(Type::Path(TypePath { qself: None, path: p })) = ga {
-                            if let Some(seg) = p.segments.last() {
-                                return Ok(WrapperKind::Program(seg.ident.clone()));
-                            }
+                            // Keep the full path (e.g. `verified_anchor::System`) so code-gen
+                            // can emit `<verified_anchor::System as ProgramId>::ID` etc.
+                            return Ok(WrapperKind::Program(p.clone()));
                         }
                     }
                 }
@@ -131,7 +131,7 @@ enum Constraint {
     Discriminator([u8; 8]),
     /// Implied by `Program<'info, P>` field type — checks executable + key == P::ID.
     /// Not parseable from `#[account(...)]`; emitted only by `wrapper_implied`.
-    ProgramMarker(syn::Ident),
+    ProgramMarker(syn::Path),
 }
 
 impl Parse for Constraint {
