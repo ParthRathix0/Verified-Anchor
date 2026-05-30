@@ -14,6 +14,7 @@ pub use context::Context;
 pub mod prelude;
 
 pub use verified_anchor_macros::VerifiedAccounts;
+pub use verified_anchor_macros::AccountData as AccountData;
 
 /// Why account validation failed. `field` is the struct field name that failed.
 #[derive(Debug, Clone, PartialEq, Eq)]
