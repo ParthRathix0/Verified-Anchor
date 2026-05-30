@@ -1,12 +1,12 @@
 use sha2::{Digest, Sha256};
 use verified_anchor::VerifiedAccounts;
+use verified_anchor::{Signer, UncheckedAccount};
 
 #[derive(VerifiedAccounts)]
-struct Transfer {
+struct Transfer<'info> {
     #[account(mut)]
-    vault: u8,
-    #[account(signer)]
-    authority: u8,
+    vault: UncheckedAccount<'info>,
+    authority: Signer<'info>,
 }
 
 #[test]
@@ -14,14 +14,14 @@ fn lean_spec_matches() {
     let expected = "\
 { programId := Pubkey.zero, fields :=
   [ { name := \"vault\", ty := AccountType.uncheckedAccount, constraints := [Constraint.mut] }
-  , { name := \"authority\", ty := AccountType.uncheckedAccount, constraints := [Constraint.signer] } ] }";
+  , { name := \"authority\", ty := AccountType.signer, constraints := [] } ] }";
     assert_eq!(Transfer::lean_spec(), expected);
 }
 
 #[derive(VerifiedAccounts)]
-struct PdaSpec {
+struct PdaSpec<'info> {
     #[account(seeds = [b"vault", arg(0, 4)], bump)]
-    pda: u8,
+    pda: UncheckedAccount<'info>,
 }
 
 #[test]
@@ -33,13 +33,13 @@ fn lean_spec_seeds() {
 }
 
 #[derive(VerifiedAccounts)]
-struct InitClose {
+struct InitClose<'info> {
     #[account(init, payer = payer, space = 0)]
-    new: u8,
+    new: UncheckedAccount<'info>,
     #[account(mut)]
-    payer: u8,
+    payer: UncheckedAccount<'info>,
     #[account(close = payer)]
-    old: u8,
+    old: UncheckedAccount<'info>,
 }
 
 #[test]
@@ -60,9 +60,9 @@ fn disc(name: &str) -> [u8; 8] {
 }
 
 #[derive(VerifiedAccounts)]
-struct DiscSpec {
+struct DiscSpec<'info> {
     #[account(discriminator = "Vault")]
-    vault: u8,
+    vault: UncheckedAccount<'info>,
 }
 
 #[test]
