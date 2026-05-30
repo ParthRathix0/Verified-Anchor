@@ -4539,6 +4539,7 @@ dependencies = [
  "inventory",
  "litesvm",
  "openssl",
+ "sha2 0.10.9",
  "solana-account",
  "solana-hash",
  "solana-instruction",
@@ -4561,11 +4562,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "verified-anchor-exploits"
+version = "0.1.0"
+dependencies = [
+ "solana-program",
+ "verified-anchor",
+]
+
+[[package]]
 name = "verified-anchor-macros"
 version = "0.1.0"
 dependencies = [
  "proc-macro2",
  "quote",
+ "sha2 0.10.9",
  "syn 2.0.117",
  "trybuild",
  "verified-anchor",
