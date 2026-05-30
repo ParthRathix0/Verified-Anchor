@@ -610,17 +610,73 @@ pub fn derive_verified_accounts(input: TokenStream) -> TokenStream {
     let has_lifecycle = specs.iter().any(|s| s.constraints.iter().any(|c|
         matches!(c, Constraint::InitMarker | Constraint::Close(_))));
     let name_str = name.to_string();
-    let expanded = quote! {
-        impl ::verified_anchor::Validate for #name {
-            #body
+
+    let n_specs = specs.len();
+    let _ = n_specs; // kept for clarity; not used in codegen below
+    let has_info = specs.iter().any(|s| !matches!(s.kind, WrapperKind::BareU8));
+    let bumps_struct_name = syn::Ident::new(&format!("{}Bumps", name), name.span());
+
+    let field_inits: Vec<TokenStream2> = specs.iter().enumerate().map(|(i, spec)| {
+        let fname = syn::Ident::new(&spec.name, name.span());
+        match &spec.kind {
+            WrapperKind::Account(t) => quote! {
+                #fname: {
+                    let raw = accounts[#i].data.borrow();
+                    let bytes = raw.get(8..).ok_or(::verified_anchor::VAError::BorshFailed { field: stringify!(#fname) })?.to_vec();
+                    drop(raw);
+                    ::verified_anchor::Account {
+                        info: &accounts[#i],
+                        data: <#t as ::borsh::BorshDeserialize>::try_from_slice(&bytes)
+                            .map_err(|_| ::verified_anchor::VAError::BorshFailed { field: stringify!(#fname) })?,
+                    }
+                }
+            },
+            WrapperKind::Signer => quote! {
+                #fname: ::verified_anchor::Signer { info: &accounts[#i] }
+            },
+            WrapperKind::Program(p) => quote! {
+                #fname: ::verified_anchor::Program::<'info, #p>::new(&accounts[#i])
+            },
+            WrapperKind::SystemAccount => quote! {
+                #fname: ::verified_anchor::SystemAccount { info: &accounts[#i] }
+            },
+            WrapperKind::Unchecked => quote! {
+                #fname: ::verified_anchor::UncheckedAccount { info: &accounts[#i] }
+            },
+            WrapperKind::BareU8 => quote! {
+                #fname: 0u8   // transitional; removed when M1b errors on bare u8
+            },
         }
-        impl #name {
+    }).collect();
+
+    let validate_impl = if has_info {
+        quote! { impl<'info> ::verified_anchor::Validate for #name<'info> { #body } }
+    } else {
+        quote! { impl ::verified_anchor::Validate for #name { #body } }
+    };
+    let accounts_impl_target = if has_info { quote! { #name<'info> } } else { quote! { #name } };
+    let lean_spec_impl_target = if has_info { quote! { #name<'_> } } else { quote! { #name } };
+
+    let expanded = quote! {
+        #validate_impl
+        impl #lean_spec_impl_target {
             /// The Milestone-1 `AccountsStruct` literal for this struct (Lean source).
             pub fn lean_spec() -> ::std::string::String {
                 #lean.to_string()
             }
-
             #lifecycle
+        }
+        pub struct #bumps_struct_name;
+        impl<'info> ::verified_anchor::Accounts<'info> for #accounts_impl_target {
+            type Bumps = #bumps_struct_name;
+            fn try_accounts(
+                program_id: &::solana_program::pubkey::Pubkey,
+                accounts: &'info [::solana_program::account_info::AccountInfo<'info>],
+                instr_data: &[u8],
+            ) -> ::core::result::Result<Self, ::verified_anchor::VAError> {
+                <Self as ::verified_anchor::Validate>::validate(accounts, instr_data, program_id)?;
+                ::core::result::Result::Ok(Self { #(#field_inits),* })
+            }
         }
         // Host-only: `inventory` corrupts the Solana SBF ELF, so this registration must NOT
         // be compiled into a BPF program. Gated by target_os, matching verified-anchor's lib.
@@ -628,7 +684,7 @@ pub fn derive_verified_accounts(input: TokenStream) -> TokenStream {
         ::verified_anchor::inventory::submit! {
             ::verified_anchor::SpecEntry {
                 name: #name_str,
-                lean_spec: #name::lean_spec,
+                lean_spec: <#lean_spec_impl_target>::lean_spec,
                 has_lifecycle: #has_lifecycle,
             }
         }
