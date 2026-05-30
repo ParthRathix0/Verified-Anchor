@@ -64,9 +64,15 @@ Read `docs/verified-anchor-bridge.md`. Headline:
 
 ## License
 
-Licensed under either of
+Licensed under the **Creative Commons Attribution-NonCommercial-NoDerivatives
+4.0 International License** (CC BY-NC-ND 4.0). See `LICENSE` for the full text.
 
-- Apache License, Version 2.0 (`LICENSE-APACHE`)
-- MIT license (`LICENSE-MIT`)
+This is **not a standard open-source license**. Practical effects:
 
-at your option.
+- **NonCommercial.** You may not use the work for commercial advantage or
+  monetary compensation without separate written permission from the author.
+- **NoDerivatives.** You may not distribute modified versions of the work.
+
+Contributions are welcome via issues; substantive code patches must be
+accompanied by a contributor agreement granting the author the right to
+incorporate the change. Open an issue first if you intend to send code.
