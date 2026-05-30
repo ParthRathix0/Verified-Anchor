@@ -9,6 +9,7 @@ verified-anchor-macros = { path = "../verified-anchor-macros" }
 inventory = "0.3"
 
 [dev-dependencies]
+sha2 = "0.10"
 litesvm = "0.6"
 solana-account = "2.2"
 solana-hash = "2.2"

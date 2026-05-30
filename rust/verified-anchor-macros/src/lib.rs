@@ -1,6 +1,7 @@
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
+use sha2::{Digest, Sha256};
 use syn::parse::{Parse, ParseStream};
 use syn::{parse_macro_input, punctuated::Punctuated, Data, DeriveInput, Expr, Fields, Token};
 
@@ -25,6 +26,7 @@ enum Constraint {
     Seeds(Vec<SeedElem>),
     BumpCanonical,
     BumpDeclared(u8),
+    Discriminator([u8; 8]),
 }
 
 impl Parse for Constraint {
@@ -79,6 +81,17 @@ impl Parse for Constraint {
                     Ok(Constraint::BumpCanonical)
                 }
             }
+            "discriminator" => {
+                input.parse::<Token![=]>()?;
+                let lit: syn::LitStr = input.parse()?;
+                let mut h = Sha256::new();
+                h.update(b"account:");
+                h.update(lit.value().as_bytes());
+                let out = h.finalize();
+                let mut d = [0u8; 8];
+                d.copy_from_slice(&out[..8]);
+                Ok(Constraint::Discriminator(d))
+            }
             other => {
                 let known_unsupported = [
                     "realloc", "zero", "rent_exempt", "constraint", "token", "mint",
@@ -92,7 +105,7 @@ impl Parse for Constraint {
                 };
                 Err(syn::Error::new(
                     ident.span(),
-                    format!("{hint}; verified-anchor supports: signer, mut, owner, has_one, init, payer, space, close, seeds, bump. See docs/migrating-from-anchor.md"),
+                    format!("{hint}; verified-anchor supports: signer, mut, owner, has_one, init, payer, space, close, seeds, bump, discriminator. See docs/migrating-from-anchor.md"),
                 ))
             }
         }
@@ -183,6 +196,10 @@ fn lean_constraint(c: &Constraint) -> String {
             format!("Constraint.seeds [{}] @@BUMP@@", seeds.join(", "))
         }
         Constraint::BumpCanonical | Constraint::BumpDeclared(_) => String::new(),
+        Constraint::Discriminator(d) => {
+            let bytes: Vec<String> = d.iter().map(|x| x.to_string()).collect();
+            format!("Constraint.discriminator (ByteArray.mk #[{}])", bytes.join(", "))
+        }
     }
 }
 
@@ -279,6 +296,20 @@ fn validate_body(specs: &[FieldSpec]) -> TokenStream2 {
                                 .map_err(|_| ::verified_anchor::VAError::WrongHasOne { field: #fname, target: #tname })?;
                             if data.len() < 8 + 32 || &data[8..8 + 32] != accounts[#tidx].key.as_ref() {
                                 return Err(::verified_anchor::VAError::WrongHasOne { field: #fname, target: #tname });
+                            }
+                        }
+                    }
+                },
+                Constraint::Discriminator(disc) => {
+                    let fname = name;
+                    let bs: Vec<u8> = disc.to_vec();
+                    quote! {
+                        {
+                            let data = accounts[#i].try_borrow_data()
+                                .map_err(|_| ::verified_anchor::VAError::WrongDiscriminator { field: #fname })?;
+                            const __DISC: [u8; 8] = [#(#bs),*];
+                            if data.len() < 8 || data[0..8] != __DISC {
+                                return Err(::verified_anchor::VAError::WrongDiscriminator { field: #fname });
                             }
                         }
                     }
