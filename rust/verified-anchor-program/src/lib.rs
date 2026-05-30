@@ -6,28 +6,28 @@ use verified_anchor::{Validate, VerifiedAccounts};
 
 /// init a new account. Accounts: [new, payer, system_program].
 #[derive(VerifiedAccounts)]
-struct InitOne {
+struct InitOne<'info> {
     #[account(init, payer = payer, space = 0)]
-    new: u8,
-    #[account(mut, signer)]
-    payer: u8,
-    system_program: u8,
+    new: verified_anchor::UncheckedAccount<'info>,
+    #[account(mut)]
+    payer: verified_anchor::Signer<'info>,
+    system_program: verified_anchor::Program<'info, verified_anchor::System>,
 }
 
 /// close an account. Accounts: [target, dest].
 #[derive(VerifiedAccounts)]
-struct CloseOne {
+struct CloseOne<'info> {
     #[account(close = dest)]
-    target: u8,
+    target: verified_anchor::UncheckedAccount<'info>,
     #[account(mut)]
-    dest: u8,
+    dest: verified_anchor::UncheckedAccount<'info>,
 }
 
 /// validate a PDA. Accounts: [pda]. Instruction data: [2, arg0, arg1, arg2, arg3].
 #[derive(VerifiedAccounts)]
-struct CheckPda {
+struct CheckPda<'info> {
     #[account(seeds = [b"vault", arg(0, 4)], bump)]
-    pda: u8,
+    pda: verified_anchor::UncheckedAccount<'info>,
 }
 
 entrypoint!(process);
