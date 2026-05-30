@@ -8,6 +8,11 @@ pub use account_data::{AccountData, ProgramId, System};
 pub mod account;
 pub use account::{Account, Signer, Program, SystemAccount, UncheckedAccount};
 
+pub mod context;
+pub use context::Context;
+
+pub mod prelude;
+
 pub use verified_anchor_macros::VerifiedAccounts;
 
 /// Why account validation failed. `field` is the struct field name that failed.
@@ -24,6 +29,7 @@ pub enum VAError {
     WrongPda { field: &'static str },
     WrongBump { field: &'static str },
     WrongDiscriminator { field: &'static str },
+    BorshFailed { field: &'static str },
 }
 
 impl core::fmt::Display for VAError {
@@ -41,6 +47,7 @@ impl core::fmt::Display for VAError {
             VAError::WrongPda { field } => write!(f, "account `{field}` is not the expected PDA"),
             VAError::WrongBump { field } => write!(f, "account `{field}` has a non-canonical bump"),
             VAError::WrongDiscriminator { field } => write!(f, "account `{field}` has the wrong 8-byte discriminator"),
+            VAError::BorshFailed { field } => write!(f, "Borsh deserialization failed for `{field}`"),
         }
     }
 }
@@ -55,6 +62,17 @@ pub trait Validate {
         instr_data: &[u8],
         program_id: &Pubkey,
     ) -> Result<(), VAError>;
+}
+
+/// THE DEVELOPER SURFACE (M7a). `try_accounts` calls `Self::validate`
+/// (the proven layer) and Borsh-deserialises each `Account<T>` field.
+pub trait Accounts<'info>: Sized {
+    type Bumps;
+    fn try_accounts(
+        program_id: &Pubkey,
+        accounts: &'info [AccountInfo<'info>],
+        instr_data: &[u8],
+    ) -> Result<Self, VAError>;
 }
 
 // The spec-collection machinery uses `inventory`, whose `#[used]` link-section statics
