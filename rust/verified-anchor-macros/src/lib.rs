@@ -1,4 +1,11 @@
 use proc_macro::TokenStream;
+
+mod account_data_derive;
+
+#[proc_macro_derive(AccountData)]
+pub fn derive_account_data(input: TokenStream) -> TokenStream {
+    account_data_derive::derive(input)
+}
 use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
 use sha2::{Digest, Sha256};
