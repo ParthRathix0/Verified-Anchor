@@ -2,15 +2,19 @@ use sha2::{Digest, Sha256};
 use solana_program::account_info::AccountInfo;
 use solana_program::pubkey::Pubkey;
 use verified_anchor::{Validate, VAError, VerifiedAccounts};
+use verified_anchor::{Signer, UncheckedAccount};
+
+// Provide a crate::ID so that Account<'info, T> (which implies owner=crate::ID)
+// resolves in this test binary. Must be a valid base58 pubkey string of length 44.
+solana_program::declare_id!("VATest1111111111111111111111111111111111111");
 
 // Spec carrier: field names + #[account(..)] attrs define the constraints.
-// Field types are ignored by M2 codegen.
+// Field types are driven by the wrapper kind; Signer<'info> implies signer check.
 #[derive(VerifiedAccounts)]
-struct Transfer {
+struct Transfer<'info> {
     #[account(mut)]
-    vault: u8,
-    #[account(signer)]
-    authority: u8,
+    vault: UncheckedAccount<'info>,
+    authority: Signer<'info>,
 }
 
 struct Acct { key: Pubkey, owner: Pubkey, lamports: u64, data: Vec<u8>, is_signer: bool, is_writable: bool }
@@ -70,9 +74,9 @@ fn accepts_surplus_accounts() {
 const PROG_OWNER: Pubkey = Pubkey::new_from_array([7u8; 32]);
 
 #[derive(VerifiedAccounts)]
-struct OwnedVault {
+struct OwnedVault<'info> {
     #[account(owner = PROG_OWNER)]
-    vault: u8,
+    vault: UncheckedAccount<'info>,
 }
 
 fn acct_owned(owner: Pubkey) -> Acct {
@@ -94,10 +98,10 @@ fn rejects_wrong_owner() {
 }
 
 #[derive(VerifiedAccounts)]
-struct CheckOwner {
+struct CheckOwner<'info> {
     #[account(has_one = authority)]
-    vault: u8,
-    authority: u8,
+    vault: UncheckedAccount<'info>,
+    authority: UncheckedAccount<'info>,
 }
 
 fn acct_with_data(key: Pubkey, data: Vec<u8>) -> Acct {
@@ -126,9 +130,9 @@ fn has_one_rejects_mismatch() {
 }
 
 #[derive(VerifiedAccounts)]
-struct PdaAccount {
+struct PdaAccount<'info> {
     #[account(seeds = [b"vault", arg(0, 4)], bump)]
-    pda: u8,
+    pda: UncheckedAccount<'info>,
 }
 
 #[test]
@@ -151,9 +155,9 @@ fn seeds_rejects_wrong_pda() {
 }
 
 #[derive(VerifiedAccounts)]
-struct PdaDeclaredBump {
+struct PdaDeclaredBump<'info> {
     #[account(seeds = [b"vault"], bump = 0)]
-    pda: u8,
+    pda: UncheckedAccount<'info>,
 }
 
 #[test]
@@ -182,9 +186,9 @@ fn disc(name: &str) -> [u8; 8] {
 }
 
 #[derive(VerifiedAccounts)]
-struct DiscOnly {
+struct DiscOnly<'info> {
     #[account(discriminator = "Vault")]
-    vault: u8,
+    vault: UncheckedAccount<'info>,
 }
 
 #[test]
@@ -211,4 +215,159 @@ fn discriminator_rejects_short_data() {
     let accts = [v.info()];
     assert_eq!(DiscOnly::validate(&accts, &[], &any_pid()),
                Err(VAError::WrongDiscriminator { field: "vault" }));
+}
+
+#[derive(borsh::BorshSerialize, borsh::BorshDeserialize, verified_anchor_macros::AccountData)]
+struct Vault2 {
+    pub authority: solana_program::pubkey::Pubkey,
+    pub amount: u64,
+}
+
+#[test]
+fn account_data_derive_computes_anchor_discriminator() {
+    let expected = disc("Vault2"); // disc() from the M6 helper already in behavior.rs
+    assert_eq!(<Vault2 as verified_anchor::AccountData>::DISCRIMINATOR, expected);
+    let v = Vault2 { authority: solana_program::pubkey::Pubkey::new_from_array([7u8; 32]), amount: 42 };
+    let bytes = borsh::to_vec(&v).unwrap();
+    let v2: Vault2 = borsh::from_slice(&bytes).unwrap();
+    assert_eq!(v2.amount, 42);
+}
+
+// ── Task 1: try_accounts Borsh round-trip ────────────────────────────────────────────
+//
+// VaultDataStruct uses Account<'info, Vault2> which auto-implies:
+//   owner = crate::ID  (satisfied by the declare_id! near the top of this file)
+//   discriminator = sha256("account:Vault2")[..8]
+// try_accounts calls validate first (owner + discriminator checks), then Borsh-deserialises.
+
+#[derive(VerifiedAccounts)]
+struct VaultDataStruct<'info> {
+    vault: verified_anchor::Account<'info, Vault2>,
+}
+
+#[test]
+fn try_accounts_deserializes_typed_data() {
+    use verified_anchor::Accounts;
+    let v = Vault2 {
+        authority: Pubkey::new_from_array([7u8; 32]),
+        amount: 999,
+    };
+    let mut data = disc("Vault2").to_vec();
+    data.extend(borsh::to_vec(&v).unwrap());
+    let mut a = Acct {
+        key: Pubkey::new_unique(),
+        owner: crate::ID,   // satisfies Account<T>'s implied owner=crate::ID
+        lamports: 1,
+        data,
+        is_signer: false,
+        is_writable: false,
+    };
+    let accts = [a.info()];
+    let result: Result<VaultDataStruct, VAError> =
+        <VaultDataStruct as Accounts>::try_accounts(&crate::ID, &accts, &[]);
+    let parsed = result.expect("try_accounts should succeed with valid disc + payload");
+    assert_eq!(parsed.vault.data.amount, 999);
+    assert_eq!(parsed.vault.data.authority, Pubkey::new_from_array([7u8; 32]));
+}
+
+#[test]
+fn try_accounts_borsh_failed_on_truncated_data() {
+    use verified_anchor::Accounts;
+    // Only 8 discriminator bytes, no Borsh payload → BorshFailed
+    let data = disc("Vault2").to_vec();
+    let mut a = Acct {
+        key: Pubkey::new_unique(),
+        owner: crate::ID,
+        lamports: 1,
+        data,
+        is_signer: false,
+        is_writable: false,
+    };
+    let accts = [a.info()];
+    let result: Result<VaultDataStruct, VAError> =
+        <VaultDataStruct as Accounts>::try_accounts(&crate::ID, &accts, &[]);
+    assert_eq!(result.err(), Some(VAError::BorshFailed { field: "vault" }));
+}
+
+// ── Task 2: SystemAccount + Program<P> wrapper-reject tests ─────────────────────────
+
+#[derive(VerifiedAccounts)]
+struct SysAccountField<'info> {
+    sys: verified_anchor::SystemAccount<'info>,
+}
+
+#[test]
+fn system_account_accepts_system_owner() {
+    let mut a = Acct {
+        key: Pubkey::new_unique(),
+        owner: solana_program::system_program::ID,
+        lamports: 1,
+        data: vec![],
+        is_signer: false,
+        is_writable: false,
+    };
+    let accts = [a.info()];
+    assert_eq!(SysAccountField::validate(&accts, &[], &any_pid()), Ok(()));
+}
+
+#[test]
+fn system_account_rejects_non_system_owner() {
+    let mut a = Acct {
+        key: Pubkey::new_unique(),
+        owner: Pubkey::new_unique(),   // not system program
+        lamports: 1,
+        data: vec![],
+        is_signer: false,
+        is_writable: false,
+    };
+    let accts = [a.info()];
+    assert_eq!(
+        SysAccountField::validate(&accts, &[], &any_pid()),
+        Err(VAError::WrongOwner { field: "sys" })
+    );
+}
+
+#[derive(VerifiedAccounts)]
+struct ProgField<'info> {
+    sys: verified_anchor::Program<'info, verified_anchor::System>,
+}
+
+#[test]
+fn program_accepts_executable_with_correct_key() {
+    let key = solana_program::system_program::ID;   // matches System::ID
+    let owner = Pubkey::new_unique();
+    let mut lamports = 1u64;
+    let mut data: Vec<u8> = vec![];
+    let info = AccountInfo::new(&key, false, false, &mut lamports, &mut data, &owner, true, 0);
+    let accts = [info];
+    assert_eq!(ProgField::validate(&accts, &[], &any_pid()), Ok(()));
+}
+
+#[test]
+fn program_rejects_non_executable() {
+    let key = solana_program::system_program::ID;
+    let owner = Pubkey::new_unique();
+    let mut lamports = 1u64;
+    let mut data: Vec<u8> = vec![];
+    // executable = false
+    let info = AccountInfo::new(&key, false, false, &mut lamports, &mut data, &owner, false, 0);
+    let accts = [info];
+    assert_eq!(
+        ProgField::validate(&accts, &[], &any_pid()),
+        Err(VAError::WrongOwner { field: "sys" })
+    );
+}
+
+#[test]
+fn program_rejects_wrong_key() {
+    let wrong_key = Pubkey::new_unique();   // not system_program::ID
+    let owner = Pubkey::new_unique();
+    let mut lamports = 1u64;
+    let mut data: Vec<u8> = vec![];
+    let info = AccountInfo::new(&wrong_key, false, false, &mut lamports, &mut data, &owner, true, 0);
+    let accts = [info];
+    assert_eq!(
+        ProgField::validate(&accts, &[], &any_pid()),
+        Err(VAError::WrongOwner { field: "sys" })
+    );
 }

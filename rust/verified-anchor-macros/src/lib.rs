@@ -1,4 +1,11 @@
 use proc_macro::TokenStream;
+
+mod account_data_derive;
+
+#[proc_macro_derive(AccountData)]
+pub fn derive_account_data(input: TokenStream) -> TokenStream {
+    account_data_derive::derive(input)
+}
 use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
 use sha2::{Digest, Sha256};
@@ -6,13 +13,107 @@ use syn::parse::{Parse, ParseStream};
 use syn::{parse_macro_input, punctuated::Punctuated, Data, DeriveInput, Expr, Fields, Token};
 
 /// One element of a `seeds = [...]` list.
+#[derive(Clone)]
 enum SeedElem {
     Literal(syn::LitByteStr),   // b"vault"
     FieldKey(syn::Ident),       // field.key()
     InstrArg(usize, usize),     // arg(off, len)
 }
 
+/// Recognised field-type wrapper categories.
+#[derive(Clone)]
+#[allow(dead_code)]
+enum WrapperKind {
+    /// `Account<'info, T>` — type name is the inner T's ident.
+    Account(syn::Ident),
+    /// `Signer<'info>`.
+    Signer,
+    /// `Program<'info, P>` — full path of P (e.g. `verified_anchor::System`).
+    Program(syn::Path),
+    /// `SystemAccount<'info>`.
+    SystemAccount,
+    /// `UncheckedAccount<'info>` or `AccountInfo<'info>`.
+    Unchecked,
+}
+
+/// Recognise a field's type as a wrapper. Returns an error for `u8` (bare u8 removed in M1b)
+/// and an error span for unrecognised types.
+fn classify_field_type(ty: &syn::Type) -> syn::Result<WrapperKind> {
+    use syn::{PathArguments, Type, TypePath};
+    if let Type::Path(TypePath { qself: None, path }) = ty {
+        if path.is_ident("u8") {
+            return Err(syn::Error::new_spanned(ty,
+                "verified-anchor: bare `u8` field types are not supported; use a typed wrapper like `Account<'info, T>`, `Signer<'info>`, `UncheckedAccount<'info>`, etc. See docs/migrating-from-anchor.md"));
+        }
+        let last = path.segments.last().ok_or_else(||
+            syn::Error::new_spanned(ty, "verified-anchor: unrecognised field type"))?;
+        let ident_str = last.ident.to_string();
+        match ident_str.as_str() {
+            "Account" => {
+                if let PathArguments::AngleBracketed(args) = &last.arguments {
+                    for ga in &args.args {
+                        if let syn::GenericArgument::Type(Type::Path(TypePath { qself: None, path: p })) = ga {
+                            if let Some(seg) = p.segments.last() {
+                                return Ok(WrapperKind::Account(seg.ident.clone()));
+                            }
+                        }
+                    }
+                }
+                Err(syn::Error::new_spanned(ty, "Account<'info, T> requires a type argument"))
+            }
+            "Signer" => Ok(WrapperKind::Signer),
+            "SystemAccount" => Ok(WrapperKind::SystemAccount),
+            "UncheckedAccount" | "AccountInfo" => Ok(WrapperKind::Unchecked),
+            "Program" => {
+                if let PathArguments::AngleBracketed(args) = &last.arguments {
+                    for ga in &args.args {
+                        if let syn::GenericArgument::Type(Type::Path(TypePath { qself: None, path: p })) = ga {
+                            // Keep the full path (e.g. `verified_anchor::System`) so code-gen
+                            // can emit `<verified_anchor::System as ProgramId>::ID` etc.
+                            return Ok(WrapperKind::Program(p.clone()));
+                        }
+                    }
+                }
+                Err(syn::Error::new_spanned(ty, "Program<'info, P> requires a type argument"))
+            }
+            _ => Err(syn::Error::new_spanned(ty,
+                format!("verified-anchor: unrecognised field wrapper `{ident_str}`; use one of Account<'info, T>, Signer<'info>, Program<'info, P>, SystemAccount<'info>, UncheckedAccount<'info>, AccountInfo<'info>"))),
+        }
+    } else {
+        Err(syn::Error::new_spanned(ty, "verified-anchor: unrecognised field type"))
+    }
+}
+
+/// The per-constraint implications of the field's wrapper kind.
+/// `Account<T>` implies owner=crate::ID + discriminator=sha256("account:T")[..8].
+/// `Signer` implies signer. `SystemAccount` implies owner=system_program::ID.
+/// `Program<P>` synthesises a `ProgramMarker(P)` checked in validate_body.
+/// `Unchecked` implies nothing.
+fn wrapper_implied(kind: &WrapperKind) -> Vec<Constraint> {
+    match kind {
+        WrapperKind::Account(t) => {
+            let mut h = Sha256::new();
+            h.update(b"account:");
+            h.update(t.to_string().as_bytes());
+            let out = h.finalize();
+            let mut d = [0u8; 8];
+            d.copy_from_slice(&out[..8]);
+            vec![
+                Constraint::Owner(syn::parse_quote! { crate::ID }),
+                Constraint::Discriminator(d),
+            ]
+        }
+        WrapperKind::Signer => vec![Constraint::Signer],
+        WrapperKind::SystemAccount => vec![
+            Constraint::Owner(syn::parse_quote! { ::solana_program::system_program::ID }),
+        ],
+        WrapperKind::Program(p) => vec![Constraint::ProgramMarker(p.clone())],
+        WrapperKind::Unchecked => vec![],
+    }
+}
+
 /// One M2/M3 constraint parsed from a field's `#[account(...)]`.
+#[derive(Clone)]
 enum Constraint {
     Signer,
     Mut,
@@ -27,6 +128,9 @@ enum Constraint {
     BumpCanonical,
     BumpDeclared(u8),
     Discriminator([u8; 8]),
+    /// Implied by `Program<'info, P>` field type — checks executable + key == P::ID.
+    /// Not parseable from `#[account(...)]`; emitted only by `wrapper_implied`.
+    ProgramMarker(syn::Path),
 }
 
 impl Parse for Constraint {
@@ -150,6 +254,7 @@ fn lit_usize(e: Option<&Expr>) -> syn::Result<usize> {
 struct FieldSpec {
     name: String,
     constraints: Vec<Constraint>,
+    kind: WrapperKind,
 }
 
 fn collect_fields(input: &DeriveInput) -> syn::Result<Vec<FieldSpec>> {
@@ -171,7 +276,8 @@ fn collect_fields(input: &DeriveInput) -> syn::Result<Vec<FieldSpec>> {
                 constraints.extend(parsed);
             }
         }
-        specs.push(FieldSpec { name, constraints });
+        let kind = classify_field_type(&field.ty)?;
+        specs.push(FieldSpec { name, constraints, kind });
     }
     Ok(specs)
 }
@@ -200,6 +306,7 @@ fn lean_constraint(c: &Constraint) -> String {
             let bytes: Vec<String> = d.iter().map(|x| x.to_string()).collect();
             format!("Constraint.discriminator (ByteArray.mk #[{}])", bytes.join(", "))
         }
+        Constraint::ProgramMarker(_) => String::new(),
     }
 }
 
@@ -226,12 +333,21 @@ fn lean_spec_string(specs: &[FieldSpec]) -> String {
             if let Constraint::Close(d) = c { Some(d.to_string()) } else { None }) {
             cs.push(format!("Constraint.close \"{}\"", dest));
         }
-        // If this field has a has_one constraint, emit a richer AccountType so the Lean
-        // layout resolver can locate the stored Pubkey at offset 8 (after the discriminator).
-        let ty = spec.constraints.iter().find_map(|c| {
-            if let Constraint::HasOne(t) = c { Some(t.to_string()) } else { None }
-        }).map(|t| format!("AccountType.account \"Vault\" [(\"{}\", 8)] Pubkey.zero", t))
-          .unwrap_or_else(|| "AccountType.uncheckedAccount".to_string());
+        let ty = match &spec.kind {
+            WrapperKind::Account(t) => {
+                let layout = spec.constraints.iter().find_map(|c| {
+                    if let Constraint::HasOne(target) = c { Some(target.to_string()) } else { None }
+                });
+                let lay = match layout {
+                    Some(target) => format!("[(\"{}\", 8)]", target),
+                    None => "[]".to_string(),
+                };
+                format!("AccountType.account \"{}\" {} Pubkey.zero", t, lay)
+            }
+            WrapperKind::Signer => "AccountType.signer".to_string(),
+            WrapperKind::SystemAccount => "AccountType.systemAccount".to_string(),
+            WrapperKind::Program(_) | WrapperKind::Unchecked => "AccountType.uncheckedAccount".to_string(),
+        };
         let bump_str = spec.constraints.iter().find_map(|c| match c {
             Constraint::BumpCanonical => Some("BumpSpec.canonical".to_string()),
             Constraint::BumpDeclared(d) => Some(format!("BumpSpec.declared {}", d)),
@@ -268,7 +384,11 @@ fn validate_body(specs: &[FieldSpec]) -> TokenStream2 {
     let mut checks = Vec::new();
     for (i, spec) in specs.iter().enumerate() {
         let name = &spec.name;
-        for c in &spec.constraints {
+        let implied = wrapper_implied(&spec.kind);
+        let effective: Vec<Constraint> = implied.into_iter()
+            .chain(spec.constraints.iter().cloned())
+            .collect();
+        for c in &effective {
             let check = match c {
                 Constraint::Signer => quote! {
                     if !accounts[#i].is_signer {
@@ -311,6 +431,18 @@ fn validate_body(specs: &[FieldSpec]) -> TokenStream2 {
                             if data.len() < 8 || data[0..8] != __DISC {
                                 return Err(::verified_anchor::VAError::WrongDiscriminator { field: #fname });
                             }
+                        }
+                    }
+                },
+                Constraint::ProgramMarker(p) => {
+                    let fname = name;
+                    let pid_ty = p;
+                    quote! {
+                        if !accounts[#i].executable {
+                            return Err(::verified_anchor::VAError::WrongOwner { field: #fname });
+                        }
+                        if accounts[#i].key != &<#pid_ty as ::verified_anchor::ProgramId>::ID {
+                            return Err(::verified_anchor::VAError::WrongOwner { field: #fname });
                         }
                     }
                 },
@@ -468,17 +600,68 @@ pub fn derive_verified_accounts(input: TokenStream) -> TokenStream {
     let has_lifecycle = specs.iter().any(|s| s.constraints.iter().any(|c|
         matches!(c, Constraint::InitMarker | Constraint::Close(_))));
     let name_str = name.to_string();
-    let expanded = quote! {
-        impl ::verified_anchor::Validate for #name {
-            #body
+
+    let has_info = !specs.is_empty();
+    let bumps_struct_name = syn::Ident::new(&format!("{}Bumps", name), name.span());
+
+    let field_inits: Vec<TokenStream2> = specs.iter().enumerate().map(|(i, spec)| {
+        let fname = syn::Ident::new(&spec.name, name.span());
+        match &spec.kind {
+            WrapperKind::Account(t) => quote! {
+                #fname: {
+                    let raw = accounts[#i].data.borrow();
+                    let bytes = raw.get(8..).ok_or(::verified_anchor::VAError::BorshFailed { field: stringify!(#fname) })?.to_vec();
+                    drop(raw);
+                    ::verified_anchor::Account {
+                        info: &accounts[#i],
+                        data: <#t as ::borsh::BorshDeserialize>::try_from_slice(&bytes)
+                            .map_err(|_| ::verified_anchor::VAError::BorshFailed { field: stringify!(#fname) })?,
+                    }
+                }
+            },
+            WrapperKind::Signer => quote! {
+                #fname: ::verified_anchor::Signer { info: &accounts[#i] }
+            },
+            WrapperKind::Program(p) => quote! {
+                #fname: ::verified_anchor::Program::<'info, #p>::new(&accounts[#i])
+            },
+            WrapperKind::SystemAccount => quote! {
+                #fname: ::verified_anchor::SystemAccount { info: &accounts[#i] }
+            },
+            WrapperKind::Unchecked => quote! {
+                #fname: ::verified_anchor::UncheckedAccount { info: &accounts[#i] }
+            },
         }
-        impl #name {
+    }).collect();
+
+    let validate_impl = if has_info {
+        quote! { impl<'info> ::verified_anchor::Validate for #name<'info> { #body } }
+    } else {
+        quote! { impl ::verified_anchor::Validate for #name { #body } }
+    };
+    let accounts_impl_target = if has_info { quote! { #name<'info> } } else { quote! { #name } };
+    let lean_spec_impl_target = if has_info { quote! { #name<'_> } } else { quote! { #name } };
+
+    let expanded = quote! {
+        #validate_impl
+        impl #lean_spec_impl_target {
             /// The Milestone-1 `AccountsStruct` literal for this struct (Lean source).
             pub fn lean_spec() -> ::std::string::String {
                 #lean.to_string()
             }
-
             #lifecycle
+        }
+        pub struct #bumps_struct_name;
+        impl<'info> ::verified_anchor::Accounts<'info> for #accounts_impl_target {
+            type Bumps = #bumps_struct_name;
+            fn try_accounts(
+                program_id: &::solana_program::pubkey::Pubkey,
+                accounts: &'info [::solana_program::account_info::AccountInfo<'info>],
+                instr_data: &[u8],
+            ) -> ::core::result::Result<Self, ::verified_anchor::VAError> {
+                <Self as ::verified_anchor::Validate>::validate(accounts, instr_data, program_id)?;
+                ::core::result::Result::Ok(Self { #(#field_inits),* })
+            }
         }
         // Host-only: `inventory` corrupts the Solana SBF ELF, so this registration must NOT
         // be compiled into a BPF program. Gated by target_os, matching verified-anchor's lib.
@@ -486,7 +669,7 @@ pub fn derive_verified_accounts(input: TokenStream) -> TokenStream {
         ::verified_anchor::inventory::submit! {
             ::verified_anchor::SpecEntry {
                 name: #name_str,
-                lean_spec: #name::lean_spec,
+                lean_spec: <#lean_spec_impl_target>::lean_spec,
                 has_lifecycle: #has_lifecycle,
             }
         }

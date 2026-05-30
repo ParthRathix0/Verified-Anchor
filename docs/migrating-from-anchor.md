@@ -4,6 +4,28 @@ verified-anchor verifies a **subset** of Anchor's `#[derive(Accounts)]` account 
 Programs in the subset get a machine-checked guarantee that the generated validation/lifecycle
 code implements the formal contract.
 
+## Syntax mapping (M7a)
+
+verified-anchor is now signature-identical to stock Anchor at the account-validation surface.
+A typical struct migrates field-for-field:
+
+| Stock Anchor                                  | verified-anchor (M7a)                                       |
+|-----------------------------------------------|-------------------------------------------------------------|
+| `pub vault: Account<'info, Vault>`            | `pub vault: Account<'info, Vault>`                          |
+| `pub authority: Signer<'info>`                | `pub authority: Signer<'info>`                              |
+| `pub system_program: Program<'info, System>`  | `pub system_program: Program<'info, System>`                |
+| `#[account(init, payer = p, space = n)]`      | same                                                        |
+| `#[account(has_one = bank)]`                  | same                                                        |
+| `#[account(seeds = [..], bump)]`              | same (canonical-only — see bridge)                          |
+| `#[account]` on type T                        | `#[derive(BorshSerialize, BorshDeserialize, AccountData)]`  |
+
+Plus: `use verified_anchor::prelude::*;` brings in everything (wrappers, traits, Context, derives).
+
+**Bare `u8` field types are no longer supported (M7a).** Prior to M7a, account fields could be
+declared as bare `u8` as a placeholder; this is now a compile error. The
+`#[derive(VerifiedAccounts)]` macro emits a `compile_error!` pointing back to this guide. Migrate
+every field to one of the typed wrappers shown in the table above.
+
 ## Workflow
 
 1. Replace `#[derive(Accounts)]` with `#[derive(verified_anchor::VerifiedAccounts)]` and add
