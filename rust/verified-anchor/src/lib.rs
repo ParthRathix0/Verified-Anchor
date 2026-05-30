@@ -17,6 +17,7 @@ pub enum VAError {
     CloseFailed { field: &'static str },
     WrongPda { field: &'static str },
     WrongBump { field: &'static str },
+    WrongDiscriminator { field: &'static str },
 }
 
 impl core::fmt::Display for VAError {
@@ -33,6 +34,7 @@ impl core::fmt::Display for VAError {
             VAError::CloseFailed { field } => write!(f, "close failed for `{field}`"),
             VAError::WrongPda { field } => write!(f, "account `{field}` is not the expected PDA"),
             VAError::WrongBump { field } => write!(f, "account `{field}` has a non-canonical bump"),
+            VAError::WrongDiscriminator { field } => write!(f, "account `{field}` has the wrong 8-byte discriminator"),
         }
     }
 }
