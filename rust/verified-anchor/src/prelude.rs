@@ -6,5 +6,5 @@ pub use crate::{
     Signer, System, SystemAccount, UncheckedAccount, VAError, Validate, VerifiedAccounts,
 };
 pub use solana_program::account_info::AccountInfo;
-// The AccountData derive proc-macro is re-exported once it exists (Task D1):
-// pub use verified_anchor_macros::AccountData;
+// The AccountData derive proc-macro (Task D1):
+pub use verified_anchor_macros::AccountData;

@@ -212,3 +212,19 @@ fn discriminator_rejects_short_data() {
     assert_eq!(DiscOnly::validate(&accts, &[], &any_pid()),
                Err(VAError::WrongDiscriminator { field: "vault" }));
 }
+
+#[derive(borsh::BorshSerialize, borsh::BorshDeserialize, verified_anchor_macros::AccountData)]
+struct Vault2 {
+    pub authority: solana_program::pubkey::Pubkey,
+    pub amount: u64,
+}
+
+#[test]
+fn account_data_derive_computes_anchor_discriminator() {
+    let expected = disc("Vault2"); // disc() from the M6 helper already in behavior.rs
+    assert_eq!(<Vault2 as verified_anchor::AccountData>::DISCRIMINATOR, expected);
+    let v = Vault2 { authority: solana_program::pubkey::Pubkey::new_from_array([7u8; 32]), amount: 42 };
+    let bytes = borsh::to_vec(&v).unwrap();
+    let v2: Vault2 = borsh::from_slice(&bytes).unwrap();
+    assert_eq!(v2.amount, 42);
+}
