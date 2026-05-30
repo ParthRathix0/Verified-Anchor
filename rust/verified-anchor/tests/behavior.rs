@@ -370,6 +370,24 @@ fn program_rejects_wrong_key() {
     );
 }
 
+#[derive(VerifiedAccounts)]
+struct WithPda<'info> {
+    #[account(seeds = [b"vault", arg(0, 4)], bump)]
+    pda: verified_anchor::UncheckedAccount<'info>,
+}
+
+#[test]
+fn bumps_struct_carries_canonical_bump() {
+    use verified_anchor::Accounts;
+    let program_id = Pubkey::new_unique();
+    let arg = [1u8, 2, 3, 4];
+    let (pda, expected_bump) = Pubkey::find_program_address(&[b"vault", &arg], &program_id);
+    let mut a = Acct { key: pda, owner: Pubkey::new_unique(), lamports: 1, data: vec![], is_signer: false, is_writable: false };
+    let accts = [a.info()];
+    let (_struct, bumps) = <WithPda as Accounts>::try_accounts(&program_id, &accts, &arg).unwrap();
+    assert_eq!(bumps.pda, expected_bump);
+}
+
 #[verified_anchor::account]
 pub struct VaultAttr { pub authority: solana_program::pubkey::Pubkey, pub amount: u64 }
 
