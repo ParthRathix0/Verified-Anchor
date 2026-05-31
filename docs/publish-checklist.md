@@ -19,24 +19,36 @@ Pre-publish steps (must be done before `cargo publish`):
    # in dry-run). It will succeed at the real-publish step below.
    ```
    The first two dry-runs must succeed before proceeding.
-4. **Publish.** Sleep ~60 seconds between publishes so the registry has time to index each crate (without this, the next `cargo publish` can fail because the registry lookup of the newly-uploaded dep hasn't propagated yet):
+4. **Push the version tag FIRST.** `cargo-verified-anchor` auto-fetches the Lean proof library
+   from the git tag `v<version>` (e.g. `v0.1.1`) on first run, so that tag must exist on the
+   public repo before the published tool is used:
+   ```bash
+   git tag v0.1.1 && git push origin v0.1.1
+   ```
+5. **Publish in dependency order.** Modern cargo auto-waits for each upload to appear in the
+   index before returning, so explicit sleeps are usually unnecessary; if the runtime publish
+   can't find the just-published macros, wait ~60 s and re-run it:
    ```bash
    cd rust
-   cargo publish -p verified-anchor-macros && sleep 60
-   cargo publish -p verified-anchor && sleep 60
+   cargo publish -p verified-anchor-macros
+   cargo publish -p verified-anchor
    cargo publish -p cargo-verified-anchor
    ```
 
 After-publish housekeeping:
 
-- Tag the commit: `git tag v0.1.0 && git push --tags`.
 - Verify the crates.io page renders the README correctly (the `readme = "../../README.md"` path means it picks up the workspace-root README).
+- Sanity-check the no-clone path: `cargo install cargo-verified-anchor` in a clean dir, then
+  `cargo verified-anchor check -p <a crate using verified-anchor>` — the first run should
+  fetch the pinned proofs into the cache and discharge.
 - Announce.
 
-What is NOT published:
+What is NOT published (but IS reachable):
 
 - `verified-anchor-program`, `verified-anchor-example`, `verified-anchor-exploits` are test fixtures (`publish = false`).
-- The Lean source under `lean/` is the proof artefact; it is NOT a Rust crate and does not go to crates.io.
+- The Lean source under `lean/` is the proof artefact; it is NOT a Rust crate and does not go to
+  crates.io. Instead `cargo-verified-anchor` shallow-clones it from the pinned `v<version>` tag
+  into a cache dir on first `check` (override with `--lean-dir` or `VERIFIED_ANCHOR_LEAN_DIR`).
 
 What to verify before tagging v0.2.0 / v0.x.0:
 

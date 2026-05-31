@@ -166,6 +166,18 @@ Docs updated in the same pass: `docs/verified-anchor-bridge.md` (correspondence-
 `executable`/`address`, the "wrapper base checks are modelled" note, the instr-arg clamping note);
 `docs/announcement-v0.1.0.md` (proven-core list); `docs/migrating-from-anchor.md` (wrapper note).
 
+**Distribution / crates.io (v0.1.1).** To make the tool no-clone, `cargo-verified-anchor`'s
+`locate_lean_dir` gained a final fallback (`discharge.rs::fetch_pinned_lean`): if no `--lean-dir`
+/ `$VERIFIED_ANCHOR_LEAN_DIR` / sibling `lean/` is found, it shallow-`git clone`s the pinned tag
+`v<CARGO_PKG_VERSION>` into a cache dir (`$XDG_CACHE_HOME/verified-anchor/...`) and uses its
+`lean/` — std-only, no new deps; cache-hit path unit-tested. So the full user flow is
+`cargo add verified-anchor` + `cargo install cargo-verified-anchor` + `elan` (Lean kernel is
+unavoidable to *check* a proof). All crates bumped 0.1.0 → **0.1.1** (the published version; the
+hardened Lean lib must match the macros, and the `v0.1.0` tag predates the hardening). Release =
+git tag `v0.1.1` at the bumped commit; the tag MUST be pushed before the published tool is used
+(it pins that tag). README "Status"/"Quick start", landing page (`web/index.html` + `web/vercel.json`),
+and `docs/publish-checklist.md` updated for the crates.io install + the auto-fetch.
+
 ## What is left for the user to do (after submission)
 
 - `docs/publish-checklist.md` walks through `cargo login` → dry-runs → publish.
