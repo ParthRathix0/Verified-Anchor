@@ -352,7 +352,10 @@ fn lean_spec_string(specs: &[FieldSpec]) -> String {
             }
             WrapperKind::Signer => "AccountType.signer".to_string(),
             WrapperKind::SystemAccount => "AccountType.systemAccount".to_string(),
-            WrapperKind::Program(_) | WrapperKind::Unchecked => "AccountType.uncheckedAccount".to_string(),
+            // `Program<P>` implies `executable` + `address = P::ID` in Lean; the concrete id
+            // is unknown at macro time, so emit the schematic placeholder `Pubkey.zero`.
+            WrapperKind::Program(_) => "AccountType.program Pubkey.zero".to_string(),
+            WrapperKind::Unchecked => "AccountType.uncheckedAccount".to_string(),
         };
         let bump_str = spec.constraints.iter().find_map(|c| match c {
             Constraint::BumpCanonical => Some("BumpSpec.canonical".to_string()),
@@ -478,7 +481,9 @@ fn validate_body(specs: &[FieldSpec]) -> TokenStream2 {
                 }
                 SeedElem::InstrArg(off, len) => {
                     let end = off + len;
-                    quote! { &instr_data[#off..#end] }
+                    // Clamp to length so a short `instr_data` cannot panic; this mirrors the
+                    // Lean model's `ByteArray.extract off (off+len)` (which clamps both bounds).
+                    quote! { &instr_data[(#off).min(instr_data.len())..(#end).min(instr_data.len())] }
                 }
             }).collect();
             let bump_check = match spec.constraints.iter().find_map(|c| match c {
@@ -522,6 +527,7 @@ fn validate_body(specs: &[FieldSpec]) -> TokenStream2 {
 }
 
 fn lifecycle_body(specs: &[FieldSpec]) -> TokenStream2 {
+    let n = specs.len();
     // Build name→index map for resolving payer/dest references.
     let index_of: std::collections::HashMap<String, usize> =
         specs.iter().enumerate().map(|(i, s)| (s.name.clone(), i)).collect();
@@ -586,6 +592,12 @@ fn lifecycle_body(specs: &[FieldSpec]) -> TokenStream2 {
             program_id: &::solana_program::pubkey::Pubkey,
             rent_lamports: u64,
         ) -> ::core::result::Result<(), ::verified_anchor::VAError> {
+            // Bounds guard: the steps index accounts by declared field position. Without this a
+            // short slice would panic; the Lean `applyInit`/`applyClose` are none-safe on
+            // out-of-range indices, so reject cleanly here to mirror that.
+            if accounts.len() < #n {
+                return Err(::verified_anchor::VAError::NotEnoughAccounts { expected: #n, got: accounts.len() });
+            }
             #(#lifecycle_steps)*
             Ok(())
         }
@@ -633,7 +645,8 @@ pub fn derive_verified_accounts(input: TokenStream) -> TokenStream {
             }
             SeedElem::InstrArg(off, len) => {
                 let end = off + len;
-                quote! { &instr_data[#off..#end] }
+                // Clamp to length (matches the validate-side seed slice and the Lean model).
+                quote! { &instr_data[(#off).min(instr_data.len())..(#end).min(instr_data.len())] }
             }
         }).collect();
         (fname, seed_exprs)

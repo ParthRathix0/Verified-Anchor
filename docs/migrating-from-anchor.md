@@ -21,6 +21,12 @@ A typical struct migrates field-for-field:
 
 Plus: `use verified_anchor::prelude::*;` brings in everything (wrappers, traits, Context, derives).
 
+The wrapper types' base checks are part of the proven subset, not just runtime conveniences:
+`Account<'info, T>` implies `owner` + `discriminator`, `Signer<'info>` implies `signer`,
+`SystemAccount<'info>` implies `owner == system_program`, and `Program<'info, P>` implies
+`executable` + `key == P::ID`. Each maps to a constraint in the Lean contract that
+`genValidate_sound` discharges (see [`verified-anchor-bridge.md`](verified-anchor-bridge.md)).
+
 **Bare `u8` field types are not supported.** The macro requires one of the typed wrappers in
 the table above. Declaring an account field as `u8` is a compile error; the
 `#[derive(VerifiedAccounts)]` macro emits a `compile_error!` pointing back to this guide.

@@ -50,6 +50,8 @@ def satisfies (s : AccountsStruct) (c : Ctx) (idx : Nat) (f : AccountField) :
   | .signer => (Ctx.atField s c idx).satisfiesSome (fun a => a.isSigner = true)
   | .mut    => (Ctx.atField s c idx).satisfiesSome (fun a => a.isWritable = true)
   | .owner expected => (Ctx.atField s c idx).satisfiesSome (fun a => a.owner = expected)
+  | .executable => (Ctx.atField s c idx).satisfiesSome (fun a => a.executable = true)
+  | .address expected => (Ctx.atField s c idx).satisfiesSome (fun a => a.key = expected)
   | .discriminator d => (Ctx.atField s c idx).satisfiesSome (fun a => hasDiscriminator a d)
   | .hasOne field =>
       (Ctx.atField s c idx).satisfiesSome (fun a =>

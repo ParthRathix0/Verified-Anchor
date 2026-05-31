@@ -388,6 +388,44 @@ fn bumps_struct_carries_canonical_bump() {
     assert_eq!(bumps.pda, expected_bump);
 }
 
+#[test]
+fn seeds_short_instr_data_does_not_panic() {
+    // `arg(0, 4)` on EMPTY instruction data must not panic. The generated slice is clamped to
+    // the data length (mirroring the Lean `ByteArray.extract`), so validation cleanly rejects
+    // with WrongPda instead of an out-of-bounds slice panic.
+    let mut a = Acct {
+        key: Pubkey::new_unique(),
+        owner: Pubkey::new_unique(),
+        lamports: 1,
+        data: vec![],
+        is_signer: false,
+        is_writable: false,
+    };
+    let accts = [a.info()];
+    assert_eq!(
+        WithPda::validate(&accts, &[], &any_pid()),
+        Err(VAError::WrongPda { field: "pda" })
+    );
+}
+
+#[derive(VerifiedAccounts)]
+struct LifecycleGuard<'info> {
+    #[account(close = dest)]
+    target: UncheckedAccount<'info>,
+    #[account(mut)]
+    dest: UncheckedAccount<'info>,
+}
+
+#[test]
+fn execute_lifecycle_rejects_short_accounts() {
+    // execute_lifecycle indexes accounts by field position. On too few accounts it must
+    // return NotEnoughAccounts (mirroring the Lean none-safety), not panic on an OOB index.
+    assert_eq!(
+        LifecycleGuard::execute_lifecycle(&[], &any_pid(), 0),
+        Err(VAError::NotEnoughAccounts { expected: 2, got: 0 })
+    );
+}
+
 #[verified_anchor::account]
 pub struct VaultAttr { pub authority: solana_program::pubkey::Pubkey, pub amount: u64 }
 
