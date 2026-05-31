@@ -493,7 +493,7 @@ checksum = "1e748733b7cbc798e1434b6ac524f0c1ff2ab456fe201501e6497c8417a4fc33"
 
 [[package]]
 name = "cargo-verified-anchor"
-version = "0.1.0"
+version = "0.1.1"
 
 [[package]]
 name = "cc"
@@ -4534,7 +4534,7 @@ checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
 
 [[package]]
 name = "verified-anchor"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "borsh 1.6.1",
  "inventory",
@@ -4556,7 +4556,7 @@ dependencies = [
 
 [[package]]
 name = "verified-anchor-example"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "solana-program",
  "verified-anchor",
@@ -4564,7 +4564,7 @@ dependencies = [
 
 [[package]]
 name = "verified-anchor-exploits"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "borsh 1.6.1",
  "solana-program",
@@ -4573,7 +4573,7 @@ dependencies = [
 
 [[package]]
 name = "verified-anchor-macros"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -4585,7 +4585,7 @@ dependencies = [
 
 [[package]]
 name = "verified-anchor-program"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "solana-program",
  "verified-anchor",

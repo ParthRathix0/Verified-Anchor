@@ -24,9 +24,9 @@ Verified Anchor closes the gap. Every macro expansion ships with a Lean 4 theore
 
 ## Status
 
-* `v0.1.0`. Initial release.
+* `v0.1.1`, published on crates.io (`cargo add verified-anchor`). `v0.1.0` is the tagged submission snapshot.
 * Lean theorems' axioms: `[propext, Quot.sound]` only. Zero `sorry` / `admit`.
-* Out of scope for v0.1.0: `realloc`, `zero`, token / mint / associated-token constraints. Custom `constraint = ...` expressions. QEDGen composition demo.
+* Out of scope: `realloc`, `zero`, token / mint / associated-token constraints. Custom `constraint = ...` expressions. QEDGen composition demo.
 
 ## Packages
 
@@ -80,6 +80,15 @@ LICENSE                               CC BY-NC-ND 4.0
 
 ## Quick start
 
+Install from crates.io — no clone required:
+
+```bash
+cargo add verified-anchor             # runtime + the proof-producing macros
+cargo install cargo-verified-anchor   # the build-time proof gate
+```
+
+Then write the same code you would in stock Anchor:
+
 ```rust
 use verified_anchor::prelude::*;
 
@@ -104,10 +113,10 @@ pub fn transfer(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]) -> P
 }
 ```
 
-Discharge the per-struct proof obligation:
+Discharge the per-struct proof obligation (the first run fetches the pinned Lean proof library automatically; you only need `elan`/`lake` installed):
 
 ```bash
-cargo verified-anchor check -p my-crate --lean-dir <path-to-lean-source>
+cargo verified-anchor check -p my-crate
 ```
 
 ## Deep technical dive

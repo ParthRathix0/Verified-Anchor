@@ -715,6 +715,11 @@
     </div>
 
     <p class="section-lede" style="margin-top:32px;"><strong>The only diff is one identifier.</strong> Both compile to runtime checks that look the same. The verified-anchor version additionally emits a Lean obligation that a checker (run via <code>cargo verified-anchor check</code>) discharges against the proven library.</p>
+
+    <p class="section-lede" style="margin-top:32px;"><strong>Install from crates.io</strong> — no clone required. The check command fetches the pinned proof library itself on first run; you only need the Lean toolchain (<code>elan</code>) present.</p>
+<pre>$ cargo add verified-anchor            <span class="out"># runtime + the proof-producing macros</span>
+$ cargo install cargo-verified-anchor  <span class="out"># the build-time proof gate</span>
+$ cargo verified-anchor check          <span class="out"># discharges every struct's obligation via Lean</span></pre>
   </div>
 </section>
 

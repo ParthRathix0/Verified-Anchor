@@ -2,8 +2,15 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// Find the Lean project dir: explicit `--lean-dir`, else $VERIFIED_ANCHOR_LEAN_DIR, else a
-/// sibling `lean/` walking up from the current dir.
+/// The public repository the pinned Lean proof library is fetched from when not found locally.
+const REPO_URL: &str = "https://github.com/ParthRathix0/Verified-Anchor.git";
+
+/// Find the Lean project dir, in order:
+/// 1. explicit `--lean-dir`,
+/// 2. `$VERIFIED_ANCHOR_LEAN_DIR`,
+/// 3. a sibling `lean/` walking up from the current dir (in-repo development),
+/// 4. **auto-fetch**: a shallow `git clone` of this crate's version tag into a cache dir, so a
+///    `cargo install`-ed tool needs no manual clone and no `--lean-dir`.
 pub fn locate_lean_dir(explicit: Option<&Path>) -> Result<PathBuf, String> {
     if let Some(p) = explicit { return Ok(p.to_path_buf()); }
     if let Ok(p) = std::env::var("VERIFIED_ANCHOR_LEAN_DIR") { return Ok(PathBuf::from(p)); }
@@ -11,8 +18,51 @@ pub fn locate_lean_dir(explicit: Option<&Path>) -> Result<PathBuf, String> {
     loop {
         let cand = dir.join("lean");
         if cand.join("lakefile.toml").exists() { return Ok(cand); }
-        if !dir.pop() { return Err("could not locate the verified-anchor Lean project (pass --lean-dir)".into()); }
+        if !dir.pop() { break; }
     }
+    fetch_pinned_lean()
+}
+
+/// Cache base dir, std-only (no `dirs` crate so the published crate stays dependency-free):
+/// `$VERIFIED_ANCHOR_CACHE`, else `$XDG_CACHE_HOME/verified-anchor`, else
+/// `$HOME/.cache/verified-anchor`, else a temp dir.
+fn cache_base() -> PathBuf {
+    if let Ok(p) = std::env::var("VERIFIED_ANCHOR_CACHE") { return PathBuf::from(p); }
+    if let Ok(p) = std::env::var("XDG_CACHE_HOME") { return PathBuf::from(p).join("verified-anchor"); }
+    if let Ok(home) = std::env::var("HOME") { return PathBuf::from(home).join(".cache").join("verified-anchor"); }
+    std::env::temp_dir().join("verified-anchor")
+}
+
+/// Shallow-clone the Lean proof library pinned to this crate's version tag (`v<version>`) into
+/// the cache and return its `lean/` directory. Idempotent: a populated cache is reused, so the
+/// network/git cost is paid only once per version.
+fn fetch_pinned_lean() -> Result<PathBuf, String> {
+    let tag = format!("v{}", env!("CARGO_PKG_VERSION"));
+    let repo_dir = cache_base().join(format!("repo-{tag}"));
+    let lean_dir = repo_dir.join("lean");
+    if lean_dir.join("lakefile.toml").exists() {
+        return Ok(lean_dir); // cache hit
+    }
+    std::fs::create_dir_all(repo_dir.parent().unwrap())
+        .map_err(|e| format!("creating cache dir: {e}"))?;
+    let _ = std::fs::remove_dir_all(&repo_dir); // clear any partial/failed clone
+    eprintln!("verified-anchor: fetching the pinned Lean proof library ({tag}) — one-time, into {repo_dir:?}");
+    let out = Command::new("git")
+        .args(["clone", "--depth", "1", "--branch", &tag, REPO_URL])
+        .arg(&repo_dir)
+        .output()
+        .map_err(|e| format!("running `git clone` (is git installed?): {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "could not fetch the Lean proof library (tag {tag}):\n{}\n\
+             Fixes: ensure git + network are available, or pass `--lean-dir <path>`, or set \
+             VERIFIED_ANCHOR_LEAN_DIR to a local checkout of the `lean/` directory.",
+            String::from_utf8_lossy(&out.stderr)));
+    }
+    if !lean_dir.join("lakefile.toml").exists() {
+        return Err(format!("fetched {tag} but {lean_dir:?} has no lakefile.toml"));
+    }
+    Ok(lean_dir)
 }
 
 /// `lake build` (cached) then `lake env lean <check_file>`. Returns the lean output on failure.
@@ -61,5 +111,22 @@ constraints := [Constraint.init \"p\" 0 Pubkey.zero] } ] }) := by decide\n";
         std::fs::write(&f, bad).unwrap();
         let r = discharge(&repo_lean_dir(), &f);
         assert!(r.is_err(), "discharge accepted a FALSE obligation — the checker is vacuous");
+    }
+
+    /// A populated cache is reused without invoking git/network (the common path after the
+    /// one-time fetch). Exercises the auto-fetch resolver's cache-hit branch.
+    #[test]
+    fn fetch_pinned_lean_reuses_cache_without_cloning() {
+        let tmp = std::env::temp_dir().join(format!("va-cache-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let tag = format!("v{}", env!("CARGO_PKG_VERSION"));
+        let lean = tmp.join(format!("repo-{tag}")).join("lean");
+        std::fs::create_dir_all(&lean).unwrap();
+        std::fs::write(lean.join("lakefile.toml"), "-- test marker\n").unwrap();
+        std::env::set_var("VERIFIED_ANCHOR_CACHE", &tmp);
+        let got = fetch_pinned_lean().expect("cache hit must succeed without cloning");
+        std::env::remove_var("VERIFIED_ANCHOR_CACHE");
+        assert_eq!(got, lean);
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }
