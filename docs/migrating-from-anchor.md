@@ -1,15 +1,15 @@
 # Migrating a stock-Anchor program to verified-anchor
 
 verified-anchor verifies a **subset** of Anchor's `#[derive(Accounts)]` account validation.
-Programs in the subset get a machine-checked guarantee that the generated validation/lifecycle
-code implements the formal contract.
+Programs in the subset get a machine-checked guarantee that the generated validation and
+lifecycle code implements the formal contract.
 
-## Syntax mapping (M7a)
+## Syntax mapping
 
-verified-anchor is now signature-identical to stock Anchor at the account-validation surface.
+verified-anchor is signature-identical to stock Anchor at the account-validation surface.
 A typical struct migrates field-for-field:
 
-| Stock Anchor                                  | verified-anchor (M7a)                                       |
+| Stock Anchor                                  | verified-anchor                                              |
 |-----------------------------------------------|-------------------------------------------------------------|
 | `pub vault: Account<'info, Vault>`            | `pub vault: Account<'info, Vault>`                          |
 | `pub authority: Signer<'info>`                | `pub authority: Signer<'info>`                              |
@@ -21,10 +21,9 @@ A typical struct migrates field-for-field:
 
 Plus: `use verified_anchor::prelude::*;` brings in everything (wrappers, traits, Context, derives).
 
-**Bare `u8` field types are no longer supported (M7a).** Prior to M7a, account fields could be
-declared as bare `u8` as a placeholder; this is now a compile error. The
-`#[derive(VerifiedAccounts)]` macro emits a `compile_error!` pointing back to this guide. Migrate
-every field to one of the typed wrappers shown in the table above.
+**Bare `u8` field types are not supported.** The macro requires one of the typed wrappers in
+the table above. Declaring an account field as `u8` is a compile error; the
+`#[derive(VerifiedAccounts)]` macro emits a `compile_error!` pointing back to this guide.
 
 ## Workflow
 
@@ -47,10 +46,13 @@ every field to one of the typed wrappers shown in the table above.
 | `close = d` | yes | lifecycle |
 | `realloc`, `zero`, `constraint = expr`, `token::*`, `mint::*`, `associated_token::*`, `address`, `executable`, `rent_exempt` | **no** | rejected at compile time |
 
-## Boundaries (be honest with yourself)
+## Limitations
 
-- `seeds`/`bump` is **canonical-only**: a declared `bump = n` must equal the canonical bump
-  (stricter than Anchor's stored-bump form).
-- The Rust↔Lean correspondence is **transcription** (mechanically regenerated, runtime-tested),
-  not a cross-language proof. See `docs/verified-anchor-bridge.md`.
-- `init`/`close` model the documented effect, not the CPI dispatch or rustc/sBPF codegen.
+- `seeds` / `bump` is **canonical-only**. A declared `bump = n` must equal the canonical bump
+  returned by `find_program_address`. This is stricter than stock Anchor's stored-bump form.
+- The Rust↔Lean correspondence is **transcription**: the Lean and Rust sides interpret the same
+  `AccountsStruct` literal, and the proof relates the Lean side to the contract. The
+  correspondence is mechanically regenerated and runtime-tested, not proved as a cross-language
+  property. See [`verified-anchor-bridge.md`](verified-anchor-bridge.md) for the full discussion.
+- `init` / `close` model the documented effect on lamports, ownership, and the discriminator
+  marker. The actual CPI dispatch path and the Rust-to-sBPF compilation are not modelled.
