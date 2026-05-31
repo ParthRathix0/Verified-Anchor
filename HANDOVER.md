@@ -1,6 +1,6 @@
 # Verified Anchor — Handover
 
-Context snapshot so a fresh chat can continue without re-deriving anything. Last updated 2026-05-30.
+Context snapshot so a fresh chat can continue without re-deriving anything. Last updated 2026-05-31.
 
 / project memory at `~/.claude/projects/-home-parth-Desktop-PARTH-Verification/memory/verified-anchor-project.md`
 auto-loads each session from this directory — this file is the fuller version. /
@@ -15,7 +15,11 @@ proof-producing Rust proc-macros that generate Solana validation/lifecycle code 
 is proven to implement that contract. 7 milestones total; built sequentially, each its own
 brainstorm → spec → plan → subagent-driven execution → review → merge cycle.
 
-## Status: M1, M2, M3, M4, M5, M6, M7a, M7b COMPLETE (all merged to `master`)
+## Status: v0.1.0 SHIPPED (M1–M7c complete, all on `master`, tagged `v0.1.0`)
+
+The repository is public at <https://github.com/ParthRathix0/Verified-Anchor> and is the
+submission artefact for the **Solana Superteam capstone**. License: CC BY-NC-ND 4.0
+(`LICENSE` at the repo root). Final-state milestones below.
 
 - **M1 — Lean validation contract.** `lean/VerifiedAnchor/`: concrete Solana model
   (`Solana/`: Pubkey, AccountInfo, real PDA algorithm; only `sha256`/`isOnCurve` axiomatized),
@@ -91,57 +95,113 @@ All theorems depend only on `[propext, Quot.sound]` (zero `sorry`/`sorryAx`); ve
   (2) `Accounts::try_accounts` now returns `(Self, Self::Bumps)`; seeded structs emit
   `pub struct <Name>Bumps { pub <field>: u8, ... }` populated from `find_program_address`,
   non-seeded emit an empty marker — matches stock Anchor's `Context.bumps.pda` shape.
-  (3) Dual Apache-2.0 OR MIT license (`LICENSE-MIT`, `LICENSE-APACHE` at repo root), full
-  crates.io metadata on the 3 publishable crates (`verified-anchor`, `verified-anchor-macros`,
-  `cargo-verified-anchor`); test-fixture crates marked `publish = false`; top-level
-  crates.io-ready `README.md`; `docs/publish-checklist.md` documents the order-sensitive
-  publish steps. `cargo publish --dry-run` passes for `verified-anchor-macros` and
-  `cargo-verified-anchor`; `verified-anchor`'s dry-run is blocked by cargo's first-publish
-  chicken-and-egg (documented in checklist). All M1-M5 axioms unchanged.
+  (3) Full crates.io metadata on the 3 publishable crates (`verified-anchor`,
+  `verified-anchor-macros`, `cargo-verified-anchor`); test-fixture crates marked
+  `publish = false`; top-level crates.io-ready `README.md`; `docs/publish-checklist.md`
+  documents the order-sensitive publish steps. `cargo publish --dry-run` passes for
+  `verified-anchor-macros` and `cargo-verified-anchor`; `verified-anchor`'s dry-run is blocked
+  by cargo's first-publish chicken-and-egg (documented in checklist). All M1–M5 axioms
+  unchanged. Note: M7b originally specified dual Apache-2.0 OR MIT; the user replaced this in
+  M7c with a CC BY-NC-ND 4.0 single-file `LICENSE` (see M7c below).
 
-## Next: M7c (in progress — announcement + publish prep done)
+- **M7c — submission cut.** v0.1.0 announcement post drafted at
+  `docs/announcement-v0.1.0.md`; landing page at `web/index.html` (single-file, no
+  framework, ~880 lines, deployable on GitHub Pages from `/web`). README rewritten to match
+  the conventions of top Solana org repositories — declarative noun-form section headings
+  (Status / Packages / Repo structure / Documentation / Quick start / Deep technical dive /
+  Build and test / Audit / Examples / Landing page / Contributing / License), badge row,
+  no question-led prose. Process-internal documentation removed (`docs/superpowers/`,
+  21 files of design specs, plans, and followups); the user-facing docs
+  (`announcement-v0.1.0.md`, `verified-anchor-bridge.md`, `migrating-from-anchor.md`,
+  `exploit-case-studies.md`) had milestone tags (M3, M4, M6, M7a) and conversational headings
+  stripped to read as standard project documentation. License switched to
+  CC BY-NC-ND 4.0 (single-file `LICENSE` at the repo root) — NonCommercial and NoDerivatives;
+  all three publishable crates' Cargo.toml `license` field updated to `CC-BY-NC-ND-4.0` (SPDX);
+  README + announcement reflect the same. All `REPLACE_ME` URLs replaced with the live
+  GitHub URL (<https://github.com/ParthRathix0/Verified-Anchor>). Repo pushed to GitHub;
+  `v0.1.0` tag created locally and pushed (`origin/v0.1.0`).
 
-M7c announcement post drafted at `docs/announcement-v0.1.0.md`; all three publishable
-Cargo.tomls now carry the live GitHub URL (<https://github.com/ParthRathix0/Verified-Anchor>);
-`v0.1.0` tag created locally. Remaining M7c work is gated on user action:
+  **Deferred from M7c (not blocking v0.1.0):** real `cargo publish` to crates.io (the user
+  runs the checklist; macros first → 60s → verified-anchor → 60s → cargo-verified-anchor);
+  QEDGen composition demo (gated on QEDGen availability — bumped to a future minor).
 
-- **Publish to crates.io.** Run `docs/publish-checklist.md` (cargo login → dry-runs → publish
-  in order: macros → 60s → verified-anchor → 60s → cargo-verified-anchor). The publish step
-  is irreversible and intentionally not automated.
-- **Push to GitHub.** `git push origin master --tags` once the remote is wired.
-- **QEDGen demo (deferred to v0.2).** Gated on QEDGen availability; not blocking v0.1.0.
+All theorems depend only on `[propext, Quot.sound]` (zero `sorry`/`sorryAx`); verify with
+`#print axioms <thm>`.
 
-See the follow-ups before extending further (`docs/superpowers/m{1,2,3,4,5}-followups.md`): esp.
-tighten `Constraint.discriminator` to `Vector UInt8 8`; prove the literal `satisfies` corollary
-for the Hoare theorems; add a `fieldKey`-seed test (the path is wired but untested); replace the
-`has_one` offset-8 hardcode with a layout-aware codegen (flagged by M6's report).
+## What is left for the user to do (after submission)
 
-## Repo layout
+- `docs/publish-checklist.md` walks through `cargo login` → dry-runs → publish.
+- GitHub Pages: Settings → Pages → Deploy from a branch → `master` `/web` will serve the
+  landing page at <https://parthrathix0.github.io/Verified-Anchor/>. `.nojekyll` is committed.
+
+## Follow-ups (not blocking v0.1.0)
+
+The internal followup notes were removed in the submission cleanup. The substantive carries
+that still apply to a future minor are:
+
+- Tighten `Constraint.discriminator` to `Vector UInt8 8` in the Lean AST.
+- Prove the literal `satisfies (.init/.close)` proposition as a corollary of
+  `init_establishes_post` / `close_establishes_post` (currently a tracked gap mentioned in
+  `docs/verified-anchor-bridge.md`).
+- Add a `fieldKey` seed test — the path is wired in the macro but no test exercises it.
+- Replace the `has_one` offset-8 hardcode with a layout-aware codegen
+  (flagged in `docs/exploit-case-studies.md` under Limitations).
+- QEDGen composition demo (M7c deferred item).
+
+## Repo layout (as shipped at v0.1.0)
 
 ```
-verified_anchor_proposal.md          the source proposal
+README.md                            top-level landing page (badges, packages, deep dive)
+LICENSE                              CC BY-NC-ND 4.0 (single file; replaces the earlier
+                                     LICENSE-MIT + LICENSE-APACHE)
+HANDOVER.md                          this file (kept for fresh-session resumes; the user
+                                     plans to remove it post-submission)
+verified_anchor_proposal.md          the source proposal (kept for the same reason)
+
 lean/                                Lean 4 library (lake); root import: VerifiedAnchor.lean
   VerifiedAnchor/Solana/             account model + crypto (opaque sha256/isOnCurve)
-  VerifiedAnchor/Constraints/        Ast.lean (the seam; SeedSpec/BumpSpec) + Context.lean (Ctx = {accounts, instrData})
+  VerifiedAnchor/Constraints/        Ast.lean (the seam; SeedSpec/BumpSpec) + Context.lean
+                                     (Ctx = {accounts, instrData})
   VerifiedAnchor/Contract/           satisfies (incl. .seeds, canonical-only) + validates
   VerifiedAnchor/Decision/           validatesBool + agreement
-  VerifiedAnchor/Codegen/            Generated (genSeeds), Soundness (M4Subset), Lifecycle, StructLifecycle (lifecycle_sound), ExampleGenerated
+  VerifiedAnchor/Codegen/            Generated (genSeeds), Soundness (M4Subset), Lifecycle,
+                                     StructLifecycle (lifecycle_sound), ExampleGenerated
   VerifiedAnchor/Examples/Withdraw.lean
+
 rust/                                cargo workspace
-  verified-anchor-macros/            #[derive(VerifiedAccounts)] (syn/quote); parses seeds/bump/discriminator; inventory submit!; compile_error for unsupported
-  verified-anchor/                   Validate trait (validate(accounts, instr_data, program_id)), VAError, SpecEntry/inventory/emit_specs!, tests/ (behavior, lean_spec, runtime_lifecycle, runtime_seeds, runtime_exploits)
-  verified-anchor-program/           BPF program exercising init/close + a seeds PDA instruction (cdylib)
-  cargo-verified-anchor/             `cargo verified-anchor check` subcommand (collect→generate→lake), std-only; tests/cli.rs e2e
-  verified-anchor-example/           worked user crate (validation + lifecycle) using emit_specs!()
-  verified-anchor-exploits/          M6 empirical exploit-suite BPF program (4 scenarios: naive_* + verified_* instruction arms)
-docs/
-  verified-anchor-bridge.md          Rust↔Lean correspondence + trust boundary (READ THIS)
-  migrating-from-anchor.md           M5 migration guide (supported subset, workflow, boundaries)
-  exploit-case-studies.md            M6 empirical case studies (4 scenarios + tie-in + honest boundary)
-  superpowers/specs/                 design docs: 2026-05-27 M1, M2; 2026-05-28 M3, M4; 2026-05-29 M5, M6
-  superpowers/plans/                 implementation plans: M1, M2, M3, M4, M5, M6
-  superpowers/m{1,2,3,4,5}-followups.md  deferred items per milestone
-HANDOVER.md                          this file
+  verified-anchor-macros/            #[derive(VerifiedAccounts)], #[derive(AccountData)],
+                                     #[account] attribute macro; parses
+                                     seeds/bump/discriminator; inventory submit!;
+                                     compile_error for unsupported. Trybuild fixtures
+                                     for unsupported-constraint, bare-u8, #[account(args)].
+  verified-anchor/                   Runtime: Validate / Accounts<'info> traits, VAError,
+                                     prelude, Context<T>; SpecEntry/inventory/emit_specs!;
+                                     tests/ (behavior 26 tests, lean_spec 4,
+                                     runtime_lifecycle 2, runtime_seeds 2,
+                                     runtime_exploits 4).
+  verified-anchor-program/           BPF program exercising init/close + a seeds PDA
+                                     instruction (cdylib; publish = false).
+  cargo-verified-anchor/             `cargo verified-anchor check` subcommand
+                                     (collect → generate → lake), std-only; tests/cli.rs e2e.
+  verified-anchor-example/           Worked user crate (validation + lifecycle) using
+                                     emit_specs!() (publish = false).
+  verified-anchor-exploits/          Empirical exploit-suite BPF program — 4 scenarios:
+                                     naive_* + verified_* instruction arms (publish = false).
+
+docs/                                Project documentation (all submission-facing)
+  verified-anchor-bridge.md          Rust↔Lean correspondence + trust boundary
+  migrating-from-anchor.md           migration guide (supported subset, workflow, limits)
+  exploit-case-studies.md            four real Solana mainnet incidents, before/after
+  announcement-v0.1.0.md             v0.1.0 release writeup (technical, audience: Solana devs)
+  publish-checklist.md               crates.io release steps for the user to run
+
+web/                                 Self-contained landing page (deployable on GH Pages)
+  index.html                         the page (~880 lines, no framework, no build step)
+  README.md                          GH Pages deploy instructions
+  .nojekyll                          marker so GH Pages serves the file as-is
+
+(Removed during M7c submission cleanup: docs/superpowers/{specs,plans,m*-followups.md} —
+21 internal workflow files. The substantive carryovers are listed under Follow-ups above.)
 ```
 
 ## Toolchain recipes (load-bearing — installed during M2/M3)
@@ -212,23 +272,37 @@ Rule of thumb: **if you touched anything under `rust/`, rebuild the `.so` and ru
   corrupt the ELF (inventory's `#[used]` link-section statics → invalid PT_DYNAMIC → loader
   `InvalidAccountData`). Verify with the litesvm runtime tests (see the MANDATORY full gate).
 
-## How the work is run (process)
+## How the work was run (process — historical)
 
-Each milestone: `superpowers:brainstorming` → design doc in `docs/superpowers/specs/` (committed,
-user-reviewed) → `superpowers:writing-plans` → plan in `docs/superpowers/plans/` →
-`superpowers:subagent-driven-development` on a feature branch (fresh implementer subagent per
-task; **opus** for hard proofs like `genValidate_sound` and the Hoare theorems; **sonnet** for
-mechanical tasks; controller reviews each committed diff; dedicated reviewer subagents on
-heavy/load-bearing tasks) → final whole-implementation review → `superpowers:finishing-a-development-branch`
-(merge `--no-ff` to `master`, delete branch). Toolchain feasibility (SBF, litesvm) is **probed
-before designing** to avoid churn.
+Each milestone followed: `superpowers:brainstorming` → design doc → `superpowers:writing-plans`
+→ implementation plan → `superpowers:subagent-driven-development` on a feature branch (fresh
+implementer subagent per task; **opus** for hard proofs like `genValidate_sound` and the Hoare
+theorems; **sonnet** for mechanical tasks; controller reviewed each committed diff; dedicated
+reviewer subagents on heavy/load-bearing tasks) → final whole-implementation review →
+`superpowers:finishing-a-development-branch` (merge `--no-ff` to `master`, delete branch).
+Toolchain feasibility (SBF, litesvm) was probed before designing to avoid churn.
+
+The design specs and implementation plans this process produced lived under
+`docs/superpowers/` and were removed in M7c when the repo was cleaned for submission. The
+substance is preserved in the milestone history above and in the documentation under `docs/`.
 
 ## To resume in a new chat
 
-Say e.g. "continue Verified Anchor — start M7 (release + Account<'info,T>)". The assistant should:
-read this file + `verified_anchor_proposal.md` (Milestone 7 section) + `docs/verified-anchor-bridge.md`
-+ `docs/exploit-case-studies.md` (M6 boundary notes flag the spec-carrier API as M7 scope), confirm
-the build is green (recipes above), then brainstorm M7. The big M7 lift is **real `Account<'info, T>`
-typing** — verified-anchor currently uses `u8` spec-carrier fields with explicit `#[account(...)]`
-constraints; M7 lifts this to anchor-lang's typed-account surface so adopting verified-anchor is a
-nearly drop-in replacement for stock Anchor (the M5 migration guide describes the path).
+The project is at v0.1.0 and shipped. There is no active milestone in flight. Likely reasons
+to open a new chat:
+
+- **Pre-publish polish.** Replace `REPLACE_ME` (already done), run `docs/publish-checklist.md`
+  to push to crates.io.
+- **A follow-up listed above** (`Constraint.discriminator` tightening, `satisfies` corollary,
+  `fieldKey` seed test, layout-aware `has_one`, QEDGen demo).
+- **A reported bug or audit finding** against the v0.1.0 surface.
+
+The assistant should: read this file + `verified_anchor_proposal.md` (for context) +
+`docs/verified-anchor-bridge.md` (for the trust boundary), confirm the build is green using
+the recipes in the **Toolchain recipes** section above, then brainstorm the change.
+
+For a substantive new feature, the mandatory full gate at the end of the change is the same
+as it was during M1–M7c: `lake build` clean + `grep -rn 'sorry\|admit' VerifiedAnchor/` empty
++ both headline theorems' `#print axioms` still `[propext, Quot.sound]` + both SBF `.so`s
+clean (no `PT_DYNAMIC`) + `cargo test --workspace` green + both
+`cargo verified-anchor check` runs exit 0.
