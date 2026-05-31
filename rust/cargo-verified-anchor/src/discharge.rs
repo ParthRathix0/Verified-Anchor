@@ -31,3 +31,35 @@ pub fn discharge(lean_dir: &Path, check_file: &Path) -> Result<(), String> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn repo_lean_dir() -> PathBuf {
+        let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR")); // rust/cargo-verified-anchor
+        p.pop(); // rust/
+        p.pop(); // repo root
+        p.push("lean");
+        p
+    }
+    fn lake_available() -> bool {
+        Command::new("lake").arg("--version").output().map(|o| o.status.success()).unwrap_or(false)
+    }
+
+    /// The load-bearing property: `discharge` must FAIL when an obligation is false, otherwise
+    /// the whole `check` is vacuous. A validation-kind `M4Subset` obligation over a struct with
+    /// an `init` constraint is false (`init` is not an M4 constraint), so `by decide` errors.
+    #[test]
+    fn discharge_rejects_a_false_obligation() {
+        if !lake_available() { eprintln!("SKIP: lake not on PATH"); return; }
+        let bad = "import VerifiedAnchor\nopen VerifiedAnchor\n\n\
+example : M4Subset ({ programId := Pubkey.zero, fields := \
+[ { name := \"x\", ty := AccountType.uncheckedAccount, \
+constraints := [Constraint.init \"p\" 0 Pubkey.zero] } ] }) := by decide\n";
+        let f = std::env::temp_dir().join("va-false-obligation-check.lean");
+        std::fs::write(&f, bad).unwrap();
+        let r = discharge(&repo_lean_dir(), &f);
+        assert!(r.is_err(), "discharge accepted a FALSE obligation — the checker is vacuous");
+    }
+}

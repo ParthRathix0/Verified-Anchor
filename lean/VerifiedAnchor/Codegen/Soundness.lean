@@ -23,6 +23,14 @@ theorem genConstraint_discriminator_iff (s c idx f d) :
     genConstraint s c idx f (Constraint.discriminator d) = true ↔ satisfies s c idx f (Constraint.discriminator d) := by
   simp only [genConstraint, satisfies, Option.allB_iff, decide_eq_true_iff]
 
+theorem genConstraint_executable_iff (s c idx f) :
+    genConstraint s c idx f Constraint.executable = true ↔ satisfies s c idx f Constraint.executable := by
+  simp only [genConstraint, satisfies]; exact Option.allB_iff _ _
+
+theorem genConstraint_address_iff (s c idx f e) :
+    genConstraint s c idx f (Constraint.address e) = true ↔ satisfies s c idx f (Constraint.address e) := by
+  simp only [genConstraint, satisfies, Option.allB_iff, decide_eq_true_iff]
+
 theorem genConstraint_hasOne_iff (s c idx f field) :
     genConstraint s c idx f (Constraint.hasOne field) = true ↔ satisfies s c idx f (Constraint.hasOne field) := by
   simp only [genConstraint, genHasOne, satisfies, Option.allB_iff, decide_eq_true_iff]
@@ -61,9 +69,11 @@ theorem genConstraint_iff_satisfies_M3 (s c idx f k) (hk : isM3Constraint k = tr
   | discriminator d => exact genConstraint_discriminator_iff s c idx f d
   | _             => simp [isM3Constraint] at hk
 
-/-- Constraint kinds M4's generated validator handles (M3 + seeds). -/
+/-- Constraint kinds M4's generated validator handles (M3 + seeds + the `Program<P>` /
+    `SystemAccount` base checks `executable` and `address`). -/
 def isM4Constraint : Constraint → Bool
-  | .signer | .mut | .owner _ | .hasOne _ | .discriminator _ | .seeds _ _ => true
+  | .signer | .mut | .owner _ | .hasOne _ | .discriminator _ | .seeds _ _
+  | .executable | .address _ => true
   | _ => false
 
 /-- The M4 subset: every field's (implied ++ explicit) constraints are M4 validation
@@ -83,6 +93,8 @@ theorem genConstraint_iff_satisfies_M4 (s c idx f k) (hk : isM4Constraint k = tr
   | hasOne field    => exact genConstraint_hasOne_iff s c idx f field
   | discriminator d => exact genConstraint_discriminator_iff s c idx f d
   | seeds ss b      => exact genConstraint_seeds_iff s c idx f ss b
+  | executable      => exact genConstraint_executable_iff s c idx f
+  | address e       => exact genConstraint_address_iff s c idx f e
   | _               => simp [isM4Constraint] at hk
 
 theorem genFieldValidate_iff (s c idx f)

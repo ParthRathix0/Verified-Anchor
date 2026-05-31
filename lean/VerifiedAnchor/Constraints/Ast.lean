@@ -26,6 +26,8 @@ inductive Constraint where
   | init           (payer : String) (space : Nat) (owner : Pubkey)
   | close          (dest : String)
   | discriminator  (expected : ByteArray)   -- 8 bytes
+  | executable                              -- account is executable (Program<P> base check)
+  | address        (expected : Pubkey)      -- account key equals `expected` (Program<P> id)
   deriving Inhabited
 
 /-- Account wrapper types; each implies certain base constraints. -/
@@ -37,12 +39,18 @@ inductive AccountType where
   | uncheckedAccount
   deriving Inhabited
 
-/-- Base constraints implied by the wrapper type, before explicit annotations. -/
+/-- Base constraints implied by the wrapper type, before explicit annotations.
+
+    `systemAccount` and `program` model the runtime base checks the macro's `wrapper_implied`
+    emits in `validate`: a `SystemAccount<'info>` is owned by the System Program, and a
+    `Program<'info, P>` is executable with key `P::ID`. The concrete pubkey is a placeholder
+    (`Pubkey.zero`, the System-Program placeholder) — `genValidate_sound` is schematic over it,
+    exactly like the explicit `owner = EXPR` placeholder. -/
 def AccountType.impliedConstraints : AccountType → List Constraint
   | .account tn _ pid => [Constraint.owner pid, Constraint.discriminator (accountDiscriminator tn)]
   | .signer           => [Constraint.signer]
-  | .program _        => []
-  | .systemAccount    => []
+  | .program id       => [Constraint.executable, Constraint.address id]
+  | .systemAccount    => [Constraint.owner Pubkey.zero]
   | .uncheckedAccount => []
 
 /-- Look up the layout offset of a `Pubkey` field within an account type. -/
