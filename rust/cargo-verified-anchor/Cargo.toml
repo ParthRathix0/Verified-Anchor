@@ -1,6 +1,6 @@
 [package]
 name = "cargo-verified-anchor"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 description = "Cargo subcommand that discharges verified-anchor proof obligations via Lean."
 license = "CC-BY-NC-ND-4.0"

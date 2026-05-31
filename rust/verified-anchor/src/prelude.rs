@@ -6,3 +6,6 @@ pub use crate::{
     Signer, System, SystemAccount, UncheckedAccount, VAError, Validate, VerifiedAccounts,
 };
 pub use solana_program::account_info::AccountInfo;
+pub use solana_program::declare_id;
+pub use solana_program::entrypoint::ProgramResult;
+pub use solana_program::pubkey::Pubkey;

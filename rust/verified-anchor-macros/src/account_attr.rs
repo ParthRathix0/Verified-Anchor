@@ -21,8 +21,12 @@ pub fn account(args: TokenStream, input: TokenStream) -> TokenStream {
             "verified-anchor: `#[account]` may only be applied to a named-fields struct"
         ).to_compile_error().into(),
     };
+    // Route the borsh derives through verified-anchor's re-export so the user needs only the
+    // `verified-anchor` dependency. `#[borsh(crate = ...)]` points borsh-derive's *generated*
+    // code at the same re-export (otherwise it would emit bare `::borsh::` references).
     let expanded = quote! {
-        #[derive(::borsh::BorshSerialize, ::borsh::BorshDeserialize, ::verified_anchor::AccountData)]
+        #[derive(::verified_anchor::borsh::BorshSerialize, ::verified_anchor::borsh::BorshDeserialize, ::verified_anchor::AccountData)]
+        #[borsh(crate = "::verified_anchor::borsh")]
         #item_struct
     };
     expanded.into()
