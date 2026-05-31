@@ -24,7 +24,7 @@ Verified Anchor closes the gap. Every macro expansion ships with a Lean 4 theore
 
 ## Status
 
-* `v0.1.1`, published on crates.io (`cargo add verified-anchor`). `v0.1.0` is the tagged submission snapshot.
+* `v0.1.2`, published on crates.io — one dependency: `cargo add verified-anchor`. `v0.1.0` is the tagged submission snapshot.
 * Lean theorems' axioms: `[propext, Quot.sound]` only. Zero `sorry` / `admit`.
 * Out of scope: `realloc`, `zero`, token / mint / associated-token constraints. Custom `constraint = ...` expressions. QEDGen composition demo.
 
@@ -92,6 +92,8 @@ Then write the same code you would in stock Anchor:
 ```rust
 use verified_anchor::prelude::*;
 
+declare_id!("YourProgram1111111111111111111111111111111");
+
 #[account]
 pub struct Vault {
     pub authority: Pubkey,
@@ -105,15 +107,21 @@ pub struct Transfer<'info> {
     pub authority: Signer<'info>,
 }
 
-pub fn transfer(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]) -> ProgramResult {
+pub fn transfer<'info>(program_id: &Pubkey, accounts: &'info [AccountInfo<'info>], data: &[u8]) -> ProgramResult {
     let (ctx, _bumps) = Transfer::try_accounts(program_id, accounts, data)?;
     let _amount = ctx.vault.amount;
     // your handler logic
     Ok(())
 }
+
+// One line, anywhere in your crate's lib — lets `cargo verified-anchor check` discover the structs.
+verified_anchor::emit_specs!();
 ```
 
-Discharge the per-struct proof obligation (the first run fetches the pinned Lean proof library automatically; you only need `elan`/`lake` installed):
+The whole prelude (`Pubkey`, `AccountInfo`, `ProgramResult`, `declare_id!`, the wrappers, the
+derives) comes from the single `verified-anchor` dependency — no separate `solana-program` or
+`borsh`. Then discharge the per-struct proof obligation (the first run fetches the pinned Lean
+proof library automatically; you only need `elan`/`lake` installed):
 
 ```bash
 cargo verified-anchor check -p my-crate
