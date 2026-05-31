@@ -13,7 +13,7 @@
 
 </div>
 
-Verified Anchor is a drop-in replacement for the Anchor `#[derive(Accounts)]` macro that gates almost every Solana transaction in production. The macros emit the same Rust validation code stock Anchor would emit, plus a Lean 4 obligation discharged at build time against a contract that defines what "valid accounts" means in the Solana account model. The proven core covers `signer` / `mut` / `owner` / `has_one` / `seeds` + `bump` / `discriminator`, the typed-wrapper base checks (`SystemAccount` ownership, `Program<P>` executable + address), and the `init` / `close` lifecycle.
+Verified Anchor is a formally verified, drop-in replacement for Anchor's #[derive(Accounts)] — the macro that gates account validation on nearly every Solana program. Every macro expansion ships with a build-time Lean 4 proof that the generated Rust validator implements a precise validation contract (signer, mut, owner, has_one, seeds/bump, discriminator, init/close), so the build fails unless the validation is proven. This eliminates the macro-level account-validation bug class — Cashio, Crema, type confusion, PDA misuse — by construction, with a single dependency: cargo add verified-anchor.
 
 ## Why
 
