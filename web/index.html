@@ -577,7 +577,7 @@
     </div>
 
     <div class="axiom-line">
-      <span>$&nbsp;lake env lean -c '#print axioms VerifiedAnchor.genValidate_sound'</span>
+      <span>$&nbsp;lake env lean Audit.lean</span>
       <span class="arrow">→</span>
       <span class="out">[propext, Quot.sound]</span>
     </div>
@@ -795,7 +795,7 @@
     <div class="audit">
       <p>Clone the repository, install <code>elan</code> and <code>lake</code>, then:</p>
 <pre>$ cd lean &amp;&amp; lake build
-$ lake env lean -c '#print axioms VerifiedAnchor.genValidate_sound'</pre>
+$ lake env lean Audit.lean</pre>
       <div class="out">
         <pre>'VerifiedAnchor.genValidate_sound' depends on axioms: [propext, Quot.sound]</pre>
       </div>
