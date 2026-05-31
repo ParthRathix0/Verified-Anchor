@@ -1,6 +1,6 @@
 <div align="center">
 
-# Verified Anchor
+# [Verified Anchor](https://parthrathix0.github.io/Verified-Anchor)
 
 **Formally verified account validation for Solana programs.**
 
@@ -225,7 +225,7 @@ grep -rn 'sorry\|admit' VerifiedAnchor/
 
 ## Landing page
 
-**Live: <https://parthrathix0.github.io/Verified-Anchor/>**
+**Live: <https://parthrathix0.github.io/Verified-Anchor>**
 
 A self-contained static landing page lives under [`web/`](web). It uses no build step, no
 framework, and no external scripts beyond Google Fonts. Preview locally with any static
