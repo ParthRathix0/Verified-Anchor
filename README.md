@@ -196,8 +196,7 @@ The headline theorems' axiom dependencies are `[propext, Quot.sound]`, the stand
 
 ```bash
 cd lean
-lake env lean -c '#print axioms VerifiedAnchor.genValidate_sound'
-lake env lean -c '#print axioms VerifiedAnchor.lifecycle_sound'
+lake env lean Audit.lean                 # prints both headline theorems' axiom sets
 grep -rn 'sorry\|admit' VerifiedAnchor/
 ```
 
