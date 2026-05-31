@@ -91,7 +91,7 @@
 
   /* ===== Hero ===== */
   .hero {
-    padding: 96px 0 64px;
+    padding: 52px 0 40px;
     border-bottom: 1px solid var(--border);
     background:
       radial-gradient(ellipse 70% 50% at 50% 0%, rgba(74, 222, 128, 0.08), transparent 60%),
@@ -360,6 +360,35 @@
     color: var(--accent);
   }
 
+  /* ===== Use it (quick start) ===== */
+  .usage {
+    background: linear-gradient(180deg, var(--bg-card) 0%, var(--bg-elev) 100%);
+    border: 1px solid var(--border-strong);
+    border-radius: 12px;
+    padding: 28px;
+    margin-top: 28px;
+  }
+  .usage .step {
+    font-family: var(--mono);
+    font-size: 0.78rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--accent);
+    margin: 0 0 8px;
+  }
+  .usage pre {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px;
+    font-size: 0.85rem;
+    color: var(--text);
+    margin-bottom: 20px;
+  }
+  .usage pre:last-child { margin-bottom: 0; }
+  .usage .out { color: var(--accent); }
+  .usage .note { color: var(--text-dim); font-size: 0.9rem; margin-top: 18px; }
+
   /* ===== Solana stack table ===== */
   .stack {
     margin-top: 24px;
@@ -553,6 +582,7 @@
   <div class="container">
     <div class="brand">Verified <span class="v">⊢</span> Anchor</div>
     <div class="nav-links">
+      <a href="#use">Use</a>
       <a href="#what">What</a>
       <a href="#stack">Stack</a>
       <a href="#why">Bugs</a>
@@ -567,19 +597,57 @@
 
 <section class="hero">
   <div class="container">
-    <span class="badge">v0.1.0 · zero sorry · axioms [propext, Quot.sound]</span>
+    <span class="badge">v0.1.2 · on crates.io · zero sorry</span>
     <h1>Formally verified account validation for&nbsp;<span class="accent">Solana</span>.<br/>Checked by Lean&nbsp;4, not&nbsp;by&nbsp;hope.</h1>
-    <p class="lede">A drop-in replacement for the Anchor macro that gates every Solana transaction in production — except every macro expansion ships with a machine-checked proof that the generated Rust does what your struct said it should. You write the same Solana program code; the compiler now refuses to build if the framework can't prove it.</p>
+    <p class="lede">A drop-in replacement for Anchor's <code>#[derive(Accounts)]</code> — except every expansion ships with a Lean&nbsp;4 proof that the generated check matches a formal contract. Same code you'd write in Anchor; the build fails if the framework can't prove it.</p>
 
     <div class="cta">
-      <a class="btn btn-primary" href="https://github.com/ParthRathix0/Verified-Anchor">View on GitHub →</a>
-      <a class="btn btn-secondary" href="#chain">See the proof</a>
+      <a class="btn btn-primary" href="#use">Get started →</a>
+      <a class="btn btn-secondary" href="https://github.com/ParthRathix0/Verified-Anchor">View on GitHub</a>
     </div>
 
     <div class="axiom-line">
       <span>$&nbsp;lake env lean Audit.lean</span>
       <span class="arrow">→</span>
       <span class="out">[propext, Quot.sound]</span>
+    </div>
+  </div>
+</section>
+
+<section id="use">
+  <div class="container">
+    <h2>Use it</h2>
+    <p class="section-title">Three commands. No clone, one dependency.</p>
+    <p class="section-lede">It is published on crates.io. Add it, install the proof gate, and check — the checker fetches the pinned Lean proofs itself on first run (you only need <a href="https://github.com/leanprover/elan">elan</a> / <code>lake</code>, the Lean kernel, to verify a proof). No repository clone, no <code>--lean-dir</code>.</p>
+
+    <div class="usage">
+      <div class="step">1 · install — from crates.io</div>
+<pre>$ cargo add verified-anchor            <span class="out"># runtime + the proof macros — the only dependency</span>
+$ cargo install cargo-verified-anchor  <span class="out"># the build-time proof gate</span></pre>
+
+      <div class="step">2 · write the same code you would in Anchor</div>
+<pre><span class="kw">use</span> verified_anchor::prelude::*;
+
+<span class="fn">declare_id!</span>(<span class="str">"YourProgram1111111111111111111111111111111"</span>);
+
+<span class="attr">#[account]</span>
+<span class="kw">pub struct</span> <span class="ty">Vault</span> { <span class="kw">pub</span> authority: <span class="ty">Pubkey</span>, <span class="kw">pub</span> amount: <span class="ty">u64</span> }
+
+<span class="attr">#[derive(VerifiedAccounts)]</span>
+<span class="kw">pub struct</span> <span class="ty">Transfer</span>&lt;<span class="ty">'info</span>&gt; {
+    <span class="attr">#[account(mut, has_one = authority)]</span>
+    <span class="kw">pub</span> vault: <span class="ty">Account</span>&lt;<span class="ty">'info</span>, <span class="ty">Vault</span>&gt;,
+    <span class="kw">pub</span> authority: <span class="ty">Signer</span>&lt;<span class="ty">'info</span>&gt;,
+}
+
+verified_anchor::<span class="fn">emit_specs!</span>(); <span class="out">// one line — lets `check` discover your structs</span></pre>
+
+      <div class="step">3 · verify — proofs auto-fetched on first run</div>
+<pre>$ cargo verified-anchor check
+  <span class="out">✓ Transfer (validation)</span>
+  <span class="out">All 1 proof obligation(s) discharged.</span></pre>
+
+      <p class="note">Everything — <code>Pubkey</code>, <code>AccountInfo</code>, <code>ProgramResult</code>, <code>declare_id!</code>, the wrappers, the derives — comes from the single <code>verified-anchor</code> crate. No separate <code>solana-program</code> or <code>borsh</code>.</p>
     </div>
   </div>
 </section>
