@@ -37,6 +37,8 @@ def genConstraint (s : AccountsStruct) (c : Ctx) (idx : Nat) (f : AccountField) 
   | .signer          => (Ctx.atField s c idx).allB (fun a => a.isSigner)
   | .mut             => (Ctx.atField s c idx).allB (fun a => a.isWritable)
   | .owner e         => (Ctx.atField s c idx).allB (fun a => decide (a.owner = e))
+  | .executable      => (Ctx.atField s c idx).allB (fun a => a.executable)
+  | .address e       => (Ctx.atField s c idx).allB (fun a => decide (a.key = e))
   | .discriminator d => (Ctx.atField s c idx).allB (fun a => decide (hasDiscriminator a d))
   | .hasOne field    => genHasOne s c idx f field
   | .seeds ss b      => genSeeds s c idx ss b

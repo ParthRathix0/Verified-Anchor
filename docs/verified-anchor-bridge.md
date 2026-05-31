@@ -10,6 +10,8 @@ what is and is not proven.
 | `if !accounts[i].is_signer { Err(MissingSigner) }` | `genSigner a := a.isSigner` | `satisfies … .signer` |
 | `if !accounts[i].is_writable { Err(NotWritable) }` | `genMut a := a.isWritable` | `satisfies … .mut` |
 | `if accounts[i].owner != &expected { Err(WrongOwner) }` | `genOwner e a := decide (a.owner = e)` | `satisfies … (.owner e)` |
+| `if !accounts[i].executable { Err(WrongOwner) }` (`Program<P>` base check) | `genConstraint … .executable := a.executable` | `satisfies … .executable` |
+| `if accounts[i].key != &P::ID { Err(WrongOwner) }` (`Program<P>` base check) | `genConstraint … (.address e) := decide (a.key = e)` | `satisfies … (.address e)` |
 | `if accounts.len() < n { Err(NotEnoughAccounts) }` | `decide (c.length = s.fields.length)` | `WellFormed` |
 | `if data[8..40] != target.key { Err(WrongHasOne) }` | `genHasOne` (read 32 bytes at offset 8, compare to the looked-up key) | `satisfies … (.hasOne field)` |
 | `let (pda,_) = find_program_address(seeds, program_id); if accounts[i].key != pda { Err(WrongPda) }` | `genSeeds` (canonical PDA equals the account key; bump matches) | `satisfies … (.seeds ss bump)` |
@@ -37,11 +39,24 @@ The Lean model of the generated validator agrees with the declarative contract f
 struct in the supported subset (named `M4Subset` in Lean). The theorem is proved once,
 parameterised over the user's struct. `#print axioms` reports `[propext, Quot.sound]` only —
 no `sorryAx`, no `Classical.choice`, no `native_decide`. Per-constraint lemmas
-(`genConstraint_{signer,mut,owner,discriminator,hasOne,seeds}_iff`, plus `bumpMatchesB_iff`)
-connect each `gen*` to the corresponding `satisfies` case in the contract.
+(`genConstraint_{signer,mut,owner,discriminator,hasOne,seeds,executable,address}_iff`, plus
+`bumpMatchesB_iff`) connect each `gen*` to the corresponding `satisfies` case in the contract.
 
 `M4Subset s` characterises structs in scope: every field's combined implied-and-declared
-constraint list contains only `{signer, mut, owner, hasOne, discriminator, seeds}`.
+constraint list contains only
+`{signer, mut, owner, hasOne, discriminator, seeds, executable, address}`.
+
+**Wrapper base checks are modelled, not just transcribed.** The macro's `wrapper_implied`
+emits base checks for two typed wrappers beyond what the explicit `#[account(...)]`
+annotations request: a `SystemAccount<'info>` is checked to be owned by the System Program,
+and a `Program<'info, P>` is checked to be `executable` with `key == P::ID`. These are
+carried in the Lean contract through `AccountType.impliedConstraints` (`systemAccount`
+implies `owner`; `program` implies `executable` + `address`), so `genValidate_sound` covers
+them — the generated validator does no validation work outside the proven contract. The
+modelled pubkeys (the System-Program id, `P::ID`) are schematic placeholders (`Pubkey.zero`),
+exactly like the explicit `owner = EXPR` placeholder; the theorem is universally quantified
+over the pubkey value. `lean/VerifiedAnchor/Codegen/ExampleGenerated.lean` carries closed-loop
+`#guard`s (`sysAcct_*`, `prog_*`) demonstrating accept/reject of the modelled checks.
 
 ## What is transcription
 
@@ -109,9 +124,13 @@ bump). A declared `bump = n` must equal the canonical bump. Stock Anchor's
 bump) is intentionally outside the supported subset.
 
 **Instruction-arg seeds.** A seed may be a concrete slice of the instruction data
-(`SeedSpec.instrArg off len` on the Lean side; `arg(off, len)` → `&instr_data[off..off+len]`
-on the Rust side). Offsets into fixed-size leading Borsh fields are deterministic, so this
-adds no new trusted assumption.
+(`SeedSpec.instrArg off len` on the Lean side; `arg(off, len)` on the Rust side). Offsets into
+fixed-size leading Borsh fields are deterministic, so this adds no new trusted assumption. The
+generated slice clamps both bounds to `instr_data.len()`
+(`&instr_data[off.min(len)..(off+len).min(len)]`), which both prevents an out-of-bounds panic
+on a short `instr_data` and mirrors the Lean model's `ByteArray.extract off (off+len)` (which
+likewise clamps); a too-short `instr_data` therefore yields a clean `WrongPda` rejection, not a
+panic.
 
 **Transcription.** The generated PDA check matches `genSeeds`. The macro's seed-element
 mapping (`arg(off, len)` to offset and length) is transcription, backed by native tests

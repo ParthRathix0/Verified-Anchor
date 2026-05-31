@@ -12,7 +12,7 @@
 
 </div>
 
-Verified Anchor is a drop-in replacement for the Anchor `#[derive(Accounts)]` macro that gates almost every Solana transaction in production. The macros emit the same Rust validation code stock Anchor would emit, plus a Lean 4 obligation discharged at build time against a contract that defines what "valid accounts" means in the Solana account model. The proven core covers `signer` / `mut` / `owner` / `has_one` / `seeds` + `bump` / `discriminator`, and the `init` / `close` lifecycle.
+Verified Anchor is a drop-in replacement for the Anchor `#[derive(Accounts)]` macro that gates almost every Solana transaction in production. The macros emit the same Rust validation code stock Anchor would emit, plus a Lean 4 obligation discharged at build time against a contract that defines what "valid accounts" means in the Solana account model. The proven core covers `signer` / `mut` / `owner` / `has_one` / `seeds` + `bump` / `discriminator`, the typed-wrapper base checks (`SystemAccount` ownership, `Program<P>` executable + address), and the `init` / `close` lifecycle.
 
 ## Why
 
@@ -144,6 +144,8 @@ Per-program proof obligations are discharged by `cargo verified-anchor check`. F
 | `has_one = <field>`     | `genValidate_sound` (relational)           |
 | `seeds = [...], bump`   | `genValidate_sound` (canonical-only PDA)   |
 | `discriminator = "..."` | `genValidate_sound`                        |
+| `SystemAccount` base: `owner`               | `genValidate_sound`    |
+| `Program<P>` base: `executable` + `address` | `genValidate_sound`    |
 | `init`/`close`          | `lifecycle_sound` (Hoare-style)            |
 
 ### What is proven, what is not

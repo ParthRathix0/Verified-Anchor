@@ -137,4 +137,42 @@ theorem withSeeds_M4 : M4Subset withSeeds := by decide
 theorem withSeeds_sound (c : Ctx) : genValidate withSeeds c = true ↔ validates withSeeds c :=
   genValidate_sound withSeeds c withSeeds_M4
 
+/-! ## Wrapper base checks: `SystemAccount` and `Program<P>` (M4)
+
+These mirror the macro's `wrapper_implied`: a `SystemAccount<'info>` field implies an
+owner check, and a `Program<'info, P>` field implies `executable` + `key = P::ID`. The
+modelled pubkeys are placeholders (`Pubkey.zero`); the runtime checks `system_program::ID`
+and `P::ID`, and `genValidate_sound` is schematic over the pubkey. Crypto-free, so the
+checks reduce under `decide`. -/
+
+def sysAcctStruct : AccountsStruct :=
+  { programId := Pubkey.zero
+  , fields := [ { name := "sys", ty := AccountType.systemAccount, constraints := [] } ] }
+def sysOwned : AccountInfo :=
+  { key := Pubkey.zero, lamports := 1, data := ByteArray.empty, owner := Pubkey.zero,
+    rentEpoch := 0, isSigner := false, isWritable := false, executable := false }
+def sysWrongOwner : AccountInfo := { sysOwned with owner := Pubkey.ofBytes (List.replicate 32 3) }
+#guard genValidate sysAcctStruct (Ctx.ofAccounts [sysOwned]) = true
+#guard genValidate sysAcctStruct (Ctx.ofAccounts [sysWrongOwner]) = false
+theorem sysAcct_M4 : M4Subset sysAcctStruct := by decide
+/-- Closed loop: the modelled SystemAccount owner check agrees with the contract. -/
+theorem sysAcct_sound (c : Ctx) : genValidate sysAcctStruct c = true ↔ validates sysAcctStruct c :=
+  genValidate_sound sysAcctStruct c sysAcct_M4
+
+def progStruct : AccountsStruct :=
+  { programId := Pubkey.zero
+  , fields := [ { name := "prog", ty := AccountType.program Pubkey.zero, constraints := [] } ] }
+def progGood : AccountInfo :=
+  { key := Pubkey.zero, lamports := 1, data := ByteArray.empty, owner := Pubkey.zero,
+    rentEpoch := 0, isSigner := false, isWritable := false, executable := true }
+def progNotExec : AccountInfo := { progGood with executable := false }
+def progWrongKey : AccountInfo := { progGood with key := Pubkey.ofBytes (List.replicate 32 4) }
+#guard genValidate progStruct (Ctx.ofAccounts [progGood]) = true
+#guard genValidate progStruct (Ctx.ofAccounts [progNotExec]) = false       -- not executable
+#guard genValidate progStruct (Ctx.ofAccounts [progWrongKey]) = false      -- wrong program id
+theorem prog_M4 : M4Subset progStruct := by decide
+/-- Closed loop: the modelled Program executable + address checks agree with the contract. -/
+theorem prog_sound (c : Ctx) : genValidate progStruct c = true ↔ validates progStruct c :=
+  genValidate_sound progStruct c prog_M4
+
 end VerifiedAnchor.Codegen.Examples

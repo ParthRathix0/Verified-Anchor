@@ -10,7 +10,8 @@ prove the validation. The Lean library models concrete Solana primitives — the
 `findProgramAddress` PDA derivation, lamports, rent, owner and executable flags — under a
 `VerifiedAnchor.Solana` namespace designed to compose with the broader Solana formal-methods
 stack (`QEDGen.Solana`, `lean_solana`). The proven core covers `signer`, `mut`, `owner`,
-`has_one`, `seeds` + `bump`, and `discriminator` constraints, plus the `init` and `close`
+`has_one`, `seeds` + `bump`, and `discriminator` constraints, the typed-wrapper base checks
+(`SystemAccount` ownership, `Program<P>` executable + address), plus the `init` and `close`
 lifecycle. Four real Solana mainnet incidents — Cashio, Crema Finance, account type
 confusion, and PDA seeds misuse — are reproduced in this repository as on-chain
 before/after tests; the verified versions reject the attacker on chain.

@@ -128,6 +128,44 @@ All theorems depend only on `[propext, Quot.sound]` (zero `sorry`/`sorryAx`); ve
 All theorems depend only on `[propext, Quot.sound]` (zero `sorry`/`sorryAx`); verify with
 `#print axioms <thm>`.
 
+## Post-v0.1.0 hardening (audit pass, 2026-05-31)
+
+A deep seam audit (Rust codegen ↔ Lean `genValidate` model) found and fixed several issues.
+All changes are in the working tree on `master` (not yet a new tag). Full gate re-run green:
+`lake build` clean, **0 `sorry`/`admit`**, headline axioms still `[propext, Quot.sound]`, both
+SBF `.so`s rebuilt clean, `cargo test --workspace` **50 passed / 0 failed** (incl. all litesvm
+runtime suites + the cli e2e).
+
+- **Typed-wrapper base checks are now MODELLED, not just transcribed (closed a real seam gap).**
+  The macro's `wrapper_implied` emits `owner == system_program` for `SystemAccount<'info>` and
+  `executable + key == P::ID` for `Program<'info, P>`. These ran at runtime but had **no Lean
+  counterpart** (`AccountType.systemAccount`/`uncheckedAccount` both implied `[]`, and `lean_spec`
+  mapped `Program` → `uncheckedAccount`), so the generated validator did unproven work —
+  contradicting the headline "every check is proven". Fix: added `Constraint.executable` and
+  `Constraint.address (expected : Pubkey)` to the AST; wired `AccountType.impliedConstraints`
+  (`systemAccount` → `[owner Pubkey.zero]`, `program id` → `[executable, address id]`); proved
+  `genConstraint_{executable,address}_iff`; extended `isM4Constraint`, the M4 dispatcher, and
+  `lifecycle_sound`; pointed the macro's `lean_spec` at `AccountType.program Pubkey.zero`. The
+  placeholder pubkeys are schematic (the theorem is ∀ over the pubkey), exactly like the existing
+  `owner = EXPR` → `ownerPlaceholder` pattern. Closed-loop `#guard`s + `*_sound` theorems added in
+  `Codegen/ExampleGenerated.lean` (`sysAcct_*`, `prog_*`). `genValidate_sound` axioms unchanged.
+- **`arg(off,len)` seed no longer panics on short instruction data.** The generated slice
+  `&instr_data[off..off+len]` (both the validate-side seed block and the `Bumps` init) is now
+  clamped to `instr_data.len()` — `&instr_data[off.min(len)..(off+len).min(len)]` — which mirrors
+  the Lean model's `ByteArray.extract off (off+len)` (also clamps). A too-short `instr_data` now
+  yields a clean `WrongPda`, not an out-of-bounds panic.
+- **`execute_lifecycle` is bounds-guarded.** It indexed accounts by field position with no length
+  check (a panic on a short slice if a caller invoked it without `validate` first). It now returns
+  `NotEnoughAccounts`, mirroring the none-safe Lean `applyInit`/`applyClose` (`accounts[idx]?`).
+- **The checker is proven non-vacuous.** Added a negative test
+  (`cargo-verified-anchor/src/discharge.rs` → `discharge_rejects_a_false_obligation`) asserting
+  that `discharge` FAILS when a Lean obligation is false (an `init` constraint is not in
+  `M4Subset`, so `by decide` errors). Previously only the positive path was tested.
+
+Docs updated in the same pass: `docs/verified-anchor-bridge.md` (correspondence-table rows for
+`executable`/`address`, the "wrapper base checks are modelled" note, the instr-arg clamping note);
+`docs/announcement-v0.1.0.md` (proven-core list); `docs/migrating-from-anchor.md` (wrapper note).
+
 ## What is left for the user to do (after submission)
 
 - `docs/publish-checklist.md` walks through `cargo login` → dry-runs → publish.
@@ -143,9 +181,10 @@ that still apply to a future minor are:
 - Prove the literal `satisfies (.init/.close)` proposition as a corollary of
   `init_establishes_post` / `close_establishes_post` (currently a tracked gap mentioned in
   `docs/verified-anchor-bridge.md`).
-- Add a `fieldKey` seed test — the path is wired in the macro but no test exercises it.
 - Replace the `has_one` offset-8 hardcode with a layout-aware codegen
-  (flagged in `docs/exploit-case-studies.md` under Limitations).
+  (flagged in `docs/exploit-case-studies.md` under Limitations). Model and code currently
+  AGREE (both read offset 8), so the proof is honest; this is a feature limit, not a soundness
+  gap, and fixing it needs Borsh field-offset extraction from the account type.
 - QEDGen composition demo (M7c deferred item).
 
 ## Repo layout (as shipped at v0.1.0)
@@ -176,7 +215,7 @@ rust/                                cargo workspace
                                      for unsupported-constraint, bare-u8, #[account(args)].
   verified-anchor/                   Runtime: Validate / Accounts<'info> traits, VAError,
                                      prelude, Context<T>; SpecEntry/inventory/emit_specs!;
-                                     tests/ (behavior 26 tests, lean_spec 4,
+                                     tests/ (behavior 28 tests, lean_spec 4,
                                      runtime_lifecycle 2, runtime_seeds 2,
                                      runtime_exploits 4).
   verified-anchor-program/           BPF program exercising init/close + a seeds PDA
@@ -294,7 +333,8 @@ to open a new chat:
 - **Pre-publish polish.** Replace `REPLACE_ME` (already done), run `docs/publish-checklist.md`
   to push to crates.io.
 - **A follow-up listed above** (`Constraint.discriminator` tightening, `satisfies` corollary,
-  `fieldKey` seed test, layout-aware `has_one`, QEDGen demo).
+  layout-aware `has_one`, QEDGen demo). (The earlier `fieldKey` seed-test gap is closed —
+  `runtime_exploits` scenario 4 exercises a `user.key()` seed on-chain.)
 - **A reported bug or audit finding** against the v0.1.0 surface.
 
 The assistant should: read this file + `verified_anchor_proposal.md` (for context) +
