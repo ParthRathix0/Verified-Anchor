@@ -204,6 +204,27 @@ grep -rn 'sorry\|admit' VerifiedAnchor/
 * [`rust/verified-anchor-example`](rust/verified-anchor-example) — worked user crate exercising validation + lifecycle.
 * [`rust/verified-anchor-exploits`](rust/verified-anchor-exploits) — four real Solana mainnet CVE classes, naive vs verified.
 
+## Landing page
+
+A self-contained static landing page lives under [`web/`](web). It uses no build step, no
+framework, and no external scripts beyond Google Fonts. Preview locally with any static
+server:
+
+```bash
+cd web && python3 -m http.server 8000
+# then open http://localhost:8000
+```
+
+To host on **GitHub Pages**:
+
+1. In the repository on GitHub, open **Settings → Pages**.
+2. Under **Build and deployment**, set the source to **Deploy from a branch**.
+3. Choose **Branch:** `master` and **Folder:** `/web`. Save.
+
+The site goes live at <https://parthrathix0.github.io/Verified-Anchor/> within a minute. A
+`web/.nojekyll` file is committed so GitHub Pages serves the file as-is without running it
+through Jekyll.
+
 ## Contributing
 
 Issues and audit attempts are welcome. Substantive code patches require a prior contributor agreement granting the author the right to incorporate the change under the project license (see below). Open an issue first if you intend to send code.
