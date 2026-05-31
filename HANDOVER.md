@@ -178,6 +178,23 @@ git tag `v0.1.1` at the bumped commit; the tag MUST be pushed before the publish
 (it pins that tag). README "Status"/"Quick start", landing page (`web/index.html` + `web/vercel.json`),
 and `docs/publish-checklist.md` updated for the crates.io install + the auto-fetch.
 
+**SHIPPED to crates.io as v0.1.2 (single-dependency drop-in).** A real published-tool e2e
+(`cargo add verified-anchor` + `cargo install cargo-verified-anchor` + `cargo verified-anchor
+check` in a fresh crate) revealed that a user otherwise needed three deps and the docs' example
+didn't compile. Fixed so **`cargo add verified-anchor` is the only dependency**: verified-anchor
+now `pub use`s `solana_program` + `borsh`, the macros emit `::verified_anchor::solana_program::…`
+/ `::verified_anchor::borsh::…` (and `#[account]` carries `#[borsh(crate="::verified_anchor::borsh")]`);
+the prelude re-exports `Pubkey`/`AccountInfo`/`ProgramResult`/`declare_id!`; and
+`From<VAError> for ProgramError` (distinct custom codes) lets `try_accounts(...)?` work in a
+`ProgramResult` handler. README Quick start is now a complete, compiling example (note the
+`'info` handler signature: `accounts: &'info [AccountInfo<'info>]`). All three crates published
+0.1.2 (macros → runtime → cargo subcommand), tag `v0.1.2` pushed; the published e2e discharged
+`✓ Transfer (validation)` via live auto-fetch. **Landing page is LIVE** at
+<https://parthrathix0.github.io/Verified-Anchor/>, deployed by `.github/workflows/pages.yml`
+(GitHub Pages *Actions* source — branch source only allows `/` or `/docs`, so `web/` is served
+via the workflow). Full gate green at each step (lake, both `.so` rebuilt, `cargo test
+--workspace` 51 passed).
+
 ## What is left for the user to do (after submission)
 
 - `docs/publish-checklist.md` walks through `cargo login` → dry-runs → publish.
