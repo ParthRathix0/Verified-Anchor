@@ -96,7 +96,7 @@ propositional-extensionality and quotient-soundness axioms. No `sorry`, no `Clas
 no `native_decide`. The axiom set is auditable in one command:
 
 ```bash
-lake env lean -c '#print axioms VerifiedAnchor.genValidate_sound'
+cd lean && lake env lean Audit.lean   # prints genValidate_sound + lifecycle_sound axioms
 ```
 
 Per-program obligations are discharged by `cargo verified-anchor check` via a single Lean
