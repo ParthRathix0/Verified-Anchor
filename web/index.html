@@ -47,7 +47,7 @@
   pre { overflow-x: auto; }
 
   .container {
-    max-width: 1080px;
+    max-width: 1200px;
     margin: 0 auto;
     padding: 0 24px;
   }
@@ -97,6 +97,9 @@
       radial-gradient(ellipse 70% 50% at 50% 0%, rgba(74, 222, 128, 0.08), transparent 60%),
       var(--bg);
   }
+  .hero-inner {
+    max-width: 980px;
+  }
   .badge {
     display: inline-flex;
     align-items: center;
@@ -118,7 +121,7 @@
     box-shadow: 0 0 8px var(--accent);
   }
   h1 {
-    font-size: clamp(2rem, 5vw, 3.2rem);
+    font-size: clamp(1.8rem, 4.2vw, 2.8rem);
     font-weight: 700;
     letter-spacing: -0.025em;
     line-height: 1.1;
@@ -126,9 +129,9 @@
   }
   h1 .accent { color: var(--accent); }
   .lede {
-    font-size: 1.15rem;
+    font-size: 1.02rem;
     color: var(--text-dim);
-    max-width: 700px;
+    max-width: 900px;
     margin-bottom: 32px;
   }
   .cta {
@@ -184,6 +187,11 @@
   }
   .axiom-line .arrow { color: var(--text-faint); }
   .axiom-line .out { color: var(--accent); }
+  @media (max-width: 820px) {
+    .hero-inner {
+      max-width: 100%;
+    }
+  }
 
   /* ===== Sections ===== */
   section {
@@ -208,7 +216,7 @@
   section .section-lede {
     color: var(--text-dim);
     font-size: 1.05rem;
-    max-width: 740px;
+    max-width: 960px;
     margin-bottom: 40px;
   }
 
@@ -580,7 +588,7 @@
 
 <nav>
   <div class="container">
-    <div class="brand">Verified <span class="v">⊢</span> Anchor</div>
+    <div class="brand">Verified Anchor</div>
     <div class="nav-links">
       <a href="#use">Use</a>
       <a href="#what">What</a>
@@ -597,19 +605,21 @@
 
 <section class="hero">
   <div class="container">
-    <span class="badge">v0.1.2 · on crates.io · zero sorry</span>
-    <h1>Formally verified account validation for&nbsp;<span class="accent">Solana</span>.<br/>Checked by Lean&nbsp;4, not&nbsp;by&nbsp;hope.</h1>
-    <p class="lede">A drop-in replacement for Anchor's <code>#[derive(Accounts)]</code> — except every expansion ships with a Lean&nbsp;4 proof that the generated check matches a formal contract. Same code you'd write in Anchor; the build fails if the framework can't prove it.</p>
+    <div class="hero-inner">
+      <span class="badge">v0.1.2 · on crates.io · zero sorry</span>
+      <h1>Formally verified account validation for&nbsp;<span class="accent">Solana</span>.<br/>Checked by Lean&nbsp;4, not&nbsp;by&nbsp;hope.</h1>
+      <p class="lede">Verified Anchor is a drop-in replacement for the Anchor <code>#[derive(Accounts)]</code> macro that gates almost every Solana transaction in production. The macros emit the same Rust validation code stock Anchor would emit, plus a Lean&nbsp;4 obligation discharged at build time against a contract that defines what "valid accounts" means in the Solana account model. The proven core covers signer / mut / owner / has_one / seeds + bump / discriminator, the typed-wrapper base checks (SystemAccount ownership, Program&lt;P&gt; executable + address), and the init / close lifecycle.</p>
 
-    <div class="cta">
-      <a class="btn btn-primary" href="#use">Get started →</a>
-      <a class="btn btn-secondary" href="https://github.com/ParthRathix0/Verified-Anchor">View on GitHub</a>
-    </div>
+      <div class="cta">
+        <a class="btn btn-primary" href="#use">Get started →</a>
+        <a class="btn btn-secondary" href="https://github.com/ParthRathix0/Verified-Anchor">View on GitHub</a>
+      </div>
 
-    <div class="axiom-line">
-      <span>$&nbsp;lake env lean Audit.lean</span>
-      <span class="arrow">→</span>
-      <span class="out">[propext, Quot.sound]</span>
+      <div class="axiom-line">
+        <span>$&nbsp;lake env lean Audit.lean</span>
+        <span class="arrow">→</span>
+        <span class="out">[propext, Quot.sound]</span>
+      </div>
     </div>
   </div>
 </section>
