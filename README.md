@@ -4,6 +4,7 @@
 
 **Formally verified account validation for Solana programs.**
 
+[![crates.io](https://img.shields.io/crates/v/verified-anchor?logo=rust&label=crates.io)](https://crates.io/crates/verified-anchor)
 [![Lean](https://img.shields.io/badge/Lean-4.30.0-blue?logo=lean&logoColor=white)](https://lean-lang.org)
 [![Rust](https://img.shields.io/badge/Rust-1.93%2B-orange?logo=rust&logoColor=white)](https://www.rust-lang.org)
 [![Solana](https://img.shields.io/badge/Solana-SBF-9945FF?logo=solana&logoColor=white)](https://solana.com)
@@ -224,6 +225,8 @@ grep -rn 'sorry\|admit' VerifiedAnchor/
 
 ## Landing page
 
+**Live: <https://parthrathix0.github.io/Verified-Anchor/>**
+
 A self-contained static landing page lives under [`web/`](web). It uses no build step, no
 framework, and no external scripts beyond Google Fonts. Preview locally with any static
 server:
@@ -233,15 +236,11 @@ cd web && python3 -m http.server 8000
 # then open http://localhost:8000
 ```
 
-To host on **GitHub Pages**:
-
-1. In the repository on GitHub, open **Settings → Pages**.
-2. Under **Build and deployment**, set the source to **Deploy from a branch**.
-3. Choose **Branch:** `master` and **Folder:** `/web`. Save.
-
-The site goes live at <https://parthrathix0.github.io/Verified-Anchor/> within a minute. A
-`web/.nojekyll` file is committed so GitHub Pages serves the file as-is without running it
-through Jekyll.
+It is deployed automatically on every push to `master` by
+[`.github/workflows/pages.yml`](.github/workflows/pages.yml), which publishes `web/` through
+the GitHub Pages **Actions** source. (Pages' branch source only allows `/` or `/docs`, so the
+Actions source is used to serve from `web/`.) The page is also Vercel-ready
+([`web/vercel.json`](web/vercel.json)): import the repo and set the root directory to `web`.
 
 ## Contributing
 
