@@ -403,6 +403,102 @@
     .stack .row .layer-status { grid-column: 1 / -1; padding-left: 56px; font-size: 0.82rem; }
   }
 
+  /* ===== Theorem block ===== */
+  .theorem {
+    margin-top: 32px;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--accent);
+    border-radius: 10px;
+    padding: 24px 28px;
+  }
+  .theorem .label {
+    font-family: var(--mono);
+    font-size: 0.78rem;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--accent);
+    margin-bottom: 12px;
+  }
+  .theorem pre {
+    font-size: 0.9rem;
+    color: var(--text);
+    margin: 0 0 14px 0;
+    padding: 14px 18px;
+    background: var(--bg);
+    border-radius: 6px;
+    border: 1px solid var(--border);
+  }
+  .theorem p { color: var(--text-dim); font-size: 0.95rem; }
+
+  /* ===== Proof scope table ===== */
+  .scope {
+    margin-top: 28px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+    background: var(--bg-card);
+  }
+  .scope .row {
+    display: grid;
+    grid-template-columns: 1fr 1.4fr;
+    padding: 12px 18px;
+    border-bottom: 1px solid var(--border);
+    gap: 18px;
+    align-items: center;
+  }
+  .scope .row:last-child { border-bottom: none; }
+  .scope .row.header {
+    background: var(--bg-elev);
+    font-family: var(--mono);
+    font-size: 0.78rem;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+  }
+  .scope .row .c {
+    font-family: var(--mono);
+    font-size: 0.9rem;
+    color: var(--text);
+  }
+  .scope .row .t {
+    font-family: var(--mono);
+    font-size: 0.82rem;
+    color: var(--accent);
+  }
+
+  /* ===== Docs links ===== */
+  .docs-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+    gap: 14px;
+    margin-top: 24px;
+  }
+  .docs-grid a {
+    display: block;
+    padding: 18px 20px;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    transition: all 0.15s ease;
+    text-decoration: none;
+  }
+  .docs-grid a:hover {
+    border-color: var(--accent);
+    background: var(--bg-elev);
+    text-decoration: none;
+  }
+  .docs-grid a .doc-title {
+    font-family: var(--mono);
+    font-size: 0.85rem;
+    color: var(--accent);
+    margin-bottom: 6px;
+  }
+  .docs-grid a .doc-desc {
+    color: var(--text-dim);
+    font-size: 0.9rem;
+  }
+
   /* ===== Boundary list ===== */
   .boundary {
     display: grid;
@@ -459,9 +555,11 @@
     <div class="nav-links">
       <a href="#what">What</a>
       <a href="#stack">Stack</a>
-      <a href="#why">Why</a>
-      <a href="#how">How</a>
+      <a href="#why">Bugs</a>
+      <a href="#how">Code</a>
+      <a href="#chain">Proof</a>
       <a href="#audit">Audit</a>
+      <a href="#docs">Docs</a>
       <a href="https://github.com/ParthRathix0/Verified-Anchor">GitHub</a>
     </div>
   </div>
@@ -475,7 +573,7 @@
 
     <div class="cta">
       <a class="btn btn-primary" href="https://github.com/ParthRathix0/Verified-Anchor">View on GitHub →</a>
-      <a class="btn btn-secondary" href="#how">How it works</a>
+      <a class="btn btn-secondary" href="#chain">See the proof</a>
     </div>
 
     <div class="axiom-line">
@@ -490,9 +588,9 @@
   <div class="container">
     <h2>What it is</h2>
     <p class="section-title">A drop-in replacement for Solana's <code>#[derive(Accounts)]</code> macro — with proofs attached.</p>
-    <p class="section-lede">Anchor is the framework almost every Solana program in production is built on. When you describe accounts in a struct ("this one must sign, this one must be writable, this one must be a PDA derived from these seeds…"), Anchor generates the checking code at compile time and your program runs those checks on every Solana transaction — before any lamport movement, before any business logic, before anything. <strong>That generating code itself has never been formally verified.</strong> A bug there is a bug in every Anchor-based Solana program in production.</p>
-    <p class="section-lede">Verified Anchor is the same framework, with the same Anchor-style syntax (<code>Account&lt;'info, T&gt;</code>, <code>Signer&lt;'info&gt;</code>, <code>Program&lt;'info, P&gt;</code>, <code>Context&lt;T&gt;</code>), except every macro expansion comes with a Lean&nbsp;4 proof that the generated check is equivalent to a contract that defines what "valid accounts" means in the Solana account model. You write the same Solana program code. The proof is checked at build time. If it doesn't check, your program doesn't compile.</p>
-    <p class="section-lede" style="color: var(--text-faint); font-size: 0.92rem; padding-top: 8px; border-top: 1px solid var(--border);"><strong style="color: var(--text-dim);">Is this Solana-specific?</strong> Yes. Anchor was built at Solana Labs and only compiles for the Solana runtime. The Lean library models concrete Solana primitives — real <code>findProgramAddress</code> PDA derivation, lamports, rent, owner/executable flags — under the <code>VerifiedAnchor.Solana</code> namespace, designed to interoperate with the existing Solana formal-methods stack (<code>QEDGen.Solana</code>, <code>lean_solana</code>). The runtime tests compile to SBF via <code>cargo-build-sbf</code> and run on litesvm, an in-process Solana VM. The four CVE case studies below are all Solana mainnet incidents.</p>
+    <p class="section-lede">Anchor is the framework almost every Solana program in production is built on. When you describe accounts in a struct ("this one must sign, this one must be writable, this one must be a PDA derived from these seeds…"), Anchor generates the checking code at compile time and your program runs those checks on every Solana transaction — before any lamport movement, before any business logic, before anything. That generating code itself has never been formally verified. A bug there is a bug in every Anchor-based Solana program in production.</p>
+    <p class="section-lede">Verified Anchor is the same framework, with the same Anchor-style syntax (<code>Account&lt;'info, T&gt;</code>, <code>Signer&lt;'info&gt;</code>, <code>Program&lt;'info, P&gt;</code>, <code>Context&lt;T&gt;</code>), except every macro expansion comes with a Lean&nbsp;4 proof that the generated check is equivalent to a contract that defines what "valid accounts" means in the Solana account model. The user writes the same Solana program code. The proof is checked at build time. If it does not check, the program does not compile.</p>
+    <p class="section-lede">The Lean library models concrete Solana primitives — the real <code>findProgramAddress</code> PDA derivation, lamports, rent, owner and executable flags — under the <code>VerifiedAnchor.Solana</code> namespace, designed to compose with the broader Solana formal-methods stack (<code>QEDGen.Solana</code>, <code>lean_solana</code>). Runtime tests compile to SBF via <code>cargo-build-sbf</code> and execute on <code>litesvm</code>, an in-process Solana VM.</p>
   </div>
 </section>
 
@@ -500,7 +598,7 @@
   <div class="container">
     <h2>Where this fits</h2>
     <p class="section-title">The silent gap in Solana's correctness chain.</p>
-    <p class="section-lede">Solana's correctness depends on a chain of trust. Layers 1, 2, and 4 receive substantial attention from the Solana ecosystem. Layer 3 — Anchor's macro expansion, which gates almost every Solana transaction in production — does not. That's the layer Verified Anchor closes.</p>
+    <p class="section-lede">Solana's correctness depends on a chain of trust. Layers 1, 2, and 4 receive substantial attention from the Solana ecosystem. Layer 3 — Anchor's macro expansion, which gates almost every Solana transaction in production — does not. Verified Anchor closes that layer.</p>
 
     <div class="stack">
       <div class="row header">
@@ -530,15 +628,15 @@
       </div>
     </div>
 
-    <p class="section-lede" style="margin-top:28px;">Anchor is universal Solana infrastructure: a class of bug eliminated at the framework level is a class eliminated across the ecosystem. The Lean library composes directly with <code>QEDGen.Solana</code> — Verified Anchor proves <em>account validation</em>; QEDGen proves <em>business logic</em>; together they give Solana an end-to-end proof story no other major blockchain currently offers at the framework level.</p>
+    <p class="section-lede" style="margin-top:28px;">Anchor is universal Solana infrastructure. A class of bug eliminated at the framework level is a class eliminated across the ecosystem. The Lean library composes directly with <code>QEDGen.Solana</code>: Verified Anchor proves <em>account validation</em>; QEDGen proves <em>business logic</em>; together they give Solana an end-to-end proof story no other major blockchain currently offers at the framework level.</p>
   </div>
 </section>
 
 <section id="why">
   <div class="container">
-    <h2>Why it matters</h2>
+    <h2>The bug class</h2>
     <p class="section-title">Over $50M lost on Solana mainnet to one family of bug.</p>
-    <p class="section-lede">Solana programs have lost — and continue to lose — large sums of money to attacks that aren't exotic. They're variations on the same theme: the program <em>thought</em> it was checking an account, but the check was either missing, malformed, or trivially bypassable. <strong>Exactly the class of bug Anchor's <code>#[derive(Accounts)]</code> is supposed to prevent.</strong> The reason the framework doesn't is that the framework itself is unverified. Four examples, all real Solana mainnet incidents, all reproduced in this repository as before-and-after litesvm tests:</p>
+    <p class="section-lede">Solana programs have lost — and continue to lose — large sums of money to attacks that are not exotic. They are variations on the same theme: the program <em>thought</em> it was checking an account, but the check was either missing, malformed, or trivially bypassable. This is exactly the class of bug Anchor's <code>#[derive(Accounts)]</code> is supposed to prevent. The reason the framework does not is that the framework itself is unverified. Four examples, all real Solana mainnet incidents, all reproduced in this repository as before-and-after <code>litesvm</code> tests:</p>
 
     <div class="grid-2">
       <div class="exploit-card">
@@ -574,9 +672,9 @@
 
 <section id="how">
   <div class="container">
-    <h2>What you write</h2>
+    <h2>Developer surface</h2>
     <p class="section-title">Same syntax as stock Anchor. The proof comes free.</p>
-    <p class="section-lede">If you've used Anchor, you already know how to use Verified Anchor. The wrapper types, the attribute macros, the <code>Context&lt;T&gt;</code> shape — all signature-identical to stock Anchor. The only thing that changes is what happens at build time.</p>
+    <p class="section-lede">If you have used Anchor, you already know how to use Verified Anchor. The wrapper types, the attribute macros, the <code>Context&lt;T&gt;</code> shape — all signature-identical to stock Anchor. The only thing that changes is what happens at build time.</p>
 
     <div class="code-compare">
       <div class="code-block naive">
@@ -622,8 +720,8 @@
 
 <section id="chain">
   <div class="container">
-    <h2>How it works</h2>
-    <p class="section-title">The verification chain.</p>
+    <h2>The proof</h2>
+    <p class="section-title">A single struct flows into both the Rust check and the Lean obligation.</p>
     <p class="section-lede">The macro emits the Rust check and a Lean obligation from the <em>same</em> struct description. The Rust check runs on chain at transaction time. The Lean obligation is discharged at build time against the proven library. Both are observably equivalent by construction.</p>
 
     <div class="chain">
@@ -659,54 +757,110 @@
         <div class="idx">5</div>
         <div>
           <div class="label">Discharge at build time</div>
-          <div class="text"><code>cargo verified-anchor check</code> runs <code>lake env lean</code> and discharges a per-struct obligation by <code>decide M4Subset</code>. If the obligation fails, your build fails.</div>
+          <div class="text"><code>cargo verified-anchor check</code> runs <code>lake env lean</code> and discharges a per-struct obligation by <code>decide M4Subset</code>. If the obligation fails, the build fails.</div>
         </div>
       </div>
+    </div>
+
+    <div class="theorem">
+      <div class="label">Headline theorem · Lean 4</div>
+<pre>theorem genValidate_sound
+    (s : AccountsStruct) (c : Ctx) (h : M4Subset s) :
+  genValidate s c = true ↔ validates s c</pre>
+      <p>For every struct in the supported subset, the generated Rust validator returns <code>Ok(())</code> exactly when the declarative contract holds. Proved once, parameterised over the user's struct. The lifecycle theorem <code>lifecycle_sound</code> discharges analogous Hoare obligations for <code>init</code> and <code>close</code>. Both depend only on <code>[propext, Quot.sound]</code>.</p>
+    </div>
+
+    <div class="scope">
+      <div class="row header">
+        <div>Constraint</div>
+        <div>Proven by</div>
+      </div>
+      <div class="row"><div class="c">signer</div><div class="t">genValidate_sound</div></div>
+      <div class="row"><div class="c">mut</div><div class="t">genValidate_sound</div></div>
+      <div class="row"><div class="c">owner = &lt;expr&gt;</div><div class="t">genValidate_sound</div></div>
+      <div class="row"><div class="c">has_one = &lt;field&gt;</div><div class="t">genValidate_sound (relational)</div></div>
+      <div class="row"><div class="c">seeds = […], bump</div><div class="t">genValidate_sound (canonical-only PDA)</div></div>
+      <div class="row"><div class="c">discriminator = "…"</div><div class="t">genValidate_sound</div></div>
+      <div class="row"><div class="c">init / close</div><div class="t">lifecycle_sound (Hoare-style)</div></div>
     </div>
   </div>
 </section>
 
 <section id="audit">
   <div class="container">
-    <h2>Audit it yourself</h2>
-    <p class="section-title">Two commands. No trust required.</p>
-    <p class="section-lede">The proofs are open. You can verify them yourself — no need to trust the README. The headline theorems' axiom dependencies are <code>[propext, Quot.sound]</code>, the standard Lean propositional-extensionality and quotient-soundness axioms. No <code>sorry</code>, no <code>Classical.choice</code>, no escape hatches.</p>
+    <h2>Audit the proofs</h2>
+    <p class="section-title">Two commands. No assumptions required.</p>
+    <p class="section-lede">The proofs are open. The headline theorems' axiom dependencies are <code>[propext, Quot.sound]</code>, the standard Lean propositional-extensionality and quotient-soundness axioms. No <code>sorry</code>, no <code>Classical.choice</code>, no <code>native_decide</code>.</p>
 
     <div class="audit">
-      <p>Clone the repo, install elan + lake, then:</p>
+      <p>Clone the repository, install <code>elan</code> and <code>lake</code>, then:</p>
 <pre>$ cd lean &amp;&amp; lake build
 $ lake env lean -c '#print axioms VerifiedAnchor.genValidate_sound'</pre>
       <div class="out">
         <pre>'VerifiedAnchor.genValidate_sound' depends on axioms: [propext, Quot.sound]</pre>
       </div>
-      <p style="margin-top: 14px;">Same audit for <code>lifecycle_sound</code> (the <code>init</code>/<code>close</code> Hoare theorem). Same answer.</p>
+      <p style="margin-top: 14px;">The same audit applies to <code>lifecycle_sound</code> (the <code>init</code> and <code>close</code> Hoare theorem). Same answer.</p>
     </div>
   </div>
 </section>
 
 <section id="boundary">
   <div class="container">
-    <h2>Honest boundaries</h2>
-    <p class="section-title">What's proven, what isn't.</p>
-    <p class="section-lede">The claim isn't "your Solana program is now bug-free." The claim is: this <em>specific class</em> of bug — the framework-level account-validation bug that ate Cashio, Crema, and the type-confusion incidents — is eliminated for the supported constraint subset.</p>
+    <h2>What is proven, what is not</h2>
+    <p class="section-title">The trust boundary, in full.</p>
+    <p class="section-lede">The library's claim is not that Solana programs become bug-free. The claim is that the macro-level account-validation bug class — the class that ate Cashio, Crema, and the type-confusion incidents — is eliminated at the framework level for the supported constraint subset.</p>
 
     <div class="boundary">
       <div class="in">
         <div class="h">In the proof</div>
-        <p><code>signer</code>, <code>mut</code>, <code>owner</code>, <code>has_one</code>, <code>seeds</code> + <code>bump</code>, <code>discriminator</code> (the M4 subset). Plus the <code>init</code>/<code>close</code> lifecycle as a Hoare theorem.</p>
+        <p><code>signer</code>, <code>mut</code>, <code>owner</code>, <code>has_one</code>, <code>seeds</code> + <code>bump</code>, <code>discriminator</code>. Plus the <code>init</code> / <code>close</code> lifecycle as a Hoare theorem.</p>
       </div>
       <div class="out">
         <div class="h">Outside the proof</div>
-        <p>Borsh deserialization of typed payloads (<code>BorshFailed</code> is an honest runtime error, not a silent gap). CPI effects beyond <code>init</code>/<code>close</code>. The Solana runtime contract itself.</p>
+        <p>Borsh deserialisation of typed payloads (<code>BorshFailed</code> is an honest runtime error, not a silent gap). CPI effects beyond <code>init</code> / <code>close</code>. The Solana runtime contract itself.</p>
       </div>
       <div class="out">
-        <div class="h">Anchor constraints we don't model</div>
-        <p><code>realloc</code>, <code>zero</code>, token / mint / associated-token, custom constraint expressions. The macro emits a <code>compile_error!</code> with a migration-guide pointer if you try to use one.</p>
+        <div class="h">Constraints not modelled</div>
+        <p><code>realloc</code>, <code>zero</code>, token / mint / associated-token, custom <code>constraint = expr</code>. The macro emits a <code>compile_error!</code> with a migration-guide pointer.</p>
       </div>
       <div class="in">
         <div class="h">Empirically validated</div>
-        <p>Four real CVE classes are reproduced as litesvm before-and-after tests. Naive version → attacker wins. Verified version → attacker rejected on chain.</p>
+        <p>Four real Solana mainnet CVE classes are reproduced as <code>litesvm</code> before-and-after tests. Naive version: attacker wins. Verified version: attacker rejected on chain.</p>
       </div>
+    </div>
+  </div>
+</section>
+
+<section id="docs">
+  <div class="container">
+    <h2>Read more</h2>
+    <p class="section-title">Documentation for reviewers, contributors, and users.</p>
+
+    <div class="docs-grid">
+      <a href="https://github.com/ParthRathix0/Verified-Anchor/blob/master/verified_anchor_proposal.md">
+        <div class="doc-title">Original proposal</div>
+        <div class="doc-desc">The problem statement, approach, and milestone plan that motivated the work.</div>
+      </a>
+      <a href="https://github.com/ParthRathix0/Verified-Anchor/blob/master/docs/announcement-v0.1.0.md">
+        <div class="doc-title">v0.1.0 announcement</div>
+        <div class="doc-desc">The full technical writeup of the release: developer surface, proof, empirical validation.</div>
+      </a>
+      <a href="https://github.com/ParthRathix0/Verified-Anchor/blob/master/docs/verified-anchor-bridge.md">
+        <div class="doc-title">Trust boundary</div>
+        <div class="doc-desc">Clause-by-clause Rust ↔ Lean correspondence and exactly what is and is not proven.</div>
+      </a>
+      <a href="https://github.com/ParthRathix0/Verified-Anchor/blob/master/docs/migrating-from-anchor.md">
+        <div class="doc-title">Migrating from Anchor</div>
+        <div class="doc-desc">Supported constraint subset and side-by-side syntax mapping for stock Anchor users.</div>
+      </a>
+      <a href="https://github.com/ParthRathix0/Verified-Anchor/blob/master/docs/exploit-case-studies.md">
+        <div class="doc-title">Exploit case studies</div>
+        <div class="doc-desc">The four Solana mainnet incidents reproduced as litesvm before-and-after tests.</div>
+      </a>
+      <a href="https://github.com/ParthRathix0/Verified-Anchor#repo-structure">
+        <div class="doc-title">Repo structure</div>
+        <div class="doc-desc">Tour of the Lean library, the Cargo workspace, and the documentation tree.</div>
+      </a>
     </div>
   </div>
 </section>
