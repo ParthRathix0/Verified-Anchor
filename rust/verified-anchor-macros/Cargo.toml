@@ -1,6 +1,6 @@
 [package]
 name = "verified-anchor-macros"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 description = "Proof-producing proc-macros for verified-anchor (#[derive(VerifiedAccounts)], #[derive(AccountData)], #[account])."
 license = "CC-BY-NC-ND-4.0"

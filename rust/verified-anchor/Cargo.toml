@@ -1,6 +1,6 @@
 [package]
 name = "verified-anchor"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 description = "Formally verified (Lean 4) account-validation runtime for Solana — Anchor-compatible, proof-producing."
 license = "CC-BY-NC-ND-4.0"
@@ -12,7 +12,7 @@ categories = ["development-tools", "cryptography"]
 
 [dependencies]
 solana-program = "2"
-verified-anchor-macros = { path = "../verified-anchor-macros", version = "0.1.1" }
+verified-anchor-macros = { path = "../verified-anchor-macros", version = "0.1.2" }
 inventory = "0.3"
 borsh = "1"
 

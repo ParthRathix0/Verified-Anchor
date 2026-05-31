@@ -2,6 +2,12 @@
 use solana_program::account_info::AccountInfo;
 use solana_program::pubkey::Pubkey;
 
+// Re-export the crates the generated code references, so a user needs ONLY `verified-anchor`
+// as a dependency (mirrors how `anchor_lang` re-exports `solana_program`). The macros emit
+// `::verified_anchor::solana_program::…` and `::verified_anchor::borsh::…` paths.
+pub use borsh;
+pub use solana_program;
+
 pub mod account_data;
 pub use account_data::{AccountData, ProgramId, System};
 
@@ -55,6 +61,27 @@ impl core::fmt::Display for VAError {
 }
 
 impl std::error::Error for VAError {}
+
+/// So a handler returning `ProgramResult` can use `Transfer::try_accounts(...)?` directly.
+/// Each variant maps to a distinct custom code so clients can disambiguate the failed check.
+impl From<VAError> for solana_program::program_error::ProgramError {
+    fn from(e: VAError) -> Self {
+        let code: u32 = match e {
+            VAError::MissingSigner { .. } => 1,
+            VAError::NotWritable { .. } => 2,
+            VAError::WrongOwner { .. } => 3,
+            VAError::NotEnoughAccounts { .. } => 4,
+            VAError::WrongHasOne { .. } => 5,
+            VAError::InitFailed { .. } => 6,
+            VAError::CloseFailed { .. } => 7,
+            VAError::WrongPda { .. } => 8,
+            VAError::WrongBump { .. } => 9,
+            VAError::WrongDiscriminator { .. } => 10,
+            VAError::BorshFailed { .. } => 11,
+        };
+        solana_program::program_error::ProgramError::Custom(code)
+    }
+}
 
 /// Implemented by `#[derive(VerifiedAccounts)]`. Validation is positional over the
 /// runtime account slice (index = field declaration order), matching the Lean `Ctx`.

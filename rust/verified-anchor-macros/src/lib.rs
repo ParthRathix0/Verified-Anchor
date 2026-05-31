@@ -111,7 +111,7 @@ fn wrapper_implied(kind: &WrapperKind) -> Vec<Constraint> {
         }
         WrapperKind::Signer => vec![Constraint::Signer],
         WrapperKind::SystemAccount => vec![
-            Constraint::Owner(syn::parse_quote! { ::solana_program::system_program::ID }),
+            Constraint::Owner(syn::parse_quote! { ::verified_anchor::solana_program::system_program::ID }),
         ],
         WrapperKind::Program(p) => vec![Constraint::ProgramMarker(p.clone())],
         WrapperKind::Unchecked => vec![],
@@ -501,7 +501,7 @@ fn validate_body(specs: &[FieldSpec]) -> TokenStream2 {
             checks.push(quote! {
                 {
                     let __seeds: &[&[u8]] = &[ #(#seed_exprs),* ];
-                    let (__pda, __bump) = ::solana_program::pubkey::Pubkey::find_program_address(__seeds, program_id);
+                    let (__pda, __bump) = ::verified_anchor::solana_program::pubkey::Pubkey::find_program_address(__seeds, program_id);
                     if accounts[#i].key != &__pda {
                         return Err(::verified_anchor::VAError::WrongPda { field: #fname });
                     }
@@ -512,9 +512,9 @@ fn validate_body(specs: &[FieldSpec]) -> TokenStream2 {
     }
     quote! {
         fn validate(
-            accounts: &[::solana_program::account_info::AccountInfo],
+            accounts: &[::verified_anchor::solana_program::account_info::AccountInfo],
             instr_data: &[u8],
-            program_id: &::solana_program::pubkey::Pubkey,
+            program_id: &::verified_anchor::solana_program::pubkey::Pubkey,
         ) -> ::core::result::Result<(), ::verified_anchor::VAError> {
             let _ = (instr_data, program_id);
             if accounts.len() < #n {
@@ -552,9 +552,9 @@ fn lifecycle_body(specs: &[FieldSpec]) -> TokenStream2 {
                 lifecycle_steps.push(quote! {
                     {
                         let space_total: usize = #n + 8;
-                        let ix = ::solana_program::system_instruction::create_account(
+                        let ix = ::verified_anchor::solana_program::system_instruction::create_account(
                             accounts[#pi].key, accounts[#i].key, rent_lamports, space_total as u64, program_id);
-                        ::solana_program::program::invoke(&ix, accounts)
+                        ::verified_anchor::solana_program::program::invoke(&ix, accounts)
                             .map_err(|_| ::verified_anchor::VAError::InitFailed { field: #fname })?;
                         let mut d = accounts[#i].try_borrow_mut_data()
                             .map_err(|_| ::verified_anchor::VAError::InitFailed { field: #fname })?;
@@ -588,8 +588,8 @@ fn lifecycle_body(specs: &[FieldSpec]) -> TokenStream2 {
 
     quote! {
         pub fn execute_lifecycle(
-            accounts: &[::solana_program::account_info::AccountInfo],
-            program_id: &::solana_program::pubkey::Pubkey,
+            accounts: &[::verified_anchor::solana_program::account_info::AccountInfo],
+            program_id: &::verified_anchor::solana_program::pubkey::Pubkey,
             rent_lamports: u64,
         ) -> ::core::result::Result<(), ::verified_anchor::VAError> {
             // Bounds guard: the steps index accounts by declared field position. Without this a
@@ -665,7 +665,7 @@ pub fn derive_verified_accounts(input: TokenStream) -> TokenStream {
             quote! {
                 #fname: {
                     let __seeds: &[&[u8]] = &[ #(#seed_exprs),* ];
-                    let (_pda, __b) = ::solana_program::pubkey::Pubkey::find_program_address(__seeds, program_id);
+                    let (_pda, __b) = ::verified_anchor::solana_program::pubkey::Pubkey::find_program_address(__seeds, program_id);
                     __b
                 }
             }
@@ -686,7 +686,7 @@ pub fn derive_verified_accounts(input: TokenStream) -> TokenStream {
                     drop(raw);
                     ::verified_anchor::Account {
                         info: &accounts[#i],
-                        data: <#t as ::borsh::BorshDeserialize>::try_from_slice(&bytes)
+                        data: <#t as ::verified_anchor::borsh::BorshDeserialize>::try_from_slice(&bytes)
                             .map_err(|_| ::verified_anchor::VAError::BorshFailed { field: stringify!(#fname) })?,
                     }
                 }
@@ -727,8 +727,8 @@ pub fn derive_verified_accounts(input: TokenStream) -> TokenStream {
         impl<'info> ::verified_anchor::Accounts<'info> for #accounts_impl_target {
             type Bumps = #bumps_struct_name;
             fn try_accounts(
-                program_id: &::solana_program::pubkey::Pubkey,
-                accounts: &'info [::solana_program::account_info::AccountInfo<'info>],
+                program_id: &::verified_anchor::solana_program::pubkey::Pubkey,
+                accounts: &'info [::verified_anchor::solana_program::account_info::AccountInfo<'info>],
                 instr_data: &[u8],
             ) -> ::core::result::Result<(Self, Self::Bumps), ::verified_anchor::VAError> {
                 <Self as ::verified_anchor::Validate>::validate(accounts, instr_data, program_id)?;
