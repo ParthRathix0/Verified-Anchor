@@ -39,6 +39,17 @@ struct CheckStoredBump<'info> {
     pda: verified_anchor::UncheckedAccount<'info>,
 }
 
+/// A fixed FOREIGN program id the PDA derives against, regardless of which program runs this.
+const FOREIGN_PROGRAM: Pubkey = Pubkey::new_from_array([9u8; 32]);
+
+/// validate a PDA derived against a FOREIGN program id via `seeds::program`.
+/// Accounts: [pda]. Instruction data: [4].
+#[derive(VerifiedAccounts)]
+struct CheckForeignPda<'info> {
+    #[account(seeds = [b"vault"], seeds::program = FOREIGN_PROGRAM, bump)]
+    pda: verified_anchor::UncheckedAccount<'info>,
+}
+
 entrypoint!(process);
 pub fn process(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]) -> ProgramResult {
     match data.first() {
@@ -64,6 +75,12 @@ pub fn process(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]) -> Pr
         Some(3) => {
             // instr_data after the 1-byte tag carries the stored bump byte at offset 0
             CheckStoredBump::validate(accounts, &data[1..], program_id)
+                .map_err(|_| ProgramError::InvalidArgument)?;
+            Ok(())
+        }
+        Some(4) => {
+            // PDA derived against the FOREIGN program id (seeds::program), not `program_id`.
+            CheckForeignPda::validate(accounts, &data[1..], program_id)
                 .map_err(|_| ProgramError::InvalidArgument)?;
             Ok(())
         }
