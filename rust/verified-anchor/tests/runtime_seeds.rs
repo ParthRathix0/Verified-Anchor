@@ -73,23 +73,28 @@ fn seeds_wrong_pda_rejected_onchain() {
     );
 }
 
-/// Find a stored bump `b` for which `create_program_address([b"vault", [b]])` is off-curve,
-/// returning that bump and the derived address.
-fn first_off_curve_stored_bump(program_id: &Pubkey) -> (u8, Pubkey) {
-    for b in (0u8..=255).rev() {
+/// Find a GENUINELY NON-CANONICAL off-curve bump: strictly below the canonical bump.
+/// `find_program_address` returns the HIGHEST off-curve bump (the canonical one), so we
+/// search ascending from 0 up to (but not including) `canon_bump` for the first b where
+/// `create_program_address` succeeds.  The derived address differs from the canonical PDA.
+fn non_canonical_stored_bump(program_id: &Pubkey) -> (u8, Pubkey, Pubkey) {
+    let (canon_key, canon_bump) = Pubkey::find_program_address(&[b"vault"], program_id);
+    for b in 0u8..canon_bump {
         if let Ok(pk) = Pubkey::create_program_address(&[b"vault", &[b]], program_id) {
-            return (b, pk);
+            return (b, pk, canon_key);
         }
     }
-    panic!("no off-curve stored bump for seeds");
+    panic!("no non-canonical off-curve bump found below canonical bump {canon_bump} for b\"vault\"");
 }
 
 /// The opt-in `bump = arg(0)` (stored, non-canonical) check accepts the address derived with
-/// THAT specific bump via `create_program_address` — on-chain, no canonical requirement.
+/// a GENUINELY NON-CANONICAL bump (strictly below canonical) — on-chain, no canonical
+/// requirement.  The assert_ne! proves the accepted PDA differs from the canonical one.
 #[test]
 fn seeds_stored_bump_good_accepted_onchain() {
     let (mut svm, program_id, payer) = setup();
-    let (stored_bump, pda) = first_off_curve_stored_bump(&program_id);
+    let (stored_bump, pda, canon_key) = non_canonical_stored_bump(&program_id);
+    assert_ne!(pda, canon_key, "non-canonical PDA must differ from canonical PDA");
 
     let data = vec![3u8, stored_bump]; // tag 3 + stored bump byte at offset 0
 
@@ -111,7 +116,7 @@ fn seeds_stored_bump_good_accepted_onchain() {
 #[test]
 fn seeds_stored_bump_wrong_pda_rejected_onchain() {
     let (mut svm, program_id, payer) = setup();
-    let (stored_bump, _pda) = first_off_curve_stored_bump(&program_id);
+    let (stored_bump, _pda, _canon) = non_canonical_stored_bump(&program_id);
     let wrong = Pubkey::new_unique();
 
     let data = vec![3u8, stored_bump];
