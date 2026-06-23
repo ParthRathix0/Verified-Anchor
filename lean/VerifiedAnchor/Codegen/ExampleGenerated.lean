@@ -137,6 +137,39 @@ theorem withSeeds_M4 : M4Subset withSeeds := by decide
 theorem withSeeds_sound (c : Ctx) : genValidate withSeeds c = true ↔ validates withSeeds c :=
   genValidate_sound withSeeds c withSeeds_M4
 
+/-! ## stored (non-canonical) bump closed-loop (M4)
+
+The opt-in `bump = arg(off)` reads the bump byte from `instrData` at `off` and derives the
+PDA with THAT specific bump via `createProgramAddress` — NO canonical `findProgramAddress`
+requirement (the deliberate, less-safe opt-in). Like canonical seeds the derivation hashes
+through the opaque `sha256`, so `genSeeds` does not reduce under `decide`; we demonstrate the
+same two honest halves (crypto-free seed resolution + the symbolic soundness arrow) plus the
+M4 membership of the new `BumpSpec.stored` constructor. The empirical accept/reject against
+the real `create_program_address` lives in the Rust tests. -/
+def storedField : AccountField :=
+  { name := "pda", ty := AccountType.uncheckedAccount,
+    constraints := [Constraint.seeds [SeedSpec.literal "vault".toUTF8]
+                                     (BumpSpec.stored 0)] }
+def withStoredBump : AccountsStruct :=
+  { programId := pdaProg, fields := [storedField] }
+
+/-- A context whose instruction data carries the stored bump byte at offset 0. -/
+def storedCtx : Ctx :=
+  { accounts := [ { key := Pubkey.zero, lamports := 0, data := ByteArray.empty,
+                    owner := Pubkey.zero, rentEpoch := 0, isSigner := false,
+                    isWritable := false, executable := false } ],
+    instrData := (⟨#[255]⟩ : ByteArray) }
+#guard (resolveSeeds withStoredBump storedCtx [SeedSpec.literal "vault".toUTF8]).length = 1
+
+/-- `withStoredBump` is in the M4 subset (`.seeds _ _` qualifies regardless of bump). -/
+theorem withStoredBump_M4 : M4Subset withStoredBump := by decide
+
+/-- THE STORED-BUMP CLOSED LOOP (symbolic): for any context, the generated stored-bump PDA
+    validator agrees with the M1 contract. -/
+theorem withStoredBump_sound (c : Ctx) :
+    genValidate withStoredBump c = true ↔ validates withStoredBump c :=
+  genValidate_sound withStoredBump c withStoredBump_M4
+
 /-! ## Wrapper base checks: `SystemAccount` and `Program<P>` (M4)
 
 These mirror the macro's `wrapper_implied`: a `SystemAccount<'info>` field implies an

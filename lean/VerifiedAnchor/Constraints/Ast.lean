@@ -14,6 +14,11 @@ inductive SeedSpec where
 inductive BumpSpec where
   | declared (b : UInt8)
   | canonical
+  /-- Opt-in, non-canonical "stored" bump: the bump byte is read from the instruction data
+      at byte offset `argOff`. The PDA is derived with THAT specific bump via
+      `createProgramAddress` — there is NO canonical `findProgramAddress` requirement. This is
+      the deliberately less-safe explicit opt-in; canonical stays the safe default. -/
+  | stored (argOff : Nat)
   deriving Inhabited, DecidableEq
 
 /-- The Anchor constraint subset in scope for v1. -/
