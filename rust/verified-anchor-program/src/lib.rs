@@ -31,6 +31,14 @@ struct CheckPda<'info> {
     pda: verified_anchor::UncheckedAccount<'info>,
 }
 
+/// validate a PDA with an opt-in stored (non-canonical) bump read from instr data byte 0.
+/// Accounts: [pda]. Instruction data: [3, stored_bump].
+#[derive(VerifiedAccounts)]
+struct CheckStoredBump<'info> {
+    #[account(seeds = [b"vault"], bump = arg(0))]
+    pda: verified_anchor::UncheckedAccount<'info>,
+}
+
 entrypoint!(process);
 pub fn process(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]) -> ProgramResult {
     match data.first() {
@@ -50,6 +58,12 @@ pub fn process(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]) -> Pr
         Some(2) => {
             // instr_data after the 1-byte tag carries the 4-byte seed arg
             CheckPda::validate(accounts, &data[1..], program_id)
+                .map_err(|_| ProgramError::InvalidArgument)?;
+            Ok(())
+        }
+        Some(3) => {
+            // instr_data after the 1-byte tag carries the stored bump byte at offset 0
+            CheckStoredBump::validate(accounts, &data[1..], program_id)
                 .map_err(|_| ProgramError::InvalidArgument)?;
             Ok(())
         }

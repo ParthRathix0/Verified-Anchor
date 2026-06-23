@@ -175,6 +175,51 @@ fn seeds_declared_bump_rejects_non_canonical() {
     }
 }
 
+#[derive(VerifiedAccounts)]
+struct PdaStoredBump<'info> {
+    #[account(seeds = [b"vault"], bump = arg(0))]
+    pda: UncheckedAccount<'info>,
+}
+
+/// Find a stored bump that produces an off-curve PDA, and one that the account key uses.
+fn first_off_curve_bump(program_id: &Pubkey) -> (u8, Pubkey) {
+    for b in (0u8..=255).rev() {
+        if let Ok(pk) = Pubkey::create_program_address(&[b"vault", &[b]], program_id) {
+            return (b, pk);
+        }
+    }
+    panic!("no off-curve bump for seeds");
+}
+
+#[test]
+fn seeds_stored_bump_accepts_matching_pda() {
+    let program_id = Pubkey::new_unique();
+    let (bump, pda) = first_off_curve_bump(&program_id);
+    // instr data byte 0 is the stored bump.
+    let mut a = Acct { key: pda, owner: Pubkey::new_unique(), lamports: 1, data: vec![], is_signer: false, is_writable: false };
+    let accts = [a.info()];
+    assert_eq!(PdaStoredBump::validate(&accts, &[bump], &program_id), Ok(()));
+}
+
+#[test]
+fn seeds_stored_bump_rejects_wrong_pda() {
+    let program_id = Pubkey::new_unique();
+    let (bump, _pda) = first_off_curve_bump(&program_id);
+    let mut a = Acct { key: Pubkey::new_unique(), owner: Pubkey::new_unique(), lamports: 1, data: vec![], is_signer: false, is_writable: false };
+    let accts = [a.info()];
+    assert_eq!(PdaStoredBump::validate(&accts, &[bump], &program_id), Err(VAError::WrongPda { field: "pda" }));
+}
+
+#[test]
+fn seeds_stored_bump_rejects_short_instr_data() {
+    let program_id = Pubkey::new_unique();
+    let (_bump, pda) = first_off_curve_bump(&program_id);
+    // empty instr data => no byte at offset 0 => clean reject (mirrors the Lean none-safe spec).
+    let mut a = Acct { key: pda, owner: Pubkey::new_unique(), lamports: 1, data: vec![], is_signer: false, is_writable: false };
+    let accts = [a.info()];
+    assert_eq!(PdaStoredBump::validate(&accts, &[], &program_id), Err(VAError::WrongPda { field: "pda" }));
+}
+
 fn disc(name: &str) -> [u8; 8] {
     let mut h = Sha256::new();
     h.update(b"account:");

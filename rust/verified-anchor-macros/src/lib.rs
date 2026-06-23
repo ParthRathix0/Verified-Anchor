@@ -133,6 +133,10 @@ enum Constraint {
     Seeds(Vec<SeedElem>),
     BumpCanonical,
     BumpDeclared(u8),
+    /// Opt-in, non-canonical "stored" bump: `bump = arg(off)`. The bump byte is read from the
+    /// instruction data at byte offset `off`; the PDA is derived with THAT specific bump via
+    /// `create_program_address` — NO canonical `find_program_address` requirement.
+    BumpStored(usize),
     Discriminator([u8; 8]),
     /// `address = <expr>` — checks `accounts[i].key == expr`.
     Address(Expr),
@@ -195,8 +199,25 @@ impl Parse for Constraint {
             "bump" => {
                 if input.peek(Token![=]) {
                     input.parse::<Token![=]>()?;
-                    let lit: syn::LitInt = input.parse()?;
-                    Ok(Constraint::BumpDeclared(lit.base10_parse()?))
+                    // `bump = <litint>` (declared) vs `bump = arg(off)` (stored, non-canonical).
+                    let expr: Expr = input.parse()?;
+                    match expr {
+                        Expr::Lit(syn::ExprLit { lit: syn::Lit::Int(i), .. }) => {
+                            Ok(Constraint::BumpDeclared(i.base10_parse()?))
+                        }
+                        Expr::Call(call) => {
+                            let is_arg = matches!(call.func.as_ref(),
+                                Expr::Path(p) if p.path.is_ident("arg"));
+                            if !is_arg {
+                                return Err(syn::Error::new_spanned(call.func,
+                                    "unsupported `bump = <expr>` (expected a u8 literal or `arg(off)`)"));
+                            }
+                            let off = lit_usize(call.args.iter().next())?;
+                            Ok(Constraint::BumpStored(off))
+                        }
+                        other => Err(syn::Error::new_spanned(other,
+                            "unsupported `bump = <expr>` (expected a u8 literal or `arg(off)`)")),
+                    }
                 } else {
                     Ok(Constraint::BumpCanonical)
                 }
@@ -317,7 +338,7 @@ fn lean_constraint(c: &Constraint) -> String {
             }).collect();
             format!("Constraint.seeds [{}] @@BUMP@@", seeds.join(", "))
         }
-        Constraint::BumpCanonical | Constraint::BumpDeclared(_) => String::new(),
+        Constraint::BumpCanonical | Constraint::BumpDeclared(_) | Constraint::BumpStored(_) => String::new(),
         Constraint::Discriminator(d) => {
             let bytes: Vec<String> = d.iter().map(|x| x.to_string()).collect();
             format!("Constraint.discriminator (ByteArray.mk #[{}])", bytes.join(", "))
@@ -370,9 +391,12 @@ fn lean_spec_string(specs: &[FieldSpec]) -> String {
             WrapperKind::Program(_) => "AccountType.program Pubkey.zero".to_string(),
             WrapperKind::Unchecked => "AccountType.uncheckedAccount".to_string(),
         };
+        // Parenthesise bumps that carry an argument so the emitted spec parses as a single
+        // `BumpSpec` argument of `Constraint.seeds` (canonical takes no arg, so no parens).
         let bump_str = spec.constraints.iter().find_map(|c| match c {
             Constraint::BumpCanonical => Some("BumpSpec.canonical".to_string()),
-            Constraint::BumpDeclared(d) => Some(format!("BumpSpec.declared {}", d)),
+            Constraint::BumpDeclared(d) => Some(format!("(BumpSpec.declared {})", d)),
+            Constraint::BumpStored(off) => Some(format!("(BumpSpec.stored {})", off)),
             _ => None,
         }).unwrap_or_else(|| "BumpSpec.canonical".to_string());
         let cs_joined = cs.join(", ").replace("@@BUMP@@", &bump_str);
@@ -483,7 +507,8 @@ fn validate_body(specs: &[FieldSpec]) -> TokenStream2 {
                     continue;
                 }
                 // Seeds/bump are handled in the per-field PDA block below.
-                Constraint::Seeds(_) | Constraint::BumpCanonical | Constraint::BumpDeclared(_) => {
+                Constraint::Seeds(_) | Constraint::BumpCanonical | Constraint::BumpDeclared(_)
+                | Constraint::BumpStored(_) => {
                     continue;
                 }
             };
@@ -509,28 +534,63 @@ fn validate_body(specs: &[FieldSpec]) -> TokenStream2 {
                     quote! { &instr_data[(#off).min(instr_data.len())..(#end).min(instr_data.len())] }
                 }
             }).collect();
-            let bump_check = match spec.constraints.iter().find_map(|c| match c {
-                Constraint::BumpCanonical => Some(None),
-                Constraint::BumpDeclared(d) => Some(Some(*d)),
+            // Stored (non-canonical) bump opt-in: `bump = arg(off)`. Read the bump byte from
+            // instr_data at `off`, derive the PDA with THAT specific bump via
+            // create_program_address, compare to the account key. NO canonical requirement.
+            let stored_off = spec.constraints.iter().find_map(|c| match c {
+                Constraint::BumpStored(off) => Some(*off),
                 _ => None,
-            }) {
-                Some(Some(d)) => quote! {
-                    if __bump != #d {
-                        return Err(::verified_anchor::VAError::WrongBump { field: #fname });
-                    }
-                },
-                _ => quote! {},
-            };
-            checks.push(quote! {
-                {
-                    let __seeds: &[&[u8]] = &[ #(#seed_exprs),* ];
-                    let (__pda, __bump) = ::verified_anchor::solana_program::pubkey::Pubkey::find_program_address(__seeds, program_id);
-                    if accounts[#i].key != &__pda {
-                        return Err(::verified_anchor::VAError::WrongPda { field: #fname });
-                    }
-                    #bump_check
-                }
             });
+            if let Some(off) = stored_off {
+                checks.push(quote! {
+                    {
+                        let __seeds: &[&[u8]] = &[ #(#seed_exprs),* ];
+                        // None-safe: short instr_data (no byte at `off`) is a clean reject,
+                        // mirroring the Lean spec's `instrData.data[off]?` none case.
+                        let __stored_bump = match instr_data.get(#off) {
+                            ::core::option::Option::Some(b) => *b,
+                            ::core::option::Option::None =>
+                                return Err(::verified_anchor::VAError::WrongPda { field: #fname }),
+                        };
+                        // create_program_address fails (Err) for an on-curve candidate; that is
+                        // also a clean reject (mirrors the Lean `createProgramAddress = none`).
+                        let __pda = match ::verified_anchor::solana_program::pubkey::Pubkey::create_program_address(
+                            &[ #(#seed_exprs,)* &[__stored_bump] ], program_id)
+                        {
+                            ::core::result::Result::Ok(pk) => pk,
+                            ::core::result::Result::Err(_) =>
+                                return Err(::verified_anchor::VAError::WrongPda { field: #fname }),
+                        };
+                        let _ = __seeds;
+                        if accounts[#i].key != &__pda {
+                            return Err(::verified_anchor::VAError::WrongPda { field: #fname });
+                        }
+                    }
+                });
+            } else {
+                let bump_check = match spec.constraints.iter().find_map(|c| match c {
+                    Constraint::BumpCanonical => Some(None),
+                    Constraint::BumpDeclared(d) => Some(Some(*d)),
+                    _ => None,
+                }) {
+                    Some(Some(d)) => quote! {
+                        if __bump != #d {
+                            return Err(::verified_anchor::VAError::WrongBump { field: #fname });
+                        }
+                    },
+                    _ => quote! {},
+                };
+                checks.push(quote! {
+                    {
+                        let __seeds: &[&[u8]] = &[ #(#seed_exprs),* ];
+                        let (__pda, __bump) = ::verified_anchor::solana_program::pubkey::Pubkey::find_program_address(__seeds, program_id);
+                        if accounts[#i].key != &__pda {
+                            return Err(::verified_anchor::VAError::WrongPda { field: #fname });
+                        }
+                        #bump_check
+                    }
+                });
+            }
         }
     }
     quote! {
