@@ -33,6 +33,22 @@ fn lean_spec_seeds() {
 }
 
 #[derive(VerifiedAccounts)]
+struct PdaStoredBumpSpec<'info> {
+    #[account(seeds = [b"vault"], bump = arg(0))]
+    pda: UncheckedAccount<'info>,
+}
+
+/// The opt-in `bump = arg(0)` emits `BumpSpec.stored 0` — the exact constructor proven sound
+/// in Lean (`genConstraint_seeds_iff`, `.stored` case).
+#[test]
+fn lean_spec_seeds_stored_bump() {
+    let expected = "\
+{ programId := Pubkey.zero, fields :=
+  [ { name := \"pda\", ty := AccountType.uncheckedAccount, constraints := [Constraint.seeds [SeedSpec.literal (ByteArray.mk #[118, 97, 117, 108, 116])] (BumpSpec.stored 0)] } ] }";
+    assert_eq!(PdaStoredBumpSpec::lean_spec(), expected);
+}
+
+#[derive(VerifiedAccounts)]
 struct InitClose<'info> {
     #[account(init, payer = payer, space = 0)]
     new: UncheckedAccount<'info>,
