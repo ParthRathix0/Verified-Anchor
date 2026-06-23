@@ -25,22 +25,26 @@ def bumpMatchesB : BumpSpec → UInt8 → Bool
   | .canonical,  _       => true
   | .stored _,   _       => true
 
-/-- Operational PDA check (Bool mirror of `satisfies (.seeds ss b)`). For canonical/declared
+/-- Operational PDA check (Bool mirror of `satisfies (.seeds ss b program)`). The `program`
+    override selects the derivation program id: `none` ⇒ `s.programId`, `some p` ⇒ the foreign
+    `p`. For canonical/declared
     bumps: derive the canonical PDA from the resolved seeds and the program id, require it
     equals the account key, and the bump matches. For the opt-in `.stored off` bump: read the
     bump byte from instr data at `off`, derive the PDA with THAT specific bump via
     `createProgramAddress`, require it equals the account key — NO canonical requirement.
     None-safe throughout. -/
 def genSeeds (s : AccountsStruct) (c : Ctx) (idx : Nat)
-    (ss : List SeedSpec) (b : BumpSpec) : Bool :=
+    (ss : List SeedSpec) (b : BumpSpec) (program : Option Pubkey) : Bool :=
+  -- `seeds::program` override: derive against the FOREIGN id if given, else `s.programId`.
+  let pid := program.getD s.programId
   (Ctx.atField s c idx).allB (fun a =>
     match b with
     | .stored off =>
         (c.instrData.data[off]?).allB (fun bb =>
-          (createProgramAddress (resolveSeeds s c ss ++ [(⟨#[bb]⟩ : ByteArray)]) s.programId).allB
+          (createProgramAddress (resolveSeeds s c ss ++ [(⟨#[bb]⟩ : ByteArray)]) pid).allB
             (fun pk => decide (pk = a.key)))
     | .declared _ | .canonical =>
-        (findProgramAddress (resolveSeeds s c ss) s.programId).allB (fun pr =>
+        (findProgramAddress (resolveSeeds s c ss) pid).allB (fun pr =>
           decide (pr.1 = a.key) && bumpMatchesB b pr.2))
 
 /-- Operational check of one constraint, resolving accounts from the full context.
@@ -54,7 +58,7 @@ def genConstraint (s : AccountsStruct) (c : Ctx) (idx : Nat) (f : AccountField) 
   | .address e       => (Ctx.atField s c idx).allB (fun a => decide (a.key = e))
   | .discriminator d => (Ctx.atField s c idx).allB (fun a => decide (hasDiscriminator a d))
   | .hasOne field    => genHasOne s c idx f field
-  | .seeds ss b      => genSeeds s c idx ss b
+  | .seeds ss b program => genSeeds s c idx ss b program
   | _                => false
 
 def genFieldValidate (s : AccountsStruct) (c : Ctx) (idx : Nat) (f : AccountField) : Bool :=

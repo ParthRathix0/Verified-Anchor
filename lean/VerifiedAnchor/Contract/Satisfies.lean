@@ -62,7 +62,10 @@ def satisfies (s : AccountsStruct) (c : Ctx) (idx : Nat) (f : AccountField) :
         (f.ty.layoutOffsetOf field).satisfiesSome (fun off =>
           (readPubkey a.data off).satisfiesSome (fun val =>
             (Ctx.lookup s c field).satisfiesSome (fun target => val = target.key))))
-  | .seeds ss b =>
+  | .seeds ss b program =>
+      -- `seeds::program` override: derive against the FOREIGN id `program` if given, else the
+      -- struct's own `s.programId`. `getD` is definitional, so the soundness proof is unchanged.
+      let pid := program.getD s.programId
       (Ctx.atField s c idx).satisfiesSome (fun a =>
         match b with
         | .stored off =>
@@ -71,10 +74,10 @@ def satisfies (s : AccountsStruct) (c : Ctx) (idx : Nat) (f : AccountField) :
             -- (`findProgramAddress`) requirement — the deliberate, less-safe opt-in. None-safe:
             -- an out-of-range `off` (or on-curve derivation) leaves the spec unsatisfied.
             (c.instrData.data[off]?).satisfiesSome (fun bb =>
-              (createProgramAddress (resolveSeeds s c ss ++ [(⟨#[bb]⟩ : ByteArray)]) s.programId).satisfiesSome
+              (createProgramAddress (resolveSeeds s c ss ++ [(⟨#[bb]⟩ : ByteArray)]) pid).satisfiesSome
                 (fun pk => pk = a.key))
         | .declared _ | .canonical =>
-            (findProgramAddress (resolveSeeds s c ss) s.programId).satisfiesSome (fun pr =>
+            (findProgramAddress (resolveSeeds s c ss) pid).satisfiesSome (fun pr =>
               pr.1 = a.key ∧ bumpMatches b pr.2))
   | .init payer space owner =>
       (Ctx.atField s c idx).satisfiesSome (fun a =>
@@ -91,7 +94,7 @@ def satisfies (s : AccountsStruct) (c : Ctx) (idx : Nat) (f : AccountField) :
 instance (s : AccountsStruct) (c : Ctx) (idx : Nat) (f : AccountField) (k : Constraint) :
     Decidable (satisfies s c idx f k) := by
   cases k with
-  | seeds ss b => cases b <;> simp only [satisfies] <;> infer_instance
+  | seeds ss b program => cases b <;> simp only [satisfies] <;> infer_instance
   | _ => simp only [satisfies] <;> infer_instance
 
 end VerifiedAnchor

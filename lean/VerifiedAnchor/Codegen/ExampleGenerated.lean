@@ -113,7 +113,7 @@ def pdaProg : Pubkey := Pubkey.ofBytes (List.replicate 32 7)
 def pdaField : AccountField :=
   { name := "pda", ty := AccountType.uncheckedAccount,
     constraints := [Constraint.seeds [SeedSpec.literal "vault".toUTF8,
-                                       SeedSpec.instrArg 0 4] BumpSpec.canonical] }
+                                       SeedSpec.instrArg 0 4] BumpSpec.canonical none] }
 def withSeeds : AccountsStruct :=
   { programId := pdaProg, fields := [pdaField] }
 
@@ -149,7 +149,7 @@ the real `create_program_address` lives in the Rust tests. -/
 def storedField : AccountField :=
   { name := "pda", ty := AccountType.uncheckedAccount,
     constraints := [Constraint.seeds [SeedSpec.literal "vault".toUTF8]
-                                     (BumpSpec.stored 0)] }
+                                     (BumpSpec.stored 0) none] }
 def withStoredBump : AccountsStruct :=
   { programId := pdaProg, fields := [storedField] }
 
@@ -161,7 +161,7 @@ def storedCtx : Ctx :=
     instrData := (⟨#[255]⟩ : ByteArray) }
 #guard (resolveSeeds withStoredBump storedCtx [SeedSpec.literal "vault".toUTF8]).length = 1
 
-/-- `withStoredBump` is in the M4 subset (`.seeds _ _` qualifies regardless of bump). -/
+/-- `withStoredBump` is in the M4 subset (`.seeds _ _ _` qualifies regardless of bump). -/
 theorem withStoredBump_M4 : M4Subset withStoredBump := by decide
 
 /-- THE STORED-BUMP CLOSED LOOP (symbolic): for any context, the generated stored-bump PDA
@@ -169,6 +169,34 @@ theorem withStoredBump_M4 : M4Subset withStoredBump := by decide
 theorem withStoredBump_sound (c : Ctx) :
     genValidate withStoredBump c = true ↔ validates withStoredBump c :=
   genValidate_sound withStoredBump c withStoredBump_M4
+
+/-! ## seeds::program — foreign program-id PDA closed-loop (M4)
+
+The `seeds::program = <expr>` override derives the PDA against a program id OTHER than the
+struct's own `s.programId`. Modelled as the third `Constraint.seeds` field: `some someProgId`
+(here a distinct placeholder) ⇒ derive against THAT id. Like every PDA case the derivation
+hashes through the opaque `sha256`, so `genSeeds` does not reduce under `decide`; we show the
+crypto-free seed resolution half plus the symbolic soundness arrow, and the M4 membership of
+the program-override `.seeds`. The empirical accept/reject against the foreign program id lives
+in the Rust tests. -/
+def someProgId : Pubkey := Pubkey.ofBytes (List.replicate 32 9)
+def seedsProgField : AccountField :=
+  { name := "pda", ty := AccountType.uncheckedAccount,
+    constraints := [Constraint.seeds [SeedSpec.literal "vault".toUTF8]
+                                     BumpSpec.canonical (some someProgId)] }
+def withSeedsProgram : AccountsStruct :=
+  { programId := pdaProg, fields := [seedsProgField] }
+
+#guard (resolveSeeds withSeedsProgram seedCtx [SeedSpec.literal "vault".toUTF8]).length = 1
+
+/-- `withSeedsProgram` is in the M4 subset (`.seeds _ _ _` qualifies regardless of program). -/
+theorem withSeedsProgram_M4 : M4Subset withSeedsProgram := by decide
+
+/-- THE seeds::program CLOSED LOOP (symbolic): for any context, the generated foreign-program
+    PDA validator agrees with the M1 contract. -/
+theorem withSeedsProgram_sound (c : Ctx) :
+    genValidate withSeedsProgram c = true ↔ validates withSeedsProgram c :=
+  genValidate_sound withSeedsProgram c withSeedsProgram_M4
 
 /-! ## Wrapper base checks: `SystemAccount` and `Program<P>` (M4)
 
