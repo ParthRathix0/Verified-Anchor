@@ -27,7 +27,9 @@ inductive Constraint where
   | mut
   | owner          (expected : Pubkey)
   | hasOne         (field : String)
-  | seeds          (seeds : List SeedSpec) (bump : BumpSpec)
+  /-- `program` is the `seeds::program = <expr>` override: `none` ⇒ derive the PDA against the
+      struct's own `s.programId` (back-compat); `some p` ⇒ derive against the FOREIGN id `p`. -/
+  | seeds          (seeds : List SeedSpec) (bump : BumpSpec) (program : Option Pubkey)
   | init           (payer : String) (space : Nat) (owner : Pubkey)
   | close          (dest : String)
   | discriminator  (expected : ByteArray)   -- 8 bytes

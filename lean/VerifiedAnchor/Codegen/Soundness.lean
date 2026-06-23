@@ -42,11 +42,12 @@ theorem bumpMatchesB_iff (b : BumpSpec) (x : UInt8) :
   | canonical   => simp [bumpMatchesB, bumpMatches]
   | stored off  => simp [bumpMatchesB, bumpMatches]
 
-theorem genConstraint_seeds_iff (s c idx f ss b) :
-    genConstraint s c idx f (Constraint.seeds ss b) = true
-      ↔ satisfies s c idx f (Constraint.seeds ss b) := by
-  -- Split on the bump: canonical/declared use the `findProgramAddress` + `bumpMatches` form;
-  -- the `.stored` opt-in uses the byte lookup + `createProgramAddress` form (no canonical req).
+theorem genConstraint_seeds_iff (s c idx f ss b program) :
+    genConstraint s c idx f (Constraint.seeds ss b program) = true
+      ↔ satisfies s c idx f (Constraint.seeds ss b program) := by
+  -- The `seeds::program` override is just `program.getD s.programId` in both sides — definitional,
+  -- so the proof is unchanged. Split on the bump: canonical/declared use the `findProgramAddress`
+  -- + `bumpMatches` form; the `.stored` opt-in uses the byte lookup + `createProgramAddress` form.
   cases b with
   | declared db =>
       simp only [genConstraint, genSeeds, satisfies, Option.allB_iff, Bool.and_eq_true,
@@ -82,7 +83,7 @@ theorem genConstraint_iff_satisfies_M3 (s c idx f k) (hk : isM3Constraint k = tr
 /-- Constraint kinds M4's generated validator handles (M3 + seeds + the `Program<P>` /
     `SystemAccount` base checks `executable` and `address`). -/
 def isM4Constraint : Constraint → Bool
-  | .signer | .mut | .owner _ | .hasOne _ | .discriminator _ | .seeds _ _
+  | .signer | .mut | .owner _ | .hasOne _ | .discriminator _ | .seeds _ _ _
   | .executable | .address _ => true
   | _ => false
 
@@ -102,7 +103,7 @@ theorem genConstraint_iff_satisfies_M4 (s c idx f k) (hk : isM4Constraint k = tr
   | owner e         => exact genConstraint_owner_iff s c idx f e
   | hasOne field    => exact genConstraint_hasOne_iff s c idx f field
   | discriminator d => exact genConstraint_discriminator_iff s c idx f d
-  | seeds ss b      => exact genConstraint_seeds_iff s c idx f ss b
+  | seeds ss b program => exact genConstraint_seeds_iff s c idx f ss b program
   | executable      => exact genConstraint_executable_iff s c idx f
   | address e       => exact genConstraint_address_iff s c idx f e
   | _               => simp [isM4Constraint] at hk
