@@ -134,3 +134,52 @@ fn seeds_stored_bump_wrong_pda_rejected_onchain() {
         "wrong stored-bump PDA must be rejected on-chain"
     );
 }
+
+/// The FOREIGN program id the on-chain `CheckForeignPda` (tag 4) derives its PDA against.
+/// Mirrors `FOREIGN_PROGRAM` in the program crate (`[9u8; 32]`).
+const FOREIGN_PROGRAM: Pubkey = Pubkey::new_from_array([9u8; 32]);
+
+/// `seeds::program = FOREIGN_PROGRAM`: the on-chain PDA check accepts the address derived
+/// against the FOREIGN program id (NOT the running program's own id).
+#[test]
+fn seeds_program_foreign_pda_accepted_onchain() {
+    let (mut svm, program_id, payer) = setup();
+    // Derived against the FOREIGN id, while the tx runs under `program_id`.
+    let (foreign_pda, _bump) = Pubkey::find_program_address(&[b"vault"], &FOREIGN_PROGRAM);
+
+    let ix = Instruction {
+        program_id,
+        data: vec![4u8], // tag 4 = CheckForeignPda
+        accounts: vec![AccountMeta::new_readonly(foreign_pda, false)],
+    };
+    let blockhash = svm.latest_blockhash();
+    let msg = Message::new(&[ix], Some(&payer.pubkey()));
+    let tx = Transaction::new(&[&payer], msg, blockhash);
+    assert!(
+        svm.send_transaction(tx).is_ok(),
+        "foreign-program-derived PDA should validate on-chain"
+    );
+}
+
+/// The PDA derived against the running program's OWN id is the WRONG one under
+/// `seeds::program = FOREIGN_PROGRAM`, so it is rejected on-chain (proves the override bites).
+#[test]
+fn seeds_program_own_program_pda_rejected_onchain() {
+    let (mut svm, program_id, payer) = setup();
+    let (own_pda, _bump) = Pubkey::find_program_address(&[b"vault"], &program_id);
+    let (foreign_pda, _fb) = Pubkey::find_program_address(&[b"vault"], &FOREIGN_PROGRAM);
+    assert_ne!(own_pda, foreign_pda, "own-program PDA must differ from the foreign one");
+
+    let ix = Instruction {
+        program_id,
+        data: vec![4u8],
+        accounts: vec![AccountMeta::new_readonly(own_pda, false)],
+    };
+    let blockhash = svm.latest_blockhash();
+    let msg = Message::new(&[ix], Some(&payer.pubkey()));
+    let tx = Transaction::new(&[&payer], msg, blockhash);
+    assert!(
+        svm.send_transaction(tx).is_err(),
+        "own-program PDA must be rejected when seeds::program targets a foreign id"
+    );
+}

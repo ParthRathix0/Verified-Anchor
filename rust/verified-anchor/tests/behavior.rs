@@ -231,6 +231,39 @@ fn seeds_stored_bump_rejects_short_instr_data() {
     assert_eq!(PdaStoredBump::validate(&accts, &[], &program_id), Err(VAError::WrongPda { field: "pda" }));
 }
 
+const FOREIGN_PROGRAM: Pubkey = Pubkey::new_from_array([9u8; 32]);
+
+/// `seeds::program = <expr>` derives the PDA against the FOREIGN program id, not the struct's
+/// own `program_id`. The Lean model carries this as the third `Constraint.seeds` field.
+#[derive(VerifiedAccounts)]
+struct PdaForeignProgram<'info> {
+    #[account(seeds = [b"vault"], seeds::program = FOREIGN_PROGRAM, bump)]
+    pda: UncheckedAccount<'info>,
+}
+
+#[test]
+fn seeds_program_accepts_foreign_derived_pda() {
+    // The struct is invoked under THIS program id, but the PDA is derived against FOREIGN_PROGRAM.
+    let program_id = Pubkey::new_unique();
+    let (foreign_pda, _b) = Pubkey::find_program_address(&[b"vault"], &FOREIGN_PROGRAM);
+    let mut a = Acct { key: foreign_pda, owner: Pubkey::new_unique(), lamports: 1, data: vec![], is_signer: false, is_writable: false };
+    let accts = [a.info()];
+    assert_eq!(PdaForeignProgram::validate(&accts, &[], &program_id), Ok(()));
+}
+
+#[test]
+fn seeds_program_rejects_own_program_pda() {
+    // The PDA derived against the struct's OWN program id is the WRONG one here — the override
+    // must derive against FOREIGN_PROGRAM, so this is rejected (proves the override actually bites).
+    let program_id = Pubkey::new_unique();
+    let (own_pda, _b) = Pubkey::find_program_address(&[b"vault"], &program_id);
+    let (foreign_pda, _fb) = Pubkey::find_program_address(&[b"vault"], &FOREIGN_PROGRAM);
+    assert_ne!(own_pda, foreign_pda, "own-program PDA must differ from the foreign-program PDA");
+    let mut a = Acct { key: own_pda, owner: Pubkey::new_unique(), lamports: 1, data: vec![], is_signer: false, is_writable: false };
+    let accts = [a.info()];
+    assert_eq!(PdaForeignProgram::validate(&accts, &[], &program_id), Err(VAError::WrongPda { field: "pda" }));
+}
+
 fn disc(name: &str) -> [u8; 8] {
     let mut h = Sha256::new();
     h.update(b"account:");

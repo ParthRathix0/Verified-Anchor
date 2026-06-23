@@ -131,6 +131,10 @@ enum Constraint {
     Space(usize),
     Close(syn::Ident),
     Seeds(Vec<SeedElem>),
+    /// `seeds::program = <expr>` — derive the PDA against the FOREIGN program id `<expr>`
+    /// instead of this program's id. Lean models it as the third `Constraint.seeds` field
+    /// (`some Pubkey.zero` schematic placeholder; the soundness theorem is ∀ over the pubkey).
+    SeedsProgram(Expr),
     BumpCanonical,
     BumpDeclared(u8),
     /// Opt-in, non-canonical "stored" bump: `bump = arg(off)`. The bump byte is read from the
@@ -188,6 +192,19 @@ impl Parse for Constraint {
                 Ok(Constraint::Close(input.parse()?))
             }
             "seeds" => {
+                // `seeds::program = <expr>` — the `::`-path key for a foreign-program PDA
+                // derivation. Parsed alongside `seeds = [..]` / `bump` on the same field.
+                if input.peek(Token![::]) {
+                    input.parse::<Token![::]>()?;
+                    let key: syn::Ident = input.parse()?;
+                    if key != "program" {
+                        return Err(syn::Error::new(key.span(),
+                            "unsupported `seeds::` key (expected `seeds::program = <expr>`)"));
+                    }
+                    input.parse::<Token![=]>()?;
+                    let expr: Expr = input.parse()?;
+                    return Ok(Constraint::SeedsProgram(expr));
+                }
                 input.parse::<Token![=]>()?;
                 let arr: syn::ExprArray = input.parse()?;
                 let mut elems = Vec::new();
@@ -246,7 +263,7 @@ impl Parse for Constraint {
                 };
                 Err(syn::Error::new(
                     ident.span(),
-                    format!("{hint}; verified-anchor supports: signer, mut, owner, has_one, init, payer, space, close, seeds, bump, discriminator, address, executable. See docs/migrating-from-anchor.md"),
+                    format!("{hint}; verified-anchor supports: signer, mut, owner, has_one, init, payer, space, close, seeds, seeds::program, bump, discriminator, address, executable. See docs/migrating-from-anchor.md"),
                 ))
             }
         }
@@ -336,8 +353,11 @@ fn lean_constraint(c: &Constraint) -> String {
                 SeedElem::FieldKey(id) => format!("SeedSpec.fieldKey \"{}\"", id),
                 SeedElem::InstrArg(off, len) => format!("SeedSpec.instrArg {} {}", off, len),
             }).collect();
-            format!("Constraint.seeds [{}] @@BUMP@@", seeds.join(", "))
+            format!("Constraint.seeds [{}] @@BUMP@@ @@PROG@@", seeds.join(", "))
         }
+        // The program override is assembled into the seeds spec's third field below; emit nothing
+        // standalone (same pattern as bumps).
+        Constraint::SeedsProgram(_) => String::new(),
         Constraint::BumpCanonical | Constraint::BumpDeclared(_) | Constraint::BumpStored(_) => String::new(),
         Constraint::Discriminator(d) => {
             let bytes: Vec<String> = d.iter().map(|x| x.to_string()).collect();
@@ -399,7 +419,17 @@ fn lean_spec_string(specs: &[FieldSpec]) -> String {
             Constraint::BumpStored(off) => Some(format!("(BumpSpec.stored {})", off)),
             _ => None,
         }).unwrap_or_else(|| "BumpSpec.canonical".to_string());
-        let cs_joined = cs.join(", ").replace("@@BUMP@@", &bump_str);
+        // `seeds::program` override → the third `Constraint.seeds` field. Present ⇒ the schematic
+        // placeholder `(some Pubkey.zero)` (the soundness theorem is ∀ over the pubkey, exactly
+        // like `owner`/`address`); absent ⇒ `none` (derive against this program's id).
+        let prog_str = if spec.constraints.iter().any(|c| matches!(c, Constraint::SeedsProgram(_))) {
+            "(some Pubkey.zero)"
+        } else {
+            "none"
+        };
+        let cs_joined = cs.join(", ")
+            .replace("@@BUMP@@", &bump_str)
+            .replace("@@PROG@@", prog_str);
         fields.push(format!(
             "{{ name := \"{}\", ty := {}, constraints := [{}] }}",
             spec.name,
@@ -506,9 +536,9 @@ fn validate_body(specs: &[FieldSpec]) -> TokenStream2 {
                 Constraint::InitMarker | Constraint::Payer(_) | Constraint::Space(_) | Constraint::Close(_) => {
                     continue;
                 }
-                // Seeds/bump are handled in the per-field PDA block below.
-                Constraint::Seeds(_) | Constraint::BumpCanonical | Constraint::BumpDeclared(_)
-                | Constraint::BumpStored(_) => {
+                // Seeds/bump/seeds::program are handled in the per-field PDA block below.
+                Constraint::Seeds(_) | Constraint::SeedsProgram(_) | Constraint::BumpCanonical
+                | Constraint::BumpDeclared(_) | Constraint::BumpStored(_) => {
                     continue;
                 }
             };
@@ -520,6 +550,15 @@ fn validate_body(specs: &[FieldSpec]) -> TokenStream2 {
             .find(|c| matches!(c, Constraint::Seeds(_)))
         {
             let fname = name;
+            // `seeds::program = <expr>` override: derive against the FOREIGN program id `<expr>`
+            // (a `Pubkey` value) instead of this program's `program_id` (already a `&Pubkey`).
+            let derive_pid: TokenStream2 = match spec.constraints.iter().find_map(|c| match c {
+                Constraint::SeedsProgram(e) => Some(e),
+                _ => None,
+            }) {
+                Some(expr) => quote! { &(#expr) },
+                None => quote! { program_id },
+            };
             let seed_exprs: Vec<TokenStream2> = elems.iter().map(|se| match se {
                 SeedElem::Literal(b) => quote! { &#b[..] },
                 SeedElem::FieldKey(id) => {
@@ -555,7 +594,7 @@ fn validate_body(specs: &[FieldSpec]) -> TokenStream2 {
                         // create_program_address fails (Err) for an on-curve candidate; that is
                         // also a clean reject (mirrors the Lean `createProgramAddress = none`).
                         let __pda = match ::verified_anchor::solana_program::pubkey::Pubkey::create_program_address(
-                            &[ #(#seed_exprs,)* &[__stored_bump] ], program_id)
+                            &[ #(#seed_exprs,)* &[__stored_bump] ], #derive_pid)
                         {
                             ::core::result::Result::Ok(pk) => pk,
                             ::core::result::Result::Err(_) =>
@@ -583,7 +622,7 @@ fn validate_body(specs: &[FieldSpec]) -> TokenStream2 {
                 checks.push(quote! {
                     {
                         let __seeds: &[&[u8]] = &[ #(#seed_exprs),* ];
-                        let (__pda, __bump) = ::verified_anchor::solana_program::pubkey::Pubkey::find_program_address(__seeds, program_id);
+                        let (__pda, __bump) = ::verified_anchor::solana_program::pubkey::Pubkey::find_program_address(__seeds, #derive_pid);
                         if accounts[#i].key != &__pda {
                             return Err(::verified_anchor::VAError::WrongPda { field: #fname });
                         }
@@ -716,8 +755,10 @@ pub fn derive_verified_accounts(input: TokenStream) -> TokenStream {
     let bumps_index_of: std::collections::HashMap<String, usize> =
         specs.iter().enumerate().map(|(i, s)| (s.name.clone(), i)).collect();
 
-    // Per-seeded-field: (Bumps-field Ident, TokenStream Vec for the seed slice exprs).
-    let bumps_fields: Vec<(syn::Ident, Vec<TokenStream2>)> = seeded.iter().map(|(_, spec, elems)| {
+    // Per-seeded-field: (Bumps-field Ident, seed slice exprs, derivation program-id token).
+    // The `seeds::program` override applies here too so the canonical bump exposed in `Bumps`
+    // is derived against the SAME foreign program id used by `validate`.
+    let bumps_fields: Vec<(syn::Ident, Vec<TokenStream2>, TokenStream2)> = seeded.iter().map(|(_, spec, elems)| {
         let fname = syn::Ident::new(&spec.name, name.span());
         let seed_exprs: Vec<TokenStream2> = elems.iter().map(|se| match se {
             SeedElem::Literal(b) => quote! { &#b[..] },
@@ -732,7 +773,14 @@ pub fn derive_verified_accounts(input: TokenStream) -> TokenStream {
                 quote! { &instr_data[(#off).min(instr_data.len())..(#end).min(instr_data.len())] }
             }
         }).collect();
-        (fname, seed_exprs)
+        let derive_pid: TokenStream2 = match spec.constraints.iter().find_map(|c| match c {
+            Constraint::SeedsProgram(e) => Some(e),
+            _ => None,
+        }) {
+            Some(expr) => quote! { &(#expr) },
+            None => quote! { program_id },
+        };
+        (fname, seed_exprs, derive_pid)
     }).collect();
 
     let (bumps_struct_decl, bumps_struct_init) = if bumps_fields.is_empty() {
@@ -741,14 +789,14 @@ pub fn derive_verified_accounts(input: TokenStream) -> TokenStream {
             quote! { #bumps_struct_name },
         )
     } else {
-        let decl_fields: Vec<TokenStream2> = bumps_fields.iter().map(|(fname, _)| {
+        let decl_fields: Vec<TokenStream2> = bumps_fields.iter().map(|(fname, _, _)| {
             quote! { pub #fname: u8 }
         }).collect();
-        let init_fields: Vec<TokenStream2> = bumps_fields.iter().map(|(fname, seed_exprs)| {
+        let init_fields: Vec<TokenStream2> = bumps_fields.iter().map(|(fname, seed_exprs, derive_pid)| {
             quote! {
                 #fname: {
                     let __seeds: &[&[u8]] = &[ #(#seed_exprs),* ];
-                    let (_pda, __b) = ::verified_anchor::solana_program::pubkey::Pubkey::find_program_address(__seeds, program_id);
+                    let (_pda, __b) = ::verified_anchor::solana_program::pubkey::Pubkey::find_program_address(__seeds, #derive_pid);
                     __b
                 }
             }
