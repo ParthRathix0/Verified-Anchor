@@ -40,12 +40,22 @@ theorem bumpMatchesB_iff (b : BumpSpec) (x : UInt8) :
   cases b with
   | declared db => simp [bumpMatchesB, bumpMatches]
   | canonical   => simp [bumpMatchesB, bumpMatches]
+  | stored off  => simp [bumpMatchesB, bumpMatches]
 
 theorem genConstraint_seeds_iff (s c idx f ss b) :
     genConstraint s c idx f (Constraint.seeds ss b) = true
       ↔ satisfies s c idx f (Constraint.seeds ss b) := by
-  simp only [genConstraint, genSeeds, satisfies, Option.allB_iff, Bool.and_eq_true,
-    decide_eq_true_iff, bumpMatchesB_iff]
+  -- Split on the bump: canonical/declared use the `findProgramAddress` + `bumpMatches` form;
+  -- the `.stored` opt-in uses the byte lookup + `createProgramAddress` form (no canonical req).
+  cases b with
+  | declared db =>
+      simp only [genConstraint, genSeeds, satisfies, Option.allB_iff, Bool.and_eq_true,
+        decide_eq_true_iff, bumpMatchesB_iff]
+  | canonical =>
+      simp only [genConstraint, genSeeds, satisfies, Option.allB_iff, Bool.and_eq_true,
+        decide_eq_true_iff, bumpMatchesB_iff]
+  | stored off =>
+      simp only [genConstraint, genSeeds, satisfies, Option.allB_iff, decide_eq_true_iff]
 
 /-- Constraint kinds M3's generated validator handles. -/
 def isM3Constraint : Constraint → Bool
