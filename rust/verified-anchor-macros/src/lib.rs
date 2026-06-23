@@ -284,7 +284,7 @@ fn lit_usize(e: Option<&Expr>) -> syn::Result<usize> {
     match e {
         Some(Expr::Lit(syn::ExprLit { lit: syn::Lit::Int(i), .. })) => i.base10_parse(),
         _ => Err(syn::Error::new(proc_macro2::Span::call_site(),
-            "arg(off, len) needs two integer literals")),
+            "expected an integer literal (seeds `arg` needs two: arg(off, len); bump `arg` needs one: arg(off))")),
     }
 }
 

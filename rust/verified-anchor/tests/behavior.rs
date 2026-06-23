@@ -181,20 +181,31 @@ struct PdaStoredBump<'info> {
     pda: UncheckedAccount<'info>,
 }
 
-/// Find a stored bump that produces an off-curve PDA, and one that the account key uses.
-fn first_off_curve_bump(program_id: &Pubkey) -> (u8, Pubkey) {
-    for b in (0u8..=255).rev() {
+/// Find a GENUINELY NON-CANONICAL off-curve bump: one strictly below the canonical bump.
+/// `find_program_address` returns the HIGHEST off-curve bump, so we search ascending from 0
+/// up to (but not including) `canon_bump` for the first b where `create_program_address`
+/// succeeds.  The resulting address is DIFFERENT from the canonical PDA (proven by
+/// `assert_ne!` in the caller).
+fn non_canonical_stored_bump(program_id: &Pubkey) -> (u8, Pubkey) {
+    let (_canon_key, canon_bump) = Pubkey::find_program_address(&[b"vault"], program_id);
+    for b in 0u8..canon_bump {
         if let Ok(pk) = Pubkey::create_program_address(&[b"vault", &[b]], program_id) {
             return (b, pk);
         }
     }
-    panic!("no off-curve bump for seeds");
+    panic!("no non-canonical off-curve bump found below canonical bump {canon_bump} for b\"vault\" — change the seed literal");
 }
 
 #[test]
 fn seeds_stored_bump_accepts_matching_pda() {
     let program_id = Pubkey::new_unique();
-    let (bump, pda) = first_off_curve_bump(&program_id);
+    let (canon_key, canon_bump) = Pubkey::find_program_address(&[b"vault"], &program_id);
+    let (bump, pda) = non_canonical_stored_bump(&program_id);
+    // The stored bump MUST be strictly below the canonical bump, and the derived address
+    // MUST differ from the canonical PDA — this proves we are exercising a genuinely
+    // non-canonical PDA, not just re-testing what a canonical validator would also accept.
+    assert!(bump < canon_bump, "stored bump {bump} must be below canonical bump {canon_bump}");
+    assert_ne!(pda, canon_key, "non-canonical PDA must differ from canonical PDA");
     // instr data byte 0 is the stored bump.
     let mut a = Acct { key: pda, owner: Pubkey::new_unique(), lamports: 1, data: vec![], is_signer: false, is_writable: false };
     let accts = [a.info()];
@@ -204,7 +215,7 @@ fn seeds_stored_bump_accepts_matching_pda() {
 #[test]
 fn seeds_stored_bump_rejects_wrong_pda() {
     let program_id = Pubkey::new_unique();
-    let (bump, _pda) = first_off_curve_bump(&program_id);
+    let (bump, _pda) = non_canonical_stored_bump(&program_id);
     let mut a = Acct { key: Pubkey::new_unique(), owner: Pubkey::new_unique(), lamports: 1, data: vec![], is_signer: false, is_writable: false };
     let accts = [a.info()];
     assert_eq!(PdaStoredBump::validate(&accts, &[bump], &program_id), Err(VAError::WrongPda { field: "pda" }));
@@ -213,7 +224,7 @@ fn seeds_stored_bump_rejects_wrong_pda() {
 #[test]
 fn seeds_stored_bump_rejects_short_instr_data() {
     let program_id = Pubkey::new_unique();
-    let (_bump, pda) = first_off_curve_bump(&program_id);
+    let (_bump, pda) = non_canonical_stored_bump(&program_id);
     // empty instr data => no byte at offset 0 => clean reject (mirrors the Lean none-safe spec).
     let mut a = Acct { key: pda, owner: Pubkey::new_unique(), lamports: 1, data: vec![], is_signer: false, is_writable: false };
     let accts = [a.info()];
