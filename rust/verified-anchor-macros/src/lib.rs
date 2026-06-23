@@ -134,6 +134,10 @@ enum Constraint {
     BumpCanonical,
     BumpDeclared(u8),
     Discriminator([u8; 8]),
+    /// `address = <expr>` — checks `accounts[i].key == expr`.
+    Address(Expr),
+    /// `executable` — checks `accounts[i].executable`.
+    Executable,
     /// Implied by `Program<'info, P>` field type — checks executable + key == P::ID.
     /// Not parseable from `#[account(...)]`; emitted only by `wrapper_implied`.
     ProgramMarker(syn::Path),
@@ -149,10 +153,16 @@ impl Parse for Constraint {
         let ident: syn::Ident = input.parse()?;
         match ident.to_string().as_str() {
             "signer" => Ok(Constraint::Signer),
+            "executable" => Ok(Constraint::Executable),
             "owner" => {
                 input.parse::<Token![=]>()?;
                 let expr: Expr = input.parse()?;
                 Ok(Constraint::Owner(expr))
+            }
+            "address" => {
+                input.parse::<Token![=]>()?;
+                let expr: Expr = input.parse()?;
+                Ok(Constraint::Address(expr))
             }
             "has_one" => {
                 input.parse::<Token![=]>()?;
@@ -205,7 +215,7 @@ impl Parse for Constraint {
             other => {
                 let known_unsupported = [
                     "realloc", "zero", "rent_exempt", "constraint", "token", "mint",
-                    "associated_token", "executable", "address", "owner_program",
+                    "associated_token", "owner_program",
                     "token_program", "seeds_program",
                 ];
                 let hint = if known_unsupported.contains(&other) {
@@ -215,7 +225,7 @@ impl Parse for Constraint {
                 };
                 Err(syn::Error::new(
                     ident.span(),
-                    format!("{hint}; verified-anchor supports: signer, mut, owner, has_one, init, payer, space, close, seeds, bump, discriminator. See docs/migrating-from-anchor.md"),
+                    format!("{hint}; verified-anchor supports: signer, mut, owner, has_one, init, payer, space, close, seeds, bump, discriminator, address, executable. See docs/migrating-from-anchor.md"),
                 ))
             }
         }
@@ -312,6 +322,9 @@ fn lean_constraint(c: &Constraint) -> String {
             let bytes: Vec<String> = d.iter().map(|x| x.to_string()).collect();
             format!("Constraint.discriminator (ByteArray.mk #[{}])", bytes.join(", "))
         }
+        // Schematic placeholder: the theorem is ∀ over the pubkey (same trick as `owner`).
+        Constraint::Address(_) => "Constraint.address Pubkey.zero".to_string(),
+        Constraint::Executable => "Constraint.executable".to_string(),
         Constraint::ProgramMarker(_) => String::new(),
     }
 }
@@ -441,6 +454,16 @@ fn validate_body(specs: &[FieldSpec]) -> TokenStream2 {
                                 return Err(::verified_anchor::VAError::WrongDiscriminator { field: #fname });
                             }
                         }
+                    }
+                },
+                Constraint::Address(expr) => quote! {
+                    if accounts[#i].key != &(#expr) {
+                        return Err(::verified_anchor::VAError::WrongAddress { field: #name });
+                    }
+                },
+                Constraint::Executable => quote! {
+                    if !accounts[#i].executable {
+                        return Err(::verified_anchor::VAError::NotExecutable { field: #name });
                     }
                 },
                 Constraint::ProgramMarker(p) => {
