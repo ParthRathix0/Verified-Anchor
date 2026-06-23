@@ -426,6 +426,63 @@ fn execute_lifecycle_rejects_short_accounts() {
     );
 }
 
+// ── Task 1 (M8.1): explicit address / executable annotations ─────────────────────────
+
+const EXPECTED_ID: Pubkey = Pubkey::new_from_array([0xABu8; 32]);
+
+#[derive(VerifiedAccounts)]
+struct WithAddr<'info> {
+    #[account(address = crate::EXPECTED_ID)]
+    cfg: UncheckedAccount<'info>,
+    #[account(executable)]
+    prog: UncheckedAccount<'info>,
+}
+
+// Note: AccountInfo::new last-but-one bool is `executable`.
+fn make_info_exec(a: &mut Acct, executable: bool) -> AccountInfo {
+    AccountInfo::new(&a.key, a.is_signer, a.is_writable,
+        &mut a.lamports, &mut a.data, &a.owner, executable, 0)
+}
+
+#[test]
+fn address_and_executable_accept_valid() {
+    let mut cfg = Acct { key: EXPECTED_ID, owner: Pubkey::new_unique(), lamports: 1,
+                         data: vec![], is_signer: false, is_writable: false };
+    let mut prog = Acct { key: Pubkey::new_unique(), owner: Pubkey::new_unique(), lamports: 1,
+                          data: vec![], is_signer: false, is_writable: false };
+    let cfg_info = make_info_exec(&mut cfg, false);
+    let prog_info = make_info_exec(&mut prog, true);
+    let accts = [cfg_info, prog_info];
+    assert_eq!(WithAddr::validate(&accts, &[], &any_pid()), Ok(()));
+}
+
+#[test]
+fn address_rejects_wrong_key() {
+    let wrong_key = Pubkey::new_unique();  // not EXPECTED_ID
+    let mut cfg = Acct { key: wrong_key, owner: Pubkey::new_unique(), lamports: 1,
+                         data: vec![], is_signer: false, is_writable: false };
+    let mut prog = Acct { key: Pubkey::new_unique(), owner: Pubkey::new_unique(), lamports: 1,
+                          data: vec![], is_signer: false, is_writable: false };
+    let cfg_info = make_info_exec(&mut cfg, false);
+    let prog_info = make_info_exec(&mut prog, true);
+    let accts = [cfg_info, prog_info];
+    assert_eq!(WithAddr::validate(&accts, &[], &any_pid()),
+               Err(VAError::WrongAddress { field: "cfg" }));
+}
+
+#[test]
+fn executable_rejects_non_executable() {
+    let mut cfg = Acct { key: EXPECTED_ID, owner: Pubkey::new_unique(), lamports: 1,
+                         data: vec![], is_signer: false, is_writable: false };
+    let mut prog = Acct { key: Pubkey::new_unique(), owner: Pubkey::new_unique(), lamports: 1,
+                          data: vec![], is_signer: false, is_writable: false };
+    let cfg_info = make_info_exec(&mut cfg, false);
+    let prog_info = make_info_exec(&mut prog, false);  // not executable
+    let accts = [cfg_info, prog_info];
+    assert_eq!(WithAddr::validate(&accts, &[], &any_pid()),
+               Err(VAError::NotExecutable { field: "prog" }));
+}
+
 #[verified_anchor::account]
 pub struct VaultAttr { pub authority: solana_program::pubkey::Pubkey, pub amount: u64 }
 

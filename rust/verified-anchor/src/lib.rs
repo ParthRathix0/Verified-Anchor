@@ -38,6 +38,8 @@ pub enum VAError {
     WrongBump { field: &'static str },
     WrongDiscriminator { field: &'static str },
     BorshFailed { field: &'static str },
+    WrongAddress { field: &'static str },
+    NotExecutable { field: &'static str },
 }
 
 impl core::fmt::Display for VAError {
@@ -56,6 +58,8 @@ impl core::fmt::Display for VAError {
             VAError::WrongBump { field } => write!(f, "account `{field}` has a non-canonical bump"),
             VAError::WrongDiscriminator { field } => write!(f, "account `{field}` has the wrong 8-byte discriminator"),
             VAError::BorshFailed { field } => write!(f, "Borsh deserialization failed for `{field}`"),
+            VAError::WrongAddress { field } => write!(f, "account `{field}` has the wrong address"),
+            VAError::NotExecutable { field } => write!(f, "account `{field}` is not executable"),
         }
     }
 }
@@ -78,6 +82,8 @@ impl From<VAError> for solana_program::program_error::ProgramError {
             VAError::WrongBump { .. } => 9,
             VAError::WrongDiscriminator { .. } => 10,
             VAError::BorshFailed { .. } => 11,
+            VAError::WrongAddress { .. } => 12,
+            VAError::NotExecutable { .. } => 13,
         };
         solana_program::program_error::ProgramError::Custom(code)
     }
