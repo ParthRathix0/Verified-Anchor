@@ -280,7 +280,7 @@ impl Parse for Constraint {
                 let known_unsupported = [
                     "realloc", "zero", "constraint", "token", "mint",
                     "associated_token", "owner_program",
-                    "token_program", "seeds_program",
+                    "token_program",
                 ];
                 let hint = if known_unsupported.contains(&other) {
                     format!("`{other}` is a stock-Anchor constraint that verified-anchor does not support")
