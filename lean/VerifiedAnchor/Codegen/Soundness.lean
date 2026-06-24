@@ -35,6 +35,14 @@ theorem genConstraint_hasOne_iff (s c idx f field) :
     genConstraint s c idx f (Constraint.hasOne field) = true ↔ satisfies s c idx f (Constraint.hasOne field) := by
   simp only [genConstraint, genHasOne, satisfies, Option.allB_iff, decide_eq_true_iff]
 
+/-- `rent_exempt`: the account holds at least `rentExemptMinimum a.data.size` lamports. Mirrors
+    `genConstraint_owner_iff` exactly — the opaque `rentExemptMinimum` never reduces, but the
+    `allB`/`satisfiesSome` bridge and `decide_eq_true_iff` rewrite are schematic over it. -/
+theorem genConstraint_rentExempt_iff (s c idx f) :
+    genConstraint s c idx f Constraint.rentExempt = true
+      ↔ satisfies s c idx f Constraint.rentExempt := by
+  simp only [genConstraint, satisfies, Option.allB_iff, decide_eq_true_iff]
+
 theorem bumpMatchesB_iff (b : BumpSpec) (x : UInt8) :
     bumpMatchesB b x = true ↔ bumpMatches b x := by
   cases b with
@@ -84,7 +92,7 @@ theorem genConstraint_iff_satisfies_M3 (s c idx f k) (hk : isM3Constraint k = tr
     `SystemAccount` base checks `executable` and `address`). -/
 def isM4Constraint : Constraint → Bool
   | .signer | .mut | .owner _ | .hasOne _ | .discriminator _ | .seeds _ _ _
-  | .executable | .address _ => true
+  | .executable | .address _ | .rentExempt => true
   | _ => false
 
 /-- The M4 subset: every field's (implied ++ explicit) constraints are M4 validation
@@ -106,6 +114,7 @@ theorem genConstraint_iff_satisfies_M4 (s c idx f k) (hk : isM4Constraint k = tr
   | seeds ss b program => exact genConstraint_seeds_iff s c idx f ss b program
   | executable      => exact genConstraint_executable_iff s c idx f
   | address e       => exact genConstraint_address_iff s c idx f e
+  | rentExempt      => exact genConstraint_rentExempt_iff s c idx f
   | _               => simp [isM4Constraint] at hk
 
 theorem genFieldValidate_iff (s c idx f)

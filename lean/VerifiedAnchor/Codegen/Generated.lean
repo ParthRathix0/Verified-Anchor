@@ -1,4 +1,5 @@
 import VerifiedAnchor.Contract.Validates
+import VerifiedAnchor.Solana.Rent
 
 /-- `o` holds a value satisfying the Bool predicate `p` (false if `o` is none).
 
@@ -56,6 +57,7 @@ def genConstraint (s : AccountsStruct) (c : Ctx) (idx : Nat) (f : AccountField) 
   | .owner e         => (Ctx.atField s c idx).allB (fun a => decide (a.owner = e))
   | .executable      => (Ctx.atField s c idx).allB (fun a => a.executable)
   | .address e       => (Ctx.atField s c idx).allB (fun a => decide (a.key = e))
+  | .rentExempt      => (Ctx.atField s c idx).allB (fun a => decide (rentExemptMinimum a.data.size ≤ a.lamports))
   | .discriminator d => (Ctx.atField s c idx).allB (fun a => decide (hasDiscriminator a d))
   | .hasOne field    => genHasOne s c idx f field
   | .seeds ss b program => genSeeds s c idx ss b program
