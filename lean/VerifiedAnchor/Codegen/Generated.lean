@@ -64,8 +64,28 @@ def genConstraint (s : AccountsStruct) (c : Ctx) (idx : Nat) (f : AccountField) 
 def genFieldValidate (s : AccountsStruct) (c : Ctx) (idx : Nat) (f : AccountField) : Bool :=
   (f.ty.impliedConstraints ++ f.constraints).all (genConstraint s c idx f)
 
+/-- Bool mirror of `isMutField`: the field carries `mut` (type-implied or explicit). -/
+def isMutFieldB (f : AccountField) : Bool :=
+  (f.ty.impliedConstraints ++ f.constraints).any Constraint.isMut
+
+/-- Bool mirror of `exemptPair`: either field lists the other in its `allowDuplicate` opt-out. -/
+def exemptPairB (fi fj : AccountField) : Bool :=
+  fi.allowDuplicate.contains fj.name || fj.allowDuplicate.contains fi.name
+
+/-- Bool mirror of `distinctMutKeys`. For each ordered pair `p, q` with `p.2 < q.2` that are
+    both `mut` and not exempt, require distinct keys; every other pair passes vacuously. The
+    `decide (p.2 < q.2) → … ` guards are encoded as `!cond || rest`, mirroring the implication
+    chain in `distinctMutKeys`. -/
+def distinctMutKeysB (s : AccountsStruct) (c : Ctx) : Bool :=
+  s.fields.zipIdx.all (fun p =>
+    s.fields.zipIdx.all (fun q =>
+      !(decide (p.2 < q.2) && isMutFieldB p.1 && isMutFieldB q.1 && !exemptPairB p.1 q.1) ||
+        (Ctx.atField s c p.2).allB (fun a =>
+          (Ctx.atField s c q.2).allB (fun b => decide (a.key ≠ b.key)))))
+
 def genValidate (s : AccountsStruct) (c : Ctx) : Bool :=
   decide (c.length = s.fields.length) &&
+    distinctMutKeysB s c &&
     s.fields.zipIdx.all (fun p => genFieldValidate s c p.2 p.1)
 
 end VerifiedAnchor

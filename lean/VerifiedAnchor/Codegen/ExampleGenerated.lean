@@ -236,4 +236,48 @@ theorem prog_M4 : M4Subset progStruct := by decide
 theorem prog_sound (c : Ctx) : genValidate progStruct c = true ↔ validates progStruct c :=
   genValidate_sound progStruct c prog_M4
 
+/-! ## Distinct mutable keys (M8.4)
+
+The SAFE-BY-DEFAULT struct-level check: two `mut` accounts may not be the same account
+(the "duplicate mutable accounts" vuln class). `dupStruct` has two `mut` fields; the same
+ctx is accepted when their keys differ (`ctxDistinct`) and rejected when they collide
+(`ctxSameKey`). `dupOk` opts the pair out via `allowDuplicate`, so the collision is allowed. -/
+
+/-- Two writable accounts (no per-field constraint forces them apart). -/
+def dupStruct : AccountsStruct :=
+  { programId := Pubkey.zero
+  , fields :=
+    [ { name := "a", ty := AccountType.uncheckedAccount, constraints := [Constraint.mut] }
+    , { name := "b", ty := AccountType.uncheckedAccount, constraints := [Constraint.mut] } ] }
+
+/-- Opt-out twin: field `a` explicitly permits aliasing `b`. -/
+def dupOk : AccountsStruct :=
+  { programId := Pubkey.zero
+  , fields :=
+    [ { name := "a", ty := AccountType.uncheckedAccount, constraints := [Constraint.mut],
+        allowDuplicate := ["b"] }
+    , { name := "b", ty := AccountType.uncheckedAccount, constraints := [Constraint.mut] } ] }
+
+def mutAcct (k : Pubkey) : AccountInfo :=
+  { key := k, lamports := 0, data := ByteArray.empty, owner := Pubkey.zero,
+    rentEpoch := 0, isSigner := false, isWritable := true, executable := false }
+
+def keyA : Pubkey := Pubkey.ofBytes (List.replicate 32 1)
+def keyB : Pubkey := Pubkey.ofBytes (List.replicate 32 2)
+
+/-- Both writable, DISTINCT keys ⇒ accepted. -/
+def ctxDistinct : Ctx := Ctx.ofAccounts [mutAcct keyA, mutAcct keyB]
+/-- Both writable, SAME key (the duplicate-mutable attack) ⇒ rejected. -/
+def ctxSameKey : Ctx := Ctx.ofAccounts [mutAcct keyA, mutAcct keyA]
+
+#guard genValidate dupStruct ctxDistinct = true
+#guard genValidate dupStruct ctxSameKey = false
+-- opt-out: the SAME-key ctx is allowed because `a` permits aliasing `b`.
+#guard genValidate dupOk ctxSameKey = true
+
+theorem dupStruct_M4 : M4Subset dupStruct := by decide
+/-- Closed loop: the distinct-mut-key check agrees with the contract for any ctx. -/
+theorem dupStruct_sound (c : Ctx) : genValidate dupStruct c = true ↔ validates dupStruct c :=
+  genValidate_sound dupStruct c dupStruct_M4
+
 end VerifiedAnchor.Codegen.Examples
