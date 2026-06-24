@@ -586,6 +586,43 @@ fn account_attribute_implies_borsh_and_discriminator() {
     assert_eq!(v2.authority, v.authority);
 }
 
+// ---- M8.5: rent_exempt = enforce / skip ----
+//
+// Native tests can't call Rent::get() (no sysvar runtime). So we only verify:
+//   1. Structs with `rent_exempt = enforce` and `rent_exempt = skip` derive correctly.
+//   2. lean_spec() output for each is as expected (Constraint.rentExempt vs no rent entry).
+// The empirical on-chain reject/accept lives in runtime_rent.rs (litesvm).
+
+#[derive(VerifiedAccounts)]
+struct RentEnforce<'info> {
+    #[account(rent_exempt = enforce)]
+    vault: UncheckedAccount<'info>,
+}
+
+#[derive(VerifiedAccounts)]
+struct RentSkip<'info> {
+    #[account(rent_exempt = skip)]
+    vault: UncheckedAccount<'info>,
+}
+
+#[test]
+fn rent_enforce_lean_spec_contains_rentexempt() {
+    let spec = RentEnforce::lean_spec();
+    assert!(
+        spec.contains("Constraint.rentExempt"),
+        "rent_exempt = enforce must emit Constraint.rentExempt in lean_spec; got: {spec}"
+    );
+}
+
+#[test]
+fn rent_skip_lean_spec_has_no_rentexempt() {
+    let spec = RentSkip::lean_spec();
+    assert!(
+        !spec.contains("rentExempt"),
+        "rent_exempt = skip must NOT emit any rentExempt in lean_spec; got: {spec}"
+    );
+}
+
 // ---- M8.4: struct-level distinct mutable keys + explicit opt-out ----
 
 // Two writable accounts. The macro auto-adds the pairwise distinct-key check.
