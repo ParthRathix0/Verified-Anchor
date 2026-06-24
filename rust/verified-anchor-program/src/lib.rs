@@ -50,6 +50,22 @@ struct CheckForeignPda<'info> {
     pda: verified_anchor::UncheckedAccount<'info>,
 }
 
+/// validate that an account is rent-exempt. Accounts: [vault]. Instruction data: [5].
+/// `rent_exempt = enforce` — rejects under-funded accounts on-chain.
+#[derive(VerifiedAccounts)]
+struct CheckRentExempt<'info> {
+    #[account(rent_exempt = enforce)]
+    vault: verified_anchor::UncheckedAccount<'info>,
+}
+
+/// validate an account with `rent_exempt = skip` — the opt-out.
+/// Under-funded accounts pass through. Accounts: [vault]. Instruction data: [6].
+#[derive(VerifiedAccounts)]
+struct CheckRentSkip<'info> {
+    #[account(rent_exempt = skip)]
+    vault: verified_anchor::UncheckedAccount<'info>,
+}
+
 entrypoint!(process);
 pub fn process(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]) -> ProgramResult {
     match data.first() {
@@ -81,6 +97,18 @@ pub fn process(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]) -> Pr
         Some(4) => {
             // PDA derived against the FOREIGN program id (seeds::program), not `program_id`.
             CheckForeignPda::validate(accounts, &data[1..], program_id)
+                .map_err(|_| ProgramError::InvalidArgument)?;
+            Ok(())
+        }
+        Some(5) => {
+            // rent_exempt = enforce: rejects account that is not rent-exempt.
+            CheckRentExempt::validate(accounts, &data[1..], program_id)
+                .map_err(ProgramError::from)?;
+            Ok(())
+        }
+        Some(6) => {
+            // rent_exempt = skip: any account passes (opt-out, no check).
+            CheckRentSkip::validate(accounts, &data[1..], program_id)
                 .map_err(|_| ProgramError::InvalidArgument)?;
             Ok(())
         }

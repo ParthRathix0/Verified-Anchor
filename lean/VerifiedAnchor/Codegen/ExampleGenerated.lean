@@ -280,4 +280,36 @@ theorem dupStruct_M4 : M4Subset dupStruct := by decide
 theorem dupStruct_sound (c : Ctx) : genValidate dupStruct c = true ↔ validates dupStruct c :=
   genValidate_sound dupStruct c dupStruct_M4
 
+/-! ## rent_exempt closed-loop (M8.5)
+
+`rent_exempt = enforce` is modelled as `Constraint.rentExempt` in the Lean AST. The runtime
+check compares `accounts[i].lamports` against the opaque `rentExemptMinimum accounts[i].data.size`
+— an uninterpreted wall, exactly like `sha256`. We therefore demonstrate the two honest halves:
+
+* `M4Subset rentExemptStruct` reduces under `decide` (it only inspects `isM4Constraint`, which
+  is a concrete Bool match on the constructor — fully decidable, no opaque call).
+* The symbolic soundness arrow `genValidate_sound` instantiated at `rentExemptStruct` — valid
+  for ALL contexts, schematic over `rentExemptMinimum`.
+
+We intentionally DO NOT write `#guard genValidate rentExemptStruct ctx = true/false` over any
+concrete lamport value because `rentExemptMinimum` is OPAQUE and will not reduce under `decide`.
+The empirical accept/reject lives in the Rust litesvm tests (an under-funded account is rejected
+on-chain; a properly-funded account is accepted). -/
+
+/-- A single account with `rent_exempt = enforce`. The macro emits `Constraint.rentExempt`. -/
+def rentExemptStruct : AccountsStruct :=
+  { programId := Pubkey.zero
+  , fields := [ { name := "vault", ty := AccountType.uncheckedAccount,
+                  constraints := [Constraint.rentExempt] } ] }
+
+/-- `rentExemptStruct` is in the M4 subset (`isM4Constraint .rentExempt = true` is decidable). -/
+theorem rentExemptStruct_M4 : M4Subset rentExemptStruct := by decide
+
+/-- THE rent_exempt CLOSED LOOP (symbolic): for any context, the generated rent-exemption
+    validator agrees with the M1 contract — the soundness theorem instantiated at the
+    rent-exempt struct. Schematic over the opaque `rentExemptMinimum`. -/
+theorem rentExemptStruct_sound (c : Ctx) :
+    genValidate rentExemptStruct c = true ↔ validates rentExemptStruct c :=
+  genValidate_sound rentExemptStruct c rentExemptStruct_M4
+
 end VerifiedAnchor.Codegen.Examples

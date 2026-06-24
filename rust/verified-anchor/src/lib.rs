@@ -45,6 +45,9 @@ pub enum VAError {
     /// `#[account(allow_duplicate = <other_field>)]`. `field_a`/`field_b` are the colliding
     /// struct field names (declaration order).
     DuplicateAccount { field_a: &'static str, field_b: &'static str },
+    /// Account does not hold enough lamports to be rent-exempt.
+    /// Emitted by `rent_exempt = enforce`; accounts must satisfy `Rent::is_exempt`.
+    NotRentExempt { field: &'static str },
 }
 
 impl core::fmt::Display for VAError {
@@ -67,6 +70,8 @@ impl core::fmt::Display for VAError {
             VAError::NotExecutable { field } => write!(f, "account `{field}` is not executable"),
             VAError::DuplicateAccount { field_a, field_b } =>
                 write!(f, "mutable accounts `{field_a}` and `{field_b}` are the same account"),
+            VAError::NotRentExempt { field } =>
+                write!(f, "account `{field}` is not rent-exempt"),
         }
     }
 }
@@ -92,6 +97,7 @@ impl From<VAError> for solana_program::program_error::ProgramError {
             VAError::WrongAddress { .. } => 12,
             VAError::NotExecutable { .. } => 13,
             VAError::DuplicateAccount { .. } => 14,
+            VAError::NotRentExempt { .. } => 15,
         };
         solana_program::program_error::ProgramError::Custom(code)
     }

@@ -154,6 +154,12 @@ enum Constraint {
     /// several. Not a validation constraint; it tunes the struct-level pairwise check + emits
     /// the Lean `allowDuplicate` list.
     AllowDuplicate(syn::Ident),
+    /// `rent_exempt = enforce` — the account must be rent-exempt at validation time.
+    /// Emits `Constraint.rentExempt` in lean_spec and a `Rent::is_exempt` runtime check.
+    RentExemptEnforce,
+    /// `rent_exempt = skip` — explicitly opt out of the rent-exemption check.
+    /// Emits nothing in lean_spec and no runtime check (SAFE-BY-DEFAULT opt-out).
+    RentExemptSkip,
 }
 
 impl Parse for Constraint {
@@ -260,9 +266,19 @@ impl Parse for Constraint {
                 d.copy_from_slice(&out[..8]);
                 Ok(Constraint::Discriminator(d))
             }
+            "rent_exempt" => {
+                input.parse::<Token![=]>()?;
+                let mode: syn::Ident = input.parse()?;
+                match mode.to_string().as_str() {
+                    "enforce" => Ok(Constraint::RentExemptEnforce),
+                    "skip" => Ok(Constraint::RentExemptSkip),
+                    other => Err(syn::Error::new(mode.span(),
+                        format!("expected `enforce` or `skip` after `rent_exempt =`, got `{other}`"))),
+                }
+            }
             other => {
                 let known_unsupported = [
-                    "realloc", "zero", "rent_exempt", "constraint", "token", "mint",
+                    "realloc", "zero", "constraint", "token", "mint",
                     "associated_token", "owner_program",
                     "token_program", "seeds_program",
                 ];
@@ -273,7 +289,7 @@ impl Parse for Constraint {
                 };
                 Err(syn::Error::new(
                     ident.span(),
-                    format!("{hint}; verified-anchor supports: signer, mut, owner, has_one, allow_duplicate, init, payer, space, close, seeds, seeds::program, bump, discriminator, address, executable. See docs/migrating-from-anchor.md"),
+                    format!("{hint}; verified-anchor supports: signer, mut, owner, has_one, allow_duplicate, init, payer, space, close, seeds, seeds::program, bump, discriminator, address, executable, rent_exempt. See docs/migrating-from-anchor.md"),
                 ))
             }
         }
@@ -380,6 +396,9 @@ fn lean_constraint(c: &Constraint) -> String {
         // Not a per-field validation constraint: assembled into the field's `allowDuplicate`
         // list (struct field) in `lean_spec_string`, emitted nothing standalone here.
         Constraint::AllowDuplicate(_) => String::new(),
+        // `rent_exempt = enforce` emits the Lean constraint; `skip` emits nothing.
+        Constraint::RentExemptEnforce => "Constraint.rentExempt".to_string(),
+        Constraint::RentExemptSkip => String::new(),
     }
 }
 
@@ -557,6 +576,19 @@ fn validate_body(specs: &[FieldSpec]) -> TokenStream2 {
                         }
                     }
                 },
+                Constraint::RentExemptEnforce => {
+                    let fname = name;
+                    quote! {
+                        {
+                            use ::verified_anchor::solana_program::sysvar::Sysvar as _;
+                            let __rent = ::verified_anchor::solana_program::rent::Rent::get()
+                                .map_err(|_| ::verified_anchor::VAError::NotRentExempt { field: #fname })?;
+                            if !__rent.is_exempt(accounts[#i].lamports(), accounts[#i].data_len()) {
+                                return Err(::verified_anchor::VAError::NotRentExempt { field: #fname });
+                            }
+                        }
+                    }
+                }
                 // Lifecycle markers are handled in execute_lifecycle, not validate.
                 Constraint::InitMarker | Constraint::Payer(_) | Constraint::Space(_) | Constraint::Close(_) => {
                     continue;
@@ -568,6 +600,10 @@ fn validate_body(specs: &[FieldSpec]) -> TokenStream2 {
                 }
                 // The opt-out tunes the struct-level pairwise check below, not a per-field check.
                 Constraint::AllowDuplicate(_) => {
+                    continue;
+                }
+                // skip emits nothing — documented SAFE-BY-DEFAULT opt-out.
+                Constraint::RentExemptSkip => {
                     continue;
                 }
             };
