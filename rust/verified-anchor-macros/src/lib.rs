@@ -149,6 +149,11 @@ enum Constraint {
     /// Implied by `Program<'info, P>` field type — checks executable + key == P::ID.
     /// Not parseable from `#[account(...)]`; emitted only by `wrapper_implied`.
     ProgramMarker(syn::Path),
+    /// `allow_duplicate = <field>` — the per-pair opt-out for the struct-level distinct-mut-key
+    /// check (M8.4). This field is explicitly permitted to alias `<field>`. A field may list
+    /// several. Not a validation constraint; it tunes the struct-level pairwise check + emits
+    /// the Lean `allowDuplicate` list.
+    AllowDuplicate(syn::Ident),
 }
 
 impl Parse for Constraint {
@@ -176,6 +181,11 @@ impl Parse for Constraint {
                 input.parse::<Token![=]>()?;
                 let target: syn::Ident = input.parse()?;
                 Ok(Constraint::HasOne(target))
+            }
+            "allow_duplicate" => {
+                input.parse::<Token![=]>()?;
+                let target: syn::Ident = input.parse()?;
+                Ok(Constraint::AllowDuplicate(target))
             }
             "init" => Ok(Constraint::InitMarker),
             "payer" => {
@@ -263,7 +273,7 @@ impl Parse for Constraint {
                 };
                 Err(syn::Error::new(
                     ident.span(),
-                    format!("{hint}; verified-anchor supports: signer, mut, owner, has_one, init, payer, space, close, seeds, seeds::program, bump, discriminator, address, executable. See docs/migrating-from-anchor.md"),
+                    format!("{hint}; verified-anchor supports: signer, mut, owner, has_one, allow_duplicate, init, payer, space, close, seeds, seeds::program, bump, discriminator, address, executable. See docs/migrating-from-anchor.md"),
                 ))
             }
         }
@@ -367,6 +377,9 @@ fn lean_constraint(c: &Constraint) -> String {
         Constraint::Address(_) => "Constraint.address Pubkey.zero".to_string(),
         Constraint::Executable => "Constraint.executable".to_string(),
         Constraint::ProgramMarker(_) => String::new(),
+        // Not a per-field validation constraint: assembled into the field's `allowDuplicate`
+        // list (struct field) in `lean_spec_string`, emitted nothing standalone here.
+        Constraint::AllowDuplicate(_) => String::new(),
     }
 }
 
@@ -430,11 +443,23 @@ fn lean_spec_string(specs: &[FieldSpec]) -> String {
         let cs_joined = cs.join(", ")
             .replace("@@BUMP@@", &bump_str)
             .replace("@@PROG@@", prog_str);
+        // `allow_duplicate = <field>` opt-outs → the field's `allowDuplicate` list. Emitted
+        // ONLY when non-empty so existing literals keep relying on the Lean field default `[]`.
+        let allows: Vec<String> = spec.constraints.iter().filter_map(|c| match c {
+            Constraint::AllowDuplicate(t) => Some(format!("\"{}\"", t)),
+            _ => None,
+        }).collect();
+        let allow_str = if allows.is_empty() {
+            String::new()
+        } else {
+            format!(", allowDuplicate := [{}]", allows.join(", "))
+        };
         fields.push(format!(
-            "{{ name := \"{}\", ty := {}, constraints := [{}] }}",
+            "{{ name := \"{}\", ty := {}, constraints := [{}]{} }}",
             spec.name,
             ty,
-            cs_joined
+            cs_joined,
+            allow_str
         ));
     }
     let body = if fields.is_empty() {
@@ -541,6 +566,10 @@ fn validate_body(specs: &[FieldSpec]) -> TokenStream2 {
                 | Constraint::BumpDeclared(_) | Constraint::BumpStored(_) => {
                     continue;
                 }
+                // The opt-out tunes the struct-level pairwise check below, not a per-field check.
+                Constraint::AllowDuplicate(_) => {
+                    continue;
+                }
             };
             checks.push(check);
         }
@@ -632,6 +661,35 @@ fn validate_body(specs: &[FieldSpec]) -> TokenStream2 {
             }
         }
     }
+
+    // STRUCT-LEVEL distinct-mut-key check (M8.4): every ordered pair of `mut` fields `i < j`
+    // that is NOT opted out must resolve to distinct account keys. Mirrors the Lean
+    // `distinctMutKeys` (mut = `Constraint::Mut` in implied++explicit; exempt = either field
+    // lists the other in `allow_duplicate`).
+    let is_mut = |spec: &FieldSpec| -> bool {
+        wrapper_implied(&spec.kind).iter().chain(spec.constraints.iter())
+            .any(|c| matches!(c, Constraint::Mut))
+    };
+    let allows = |spec: &FieldSpec, other: &str| -> bool {
+        spec.constraints.iter().any(|c|
+            matches!(c, Constraint::AllowDuplicate(t) if t == other))
+    };
+    let mut_indices: Vec<usize> = specs.iter().enumerate()
+        .filter(|(_, s)| is_mut(s)).map(|(i, _)| i).collect();
+    for (a, &i) in mut_indices.iter().enumerate() {
+        for &j in &mut_indices[a + 1..] {
+            let exempt = allows(&specs[i], &specs[j].name) || allows(&specs[j], &specs[i].name);
+            if exempt { continue; }
+            let fa = &specs[i].name;
+            let fb = &specs[j].name;
+            checks.push(quote! {
+                if accounts[#i].key == accounts[#j].key {
+                    return Err(::verified_anchor::VAError::DuplicateAccount { field_a: #fa, field_b: #fb });
+                }
+            });
+        }
+    }
+
     quote! {
         fn validate(
             accounts: &[::verified_anchor::solana_program::account_info::AccountInfo],
