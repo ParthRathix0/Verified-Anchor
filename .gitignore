@@ -9,3 +9,7 @@ target/
 prep.md
 # subagent-driven-development scratch (ledger, briefs, reports)
 .superpowers/
+
+# internal planning / resume context — kept locally, not published
+HANDOVER.md
+/docs/superpowers/
