@@ -1,6 +1,7 @@
 import VerifiedAnchor.Solana.Pubkey
 import VerifiedAnchor.Solana.Account
 import VerifiedAnchor.Solana.Crypto
+import VerifiedAnchor.Solana.Rent
 import VerifiedAnchor.Solana.Discriminator
 import VerifiedAnchor.Solana.Layout
 import VerifiedAnchor.Constraints.Ast

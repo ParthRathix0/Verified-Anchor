@@ -131,12 +131,35 @@ enum Constraint {
     Space(usize),
     Close(syn::Ident),
     Seeds(Vec<SeedElem>),
+    /// `seeds::program = <expr>` — derive the PDA against the FOREIGN program id `<expr>`
+    /// instead of this program's id. Lean models it as the third `Constraint.seeds` field
+    /// (`some Pubkey.zero` schematic placeholder; the soundness theorem is ∀ over the pubkey).
+    SeedsProgram(Expr),
     BumpCanonical,
     BumpDeclared(u8),
+    /// Opt-in, non-canonical "stored" bump: `bump = arg(off)`. The bump byte is read from the
+    /// instruction data at byte offset `off`; the PDA is derived with THAT specific bump via
+    /// `create_program_address` — NO canonical `find_program_address` requirement.
+    BumpStored(usize),
     Discriminator([u8; 8]),
+    /// `address = <expr>` — checks `accounts[i].key == expr`.
+    Address(Expr),
+    /// `executable` — checks `accounts[i].executable`.
+    Executable,
     /// Implied by `Program<'info, P>` field type — checks executable + key == P::ID.
     /// Not parseable from `#[account(...)]`; emitted only by `wrapper_implied`.
     ProgramMarker(syn::Path),
+    /// `allow_duplicate = <field>` — the per-pair opt-out for the struct-level distinct-mut-key
+    /// check (M8.4). This field is explicitly permitted to alias `<field>`. A field may list
+    /// several. Not a validation constraint; it tunes the struct-level pairwise check + emits
+    /// the Lean `allowDuplicate` list.
+    AllowDuplicate(syn::Ident),
+    /// `rent_exempt = enforce` — the account must be rent-exempt at validation time.
+    /// Emits `Constraint.rentExempt` in lean_spec and a `Rent::is_exempt` runtime check.
+    RentExemptEnforce,
+    /// `rent_exempt = skip` — explicitly opt out of the rent-exemption check.
+    /// Emits nothing in lean_spec and no runtime check (SAFE-BY-DEFAULT opt-out).
+    RentExemptSkip,
 }
 
 impl Parse for Constraint {
@@ -149,15 +172,26 @@ impl Parse for Constraint {
         let ident: syn::Ident = input.parse()?;
         match ident.to_string().as_str() {
             "signer" => Ok(Constraint::Signer),
+            "executable" => Ok(Constraint::Executable),
             "owner" => {
                 input.parse::<Token![=]>()?;
                 let expr: Expr = input.parse()?;
                 Ok(Constraint::Owner(expr))
             }
+            "address" => {
+                input.parse::<Token![=]>()?;
+                let expr: Expr = input.parse()?;
+                Ok(Constraint::Address(expr))
+            }
             "has_one" => {
                 input.parse::<Token![=]>()?;
                 let target: syn::Ident = input.parse()?;
                 Ok(Constraint::HasOne(target))
+            }
+            "allow_duplicate" => {
+                input.parse::<Token![=]>()?;
+                let target: syn::Ident = input.parse()?;
+                Ok(Constraint::AllowDuplicate(target))
             }
             "init" => Ok(Constraint::InitMarker),
             "payer" => {
@@ -174,6 +208,19 @@ impl Parse for Constraint {
                 Ok(Constraint::Close(input.parse()?))
             }
             "seeds" => {
+                // `seeds::program = <expr>` — the `::`-path key for a foreign-program PDA
+                // derivation. Parsed alongside `seeds = [..]` / `bump` on the same field.
+                if input.peek(Token![::]) {
+                    input.parse::<Token![::]>()?;
+                    let key: syn::Ident = input.parse()?;
+                    if key != "program" {
+                        return Err(syn::Error::new(key.span(),
+                            "unsupported `seeds::` key (expected `seeds::program = <expr>`)"));
+                    }
+                    input.parse::<Token![=]>()?;
+                    let expr: Expr = input.parse()?;
+                    return Ok(Constraint::SeedsProgram(expr));
+                }
                 input.parse::<Token![=]>()?;
                 let arr: syn::ExprArray = input.parse()?;
                 let mut elems = Vec::new();
@@ -185,8 +232,25 @@ impl Parse for Constraint {
             "bump" => {
                 if input.peek(Token![=]) {
                     input.parse::<Token![=]>()?;
-                    let lit: syn::LitInt = input.parse()?;
-                    Ok(Constraint::BumpDeclared(lit.base10_parse()?))
+                    // `bump = <litint>` (declared) vs `bump = arg(off)` (stored, non-canonical).
+                    let expr: Expr = input.parse()?;
+                    match expr {
+                        Expr::Lit(syn::ExprLit { lit: syn::Lit::Int(i), .. }) => {
+                            Ok(Constraint::BumpDeclared(i.base10_parse()?))
+                        }
+                        Expr::Call(call) => {
+                            let is_arg = matches!(call.func.as_ref(),
+                                Expr::Path(p) if p.path.is_ident("arg"));
+                            if !is_arg {
+                                return Err(syn::Error::new_spanned(call.func,
+                                    "unsupported `bump = <expr>` (expected a u8 literal or `arg(off)`)"));
+                            }
+                            let off = lit_usize(call.args.iter().next())?;
+                            Ok(Constraint::BumpStored(off))
+                        }
+                        other => Err(syn::Error::new_spanned(other,
+                            "unsupported `bump = <expr>` (expected a u8 literal or `arg(off)`)")),
+                    }
                 } else {
                     Ok(Constraint::BumpCanonical)
                 }
@@ -202,11 +266,21 @@ impl Parse for Constraint {
                 d.copy_from_slice(&out[..8]);
                 Ok(Constraint::Discriminator(d))
             }
+            "rent_exempt" => {
+                input.parse::<Token![=]>()?;
+                let mode: syn::Ident = input.parse()?;
+                match mode.to_string().as_str() {
+                    "enforce" => Ok(Constraint::RentExemptEnforce),
+                    "skip" => Ok(Constraint::RentExemptSkip),
+                    other => Err(syn::Error::new(mode.span(),
+                        format!("expected `enforce` or `skip` after `rent_exempt =`, got `{other}`"))),
+                }
+            }
             other => {
                 let known_unsupported = [
-                    "realloc", "zero", "rent_exempt", "constraint", "token", "mint",
-                    "associated_token", "executable", "address", "owner_program",
-                    "token_program", "seeds_program",
+                    "realloc", "zero", "constraint", "token", "mint",
+                    "associated_token", "owner_program",
+                    "token_program",
                 ];
                 let hint = if known_unsupported.contains(&other) {
                     format!("`{other}` is a stock-Anchor constraint that verified-anchor does not support")
@@ -215,7 +289,7 @@ impl Parse for Constraint {
                 };
                 Err(syn::Error::new(
                     ident.span(),
-                    format!("{hint}; verified-anchor supports: signer, mut, owner, has_one, init, payer, space, close, seeds, bump, discriminator. See docs/migrating-from-anchor.md"),
+                    format!("{hint}; verified-anchor supports: signer, mut, owner, has_one, allow_duplicate, init, payer, space, close, seeds, seeds::program, bump, discriminator, address, executable, rent_exempt. See docs/migrating-from-anchor.md"),
                 ))
             }
         }
@@ -253,7 +327,7 @@ fn lit_usize(e: Option<&Expr>) -> syn::Result<usize> {
     match e {
         Some(Expr::Lit(syn::ExprLit { lit: syn::Lit::Int(i), .. })) => i.base10_parse(),
         _ => Err(syn::Error::new(proc_macro2::Span::call_site(),
-            "arg(off, len) needs two integer literals")),
+            "expected an integer literal (seeds `arg` needs two: arg(off, len); bump `arg` needs one: arg(off))")),
     }
 }
 
@@ -305,14 +379,26 @@ fn lean_constraint(c: &Constraint) -> String {
                 SeedElem::FieldKey(id) => format!("SeedSpec.fieldKey \"{}\"", id),
                 SeedElem::InstrArg(off, len) => format!("SeedSpec.instrArg {} {}", off, len),
             }).collect();
-            format!("Constraint.seeds [{}] @@BUMP@@", seeds.join(", "))
+            format!("Constraint.seeds [{}] @@BUMP@@ @@PROG@@", seeds.join(", "))
         }
-        Constraint::BumpCanonical | Constraint::BumpDeclared(_) => String::new(),
+        // The program override is assembled into the seeds spec's third field below; emit nothing
+        // standalone (same pattern as bumps).
+        Constraint::SeedsProgram(_) => String::new(),
+        Constraint::BumpCanonical | Constraint::BumpDeclared(_) | Constraint::BumpStored(_) => String::new(),
         Constraint::Discriminator(d) => {
             let bytes: Vec<String> = d.iter().map(|x| x.to_string()).collect();
             format!("Constraint.discriminator (ByteArray.mk #[{}])", bytes.join(", "))
         }
+        // Schematic placeholder: the theorem is ∀ over the pubkey (same trick as `owner`).
+        Constraint::Address(_) => "Constraint.address Pubkey.zero".to_string(),
+        Constraint::Executable => "Constraint.executable".to_string(),
         Constraint::ProgramMarker(_) => String::new(),
+        // Not a per-field validation constraint: assembled into the field's `allowDuplicate`
+        // list (struct field) in `lean_spec_string`, emitted nothing standalone here.
+        Constraint::AllowDuplicate(_) => String::new(),
+        // `rent_exempt = enforce` emits the Lean constraint; `skip` emits nothing.
+        Constraint::RentExemptEnforce => "Constraint.rentExempt".to_string(),
+        Constraint::RentExemptSkip => String::new(),
     }
 }
 
@@ -357,17 +443,42 @@ fn lean_spec_string(specs: &[FieldSpec]) -> String {
             WrapperKind::Program(_) => "AccountType.program Pubkey.zero".to_string(),
             WrapperKind::Unchecked => "AccountType.uncheckedAccount".to_string(),
         };
+        // Parenthesise bumps that carry an argument so the emitted spec parses as a single
+        // `BumpSpec` argument of `Constraint.seeds` (canonical takes no arg, so no parens).
         let bump_str = spec.constraints.iter().find_map(|c| match c {
             Constraint::BumpCanonical => Some("BumpSpec.canonical".to_string()),
-            Constraint::BumpDeclared(d) => Some(format!("BumpSpec.declared {}", d)),
+            Constraint::BumpDeclared(d) => Some(format!("(BumpSpec.declared {})", d)),
+            Constraint::BumpStored(off) => Some(format!("(BumpSpec.stored {})", off)),
             _ => None,
         }).unwrap_or_else(|| "BumpSpec.canonical".to_string());
-        let cs_joined = cs.join(", ").replace("@@BUMP@@", &bump_str);
+        // `seeds::program` override → the third `Constraint.seeds` field. Present ⇒ the schematic
+        // placeholder `(some Pubkey.zero)` (the soundness theorem is ∀ over the pubkey, exactly
+        // like `owner`/`address`); absent ⇒ `none` (derive against this program's id).
+        let prog_str = if spec.constraints.iter().any(|c| matches!(c, Constraint::SeedsProgram(_))) {
+            "(some Pubkey.zero)"
+        } else {
+            "none"
+        };
+        let cs_joined = cs.join(", ")
+            .replace("@@BUMP@@", &bump_str)
+            .replace("@@PROG@@", prog_str);
+        // `allow_duplicate = <field>` opt-outs → the field's `allowDuplicate` list. Emitted
+        // ONLY when non-empty so existing literals keep relying on the Lean field default `[]`.
+        let allows: Vec<String> = spec.constraints.iter().filter_map(|c| match c {
+            Constraint::AllowDuplicate(t) => Some(format!("\"{}\"", t)),
+            _ => None,
+        }).collect();
+        let allow_str = if allows.is_empty() {
+            String::new()
+        } else {
+            format!(", allowDuplicate := [{}]", allows.join(", "))
+        };
         fields.push(format!(
-            "{{ name := \"{}\", ty := {}, constraints := [{}] }}",
+            "{{ name := \"{}\", ty := {}, constraints := [{}]{} }}",
             spec.name,
             ty,
-            cs_joined
+            cs_joined,
+            allow_str
         ));
     }
     let body = if fields.is_empty() {
@@ -443,6 +554,16 @@ fn validate_body(specs: &[FieldSpec]) -> TokenStream2 {
                         }
                     }
                 },
+                Constraint::Address(expr) => quote! {
+                    if accounts[#i].key != &(#expr) {
+                        return Err(::verified_anchor::VAError::WrongAddress { field: #name });
+                    }
+                },
+                Constraint::Executable => quote! {
+                    if !accounts[#i].executable {
+                        return Err(::verified_anchor::VAError::NotExecutable { field: #name });
+                    }
+                },
                 Constraint::ProgramMarker(p) => {
                     let fname = name;
                     let pid_ty = p;
@@ -455,12 +576,34 @@ fn validate_body(specs: &[FieldSpec]) -> TokenStream2 {
                         }
                     }
                 },
+                Constraint::RentExemptEnforce => {
+                    let fname = name;
+                    quote! {
+                        {
+                            use ::verified_anchor::solana_program::sysvar::Sysvar as _;
+                            let __rent = ::verified_anchor::solana_program::rent::Rent::get()
+                                .map_err(|_| ::verified_anchor::VAError::NotRentExempt { field: #fname })?;
+                            if !__rent.is_exempt(accounts[#i].lamports(), accounts[#i].data_len()) {
+                                return Err(::verified_anchor::VAError::NotRentExempt { field: #fname });
+                            }
+                        }
+                    }
+                }
                 // Lifecycle markers are handled in execute_lifecycle, not validate.
                 Constraint::InitMarker | Constraint::Payer(_) | Constraint::Space(_) | Constraint::Close(_) => {
                     continue;
                 }
-                // Seeds/bump are handled in the per-field PDA block below.
-                Constraint::Seeds(_) | Constraint::BumpCanonical | Constraint::BumpDeclared(_) => {
+                // Seeds/bump/seeds::program are handled in the per-field PDA block below.
+                Constraint::Seeds(_) | Constraint::SeedsProgram(_) | Constraint::BumpCanonical
+                | Constraint::BumpDeclared(_) | Constraint::BumpStored(_) => {
+                    continue;
+                }
+                // The opt-out tunes the struct-level pairwise check below, not a per-field check.
+                Constraint::AllowDuplicate(_) => {
+                    continue;
+                }
+                // skip emits nothing — documented SAFE-BY-DEFAULT opt-out.
+                Constraint::RentExemptSkip => {
                     continue;
                 }
             };
@@ -472,6 +615,15 @@ fn validate_body(specs: &[FieldSpec]) -> TokenStream2 {
             .find(|c| matches!(c, Constraint::Seeds(_)))
         {
             let fname = name;
+            // `seeds::program = <expr>` override: derive against the FOREIGN program id `<expr>`
+            // (a `Pubkey` value) instead of this program's `program_id` (already a `&Pubkey`).
+            let derive_pid: TokenStream2 = match spec.constraints.iter().find_map(|c| match c {
+                Constraint::SeedsProgram(e) => Some(e),
+                _ => None,
+            }) {
+                Some(expr) => quote! { &(#expr) },
+                None => quote! { program_id },
+            };
             let seed_exprs: Vec<TokenStream2> = elems.iter().map(|se| match se {
                 SeedElem::Literal(b) => quote! { &#b[..] },
                 SeedElem::FieldKey(id) => {
@@ -486,30 +638,94 @@ fn validate_body(specs: &[FieldSpec]) -> TokenStream2 {
                     quote! { &instr_data[(#off).min(instr_data.len())..(#end).min(instr_data.len())] }
                 }
             }).collect();
-            let bump_check = match spec.constraints.iter().find_map(|c| match c {
-                Constraint::BumpCanonical => Some(None),
-                Constraint::BumpDeclared(d) => Some(Some(*d)),
+            // Stored (non-canonical) bump opt-in: `bump = arg(off)`. Read the bump byte from
+            // instr_data at `off`, derive the PDA with THAT specific bump via
+            // create_program_address, compare to the account key. NO canonical requirement.
+            let stored_off = spec.constraints.iter().find_map(|c| match c {
+                Constraint::BumpStored(off) => Some(*off),
                 _ => None,
-            }) {
-                Some(Some(d)) => quote! {
-                    if __bump != #d {
-                        return Err(::verified_anchor::VAError::WrongBump { field: #fname });
+            });
+            if let Some(off) = stored_off {
+                checks.push(quote! {
+                    {
+                        let __seeds: &[&[u8]] = &[ #(#seed_exprs),* ];
+                        // None-safe: short instr_data (no byte at `off`) is a clean reject,
+                        // mirroring the Lean spec's `instrData.data[off]?` none case.
+                        let __stored_bump = match instr_data.get(#off) {
+                            ::core::option::Option::Some(b) => *b,
+                            ::core::option::Option::None =>
+                                return Err(::verified_anchor::VAError::WrongPda { field: #fname }),
+                        };
+                        // create_program_address fails (Err) for an on-curve candidate; that is
+                        // also a clean reject (mirrors the Lean `createProgramAddress = none`).
+                        let __pda = match ::verified_anchor::solana_program::pubkey::Pubkey::create_program_address(
+                            &[ #(#seed_exprs,)* &[__stored_bump] ], #derive_pid)
+                        {
+                            ::core::result::Result::Ok(pk) => pk,
+                            ::core::result::Result::Err(_) =>
+                                return Err(::verified_anchor::VAError::WrongPda { field: #fname }),
+                        };
+                        let _ = __seeds;
+                        if accounts[#i].key != &__pda {
+                            return Err(::verified_anchor::VAError::WrongPda { field: #fname });
+                        }
                     }
-                },
-                _ => quote! {},
-            };
+                });
+            } else {
+                let bump_check = match spec.constraints.iter().find_map(|c| match c {
+                    Constraint::BumpCanonical => Some(None),
+                    Constraint::BumpDeclared(d) => Some(Some(*d)),
+                    _ => None,
+                }) {
+                    Some(Some(d)) => quote! {
+                        if __bump != #d {
+                            return Err(::verified_anchor::VAError::WrongBump { field: #fname });
+                        }
+                    },
+                    _ => quote! {},
+                };
+                checks.push(quote! {
+                    {
+                        let __seeds: &[&[u8]] = &[ #(#seed_exprs),* ];
+                        let (__pda, __bump) = ::verified_anchor::solana_program::pubkey::Pubkey::find_program_address(__seeds, #derive_pid);
+                        if accounts[#i].key != &__pda {
+                            return Err(::verified_anchor::VAError::WrongPda { field: #fname });
+                        }
+                        #bump_check
+                    }
+                });
+            }
+        }
+    }
+
+    // STRUCT-LEVEL distinct-mut-key check (M8.4): every ordered pair of `mut` fields `i < j`
+    // that is NOT opted out must resolve to distinct account keys. Mirrors the Lean
+    // `distinctMutKeys` (mut = `Constraint::Mut` in implied++explicit; exempt = either field
+    // lists the other in `allow_duplicate`).
+    let is_mut = |spec: &FieldSpec| -> bool {
+        wrapper_implied(&spec.kind).iter().chain(spec.constraints.iter())
+            .any(|c| matches!(c, Constraint::Mut))
+    };
+    let allows = |spec: &FieldSpec, other: &str| -> bool {
+        spec.constraints.iter().any(|c|
+            matches!(c, Constraint::AllowDuplicate(t) if t == other))
+    };
+    let mut_indices: Vec<usize> = specs.iter().enumerate()
+        .filter(|(_, s)| is_mut(s)).map(|(i, _)| i).collect();
+    for (a, &i) in mut_indices.iter().enumerate() {
+        for &j in &mut_indices[a + 1..] {
+            let exempt = allows(&specs[i], &specs[j].name) || allows(&specs[j], &specs[i].name);
+            if exempt { continue; }
+            let fa = &specs[i].name;
+            let fb = &specs[j].name;
             checks.push(quote! {
-                {
-                    let __seeds: &[&[u8]] = &[ #(#seed_exprs),* ];
-                    let (__pda, __bump) = ::verified_anchor::solana_program::pubkey::Pubkey::find_program_address(__seeds, program_id);
-                    if accounts[#i].key != &__pda {
-                        return Err(::verified_anchor::VAError::WrongPda { field: #fname });
-                    }
-                    #bump_check
+                if accounts[#i].key == accounts[#j].key {
+                    return Err(::verified_anchor::VAError::DuplicateAccount { field_a: #fa, field_b: #fb });
                 }
             });
         }
     }
+
     quote! {
         fn validate(
             accounts: &[::verified_anchor::solana_program::account_info::AccountInfo],
@@ -633,8 +849,10 @@ pub fn derive_verified_accounts(input: TokenStream) -> TokenStream {
     let bumps_index_of: std::collections::HashMap<String, usize> =
         specs.iter().enumerate().map(|(i, s)| (s.name.clone(), i)).collect();
 
-    // Per-seeded-field: (Bumps-field Ident, TokenStream Vec for the seed slice exprs).
-    let bumps_fields: Vec<(syn::Ident, Vec<TokenStream2>)> = seeded.iter().map(|(_, spec, elems)| {
+    // Per-seeded-field: (Bumps-field Ident, seed slice exprs, derivation program-id token).
+    // The `seeds::program` override applies here too so the canonical bump exposed in `Bumps`
+    // is derived against the SAME foreign program id used by `validate`.
+    let bumps_fields: Vec<(syn::Ident, Vec<TokenStream2>, TokenStream2)> = seeded.iter().map(|(_, spec, elems)| {
         let fname = syn::Ident::new(&spec.name, name.span());
         let seed_exprs: Vec<TokenStream2> = elems.iter().map(|se| match se {
             SeedElem::Literal(b) => quote! { &#b[..] },
@@ -649,7 +867,14 @@ pub fn derive_verified_accounts(input: TokenStream) -> TokenStream {
                 quote! { &instr_data[(#off).min(instr_data.len())..(#end).min(instr_data.len())] }
             }
         }).collect();
-        (fname, seed_exprs)
+        let derive_pid: TokenStream2 = match spec.constraints.iter().find_map(|c| match c {
+            Constraint::SeedsProgram(e) => Some(e),
+            _ => None,
+        }) {
+            Some(expr) => quote! { &(#expr) },
+            None => quote! { program_id },
+        };
+        (fname, seed_exprs, derive_pid)
     }).collect();
 
     let (bumps_struct_decl, bumps_struct_init) = if bumps_fields.is_empty() {
@@ -658,14 +883,14 @@ pub fn derive_verified_accounts(input: TokenStream) -> TokenStream {
             quote! { #bumps_struct_name },
         )
     } else {
-        let decl_fields: Vec<TokenStream2> = bumps_fields.iter().map(|(fname, _)| {
+        let decl_fields: Vec<TokenStream2> = bumps_fields.iter().map(|(fname, _, _)| {
             quote! { pub #fname: u8 }
         }).collect();
-        let init_fields: Vec<TokenStream2> = bumps_fields.iter().map(|(fname, seed_exprs)| {
+        let init_fields: Vec<TokenStream2> = bumps_fields.iter().map(|(fname, seed_exprs, derive_pid)| {
             quote! {
                 #fname: {
                     let __seeds: &[&[u8]] = &[ #(#seed_exprs),* ];
-                    let (_pda, __b) = ::verified_anchor::solana_program::pubkey::Pubkey::find_program_address(__seeds, program_id);
+                    let (_pda, __b) = ::verified_anchor::solana_program::pubkey::Pubkey::find_program_address(__seeds, #derive_pid);
                     __b
                 }
             }

@@ -25,9 +25,9 @@ Verified Anchor closes the gap. Every macro expansion ships with a Lean 4 theore
 
 ## Status
 
-* `v0.1.2`, published on crates.io — one dependency: `cargo add verified-anchor`. `v0.1.0` is the tagged submission snapshot.
+* `v0.2.0` — M8 constraint-surface completion: `address`/`executable` explicit annotations, stored/non-canonical bump opt-in, `seeds::program`, automatic distinct-mut-key checking, `rent_exempt = enforce/skip`.
 * Lean theorems' axioms: `[propext, Quot.sound]` only. Zero `sorry` / `admit`.
-* Out of scope: `realloc`, `zero`, token / mint / associated-token constraints. Custom `constraint = ...` expressions. QEDGen composition demo.
+* Out of scope: `realloc`, `zero`, token / mint / associated-token constraints. Custom `constraint = ...` expressions.
 
 ## Packages
 
@@ -76,7 +76,8 @@ LICENSE                               CC BY-NC-ND 4.0
 * [Original proposal](verified_anchor_proposal.md) — problem statement, approach, milestones.
 * [v0.1.0 announcement post](docs/announcement-v0.1.0.md) — the full technical writeup.
 * [Trust boundary](docs/verified-anchor-bridge.md) — what is proven, what is not, the Rust↔Lean correspondence.
-* [Migrating from Anchor](docs/migrating-from-anchor.md) — supported constraint subset, syntax mapping.
+* [Migrating from Anchor](docs/migrating-from-anchor.md) — supported constraint subset, syntax mapping, opt-outs.
+* [Constraint parity matrix](docs/constraint-parity-matrix.md) — every Anchor `#[account]` constraint: proven / honesty-boundary / planned.
 * [Exploit case studies](docs/exploit-case-studies.md) — four Solana mainnet incidents reproduced on litesvm.
 
 ## Quick start
@@ -161,6 +162,12 @@ Per-program proof obligations are discharged by `cargo verified-anchor check`. F
 | `owner = <expr>`        | `genValidate_sound`                        |
 | `has_one = <field>`     | `genValidate_sound` (relational)           |
 | `seeds = [...], bump`   | `genValidate_sound` (canonical-only PDA)   |
+| `seeds = [...], bump = arg(off)` | `genValidate_sound` (stored-bump opt-in) |
+| `seeds::program = <expr>` | `genValidate_sound` (foreign program id) |
+| `address = <pubkey>`    | `genValidate_sound`                        |
+| `executable`            | `genValidate_sound`                        |
+| `rent_exempt = enforce` | `genValidate_sound` (opaque `rentExemptMinimum` wall; cross-checked by litesvm) |
+| distinct-mut-key check  | `genValidate_sound` (automatic; `allow_duplicate` opt-out) |
 | `discriminator = "..."` | `genValidate_sound`                        |
 | `SystemAccount` base: `owner`               | `genValidate_sound`    |
 | `Program<P>` base: `executable` + `address` | `genValidate_sound`    |

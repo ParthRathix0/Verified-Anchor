@@ -113,7 +113,7 @@ def pdaProg : Pubkey := Pubkey.ofBytes (List.replicate 32 7)
 def pdaField : AccountField :=
   { name := "pda", ty := AccountType.uncheckedAccount,
     constraints := [Constraint.seeds [SeedSpec.literal "vault".toUTF8,
-                                       SeedSpec.instrArg 0 4] BumpSpec.canonical] }
+                                       SeedSpec.instrArg 0 4] BumpSpec.canonical none] }
 def withSeeds : AccountsStruct :=
   { programId := pdaProg, fields := [pdaField] }
 
@@ -136,6 +136,67 @@ theorem withSeeds_M4 : M4Subset withSeeds := by decide
     with the M1 contract — the soundness theorem instantiated at the seeds-bearing struct. -/
 theorem withSeeds_sound (c : Ctx) : genValidate withSeeds c = true ↔ validates withSeeds c :=
   genValidate_sound withSeeds c withSeeds_M4
+
+/-! ## stored (non-canonical) bump closed-loop (M4)
+
+The opt-in `bump = arg(off)` reads the bump byte from `instrData` at `off` and derives the
+PDA with THAT specific bump via `createProgramAddress` — NO canonical `findProgramAddress`
+requirement (the deliberate, less-safe opt-in). Like canonical seeds the derivation hashes
+through the opaque `sha256`, so `genSeeds` does not reduce under `decide`; we demonstrate the
+same two honest halves (crypto-free seed resolution + the symbolic soundness arrow) plus the
+M4 membership of the new `BumpSpec.stored` constructor. The empirical accept/reject against
+the real `create_program_address` lives in the Rust tests. -/
+def storedField : AccountField :=
+  { name := "pda", ty := AccountType.uncheckedAccount,
+    constraints := [Constraint.seeds [SeedSpec.literal "vault".toUTF8]
+                                     (BumpSpec.stored 0) none] }
+def withStoredBump : AccountsStruct :=
+  { programId := pdaProg, fields := [storedField] }
+
+/-- A context whose instruction data carries the stored bump byte at offset 0. -/
+def storedCtx : Ctx :=
+  { accounts := [ { key := Pubkey.zero, lamports := 0, data := ByteArray.empty,
+                    owner := Pubkey.zero, rentEpoch := 0, isSigner := false,
+                    isWritable := false, executable := false } ],
+    instrData := (⟨#[255]⟩ : ByteArray) }
+#guard (resolveSeeds withStoredBump storedCtx [SeedSpec.literal "vault".toUTF8]).length = 1
+
+/-- `withStoredBump` is in the M4 subset (`.seeds _ _ _` qualifies regardless of bump). -/
+theorem withStoredBump_M4 : M4Subset withStoredBump := by decide
+
+/-- THE STORED-BUMP CLOSED LOOP (symbolic): for any context, the generated stored-bump PDA
+    validator agrees with the M1 contract. -/
+theorem withStoredBump_sound (c : Ctx) :
+    genValidate withStoredBump c = true ↔ validates withStoredBump c :=
+  genValidate_sound withStoredBump c withStoredBump_M4
+
+/-! ## seeds::program — foreign program-id PDA closed-loop (M4)
+
+The `seeds::program = <expr>` override derives the PDA against a program id OTHER than the
+struct's own `s.programId`. Modelled as the third `Constraint.seeds` field: `some someProgId`
+(here a distinct placeholder) ⇒ derive against THAT id. Like every PDA case the derivation
+hashes through the opaque `sha256`, so `genSeeds` does not reduce under `decide`; we show the
+crypto-free seed resolution half plus the symbolic soundness arrow, and the M4 membership of
+the program-override `.seeds`. The empirical accept/reject against the foreign program id lives
+in the Rust tests. -/
+def someProgId : Pubkey := Pubkey.ofBytes (List.replicate 32 9)
+def seedsProgField : AccountField :=
+  { name := "pda", ty := AccountType.uncheckedAccount,
+    constraints := [Constraint.seeds [SeedSpec.literal "vault".toUTF8]
+                                     BumpSpec.canonical (some someProgId)] }
+def withSeedsProgram : AccountsStruct :=
+  { programId := pdaProg, fields := [seedsProgField] }
+
+#guard (resolveSeeds withSeedsProgram seedCtx [SeedSpec.literal "vault".toUTF8]).length = 1
+
+/-- `withSeedsProgram` is in the M4 subset (`.seeds _ _ _` qualifies regardless of program). -/
+theorem withSeedsProgram_M4 : M4Subset withSeedsProgram := by decide
+
+/-- THE seeds::program CLOSED LOOP (symbolic): for any context, the generated foreign-program
+    PDA validator agrees with the M1 contract. -/
+theorem withSeedsProgram_sound (c : Ctx) :
+    genValidate withSeedsProgram c = true ↔ validates withSeedsProgram c :=
+  genValidate_sound withSeedsProgram c withSeedsProgram_M4
 
 /-! ## Wrapper base checks: `SystemAccount` and `Program<P>` (M4)
 
@@ -174,5 +235,81 @@ theorem prog_M4 : M4Subset progStruct := by decide
 /-- Closed loop: the modelled Program executable + address checks agree with the contract. -/
 theorem prog_sound (c : Ctx) : genValidate progStruct c = true ↔ validates progStruct c :=
   genValidate_sound progStruct c prog_M4
+
+/-! ## Distinct mutable keys (M8.4)
+
+The SAFE-BY-DEFAULT struct-level check: two `mut` accounts may not be the same account
+(the "duplicate mutable accounts" vuln class). `dupStruct` has two `mut` fields; the same
+ctx is accepted when their keys differ (`ctxDistinct`) and rejected when they collide
+(`ctxSameKey`). `dupOk` opts the pair out via `allowDuplicate`, so the collision is allowed. -/
+
+/-- Two writable accounts (no per-field constraint forces them apart). -/
+def dupStruct : AccountsStruct :=
+  { programId := Pubkey.zero
+  , fields :=
+    [ { name := "a", ty := AccountType.uncheckedAccount, constraints := [Constraint.mut] }
+    , { name := "b", ty := AccountType.uncheckedAccount, constraints := [Constraint.mut] } ] }
+
+/-- Opt-out twin: field `a` explicitly permits aliasing `b`. -/
+def dupOk : AccountsStruct :=
+  { programId := Pubkey.zero
+  , fields :=
+    [ { name := "a", ty := AccountType.uncheckedAccount, constraints := [Constraint.mut],
+        allowDuplicate := ["b"] }
+    , { name := "b", ty := AccountType.uncheckedAccount, constraints := [Constraint.mut] } ] }
+
+def mutAcct (k : Pubkey) : AccountInfo :=
+  { key := k, lamports := 0, data := ByteArray.empty, owner := Pubkey.zero,
+    rentEpoch := 0, isSigner := false, isWritable := true, executable := false }
+
+def keyA : Pubkey := Pubkey.ofBytes (List.replicate 32 1)
+def keyB : Pubkey := Pubkey.ofBytes (List.replicate 32 2)
+
+/-- Both writable, DISTINCT keys ⇒ accepted. -/
+def ctxDistinct : Ctx := Ctx.ofAccounts [mutAcct keyA, mutAcct keyB]
+/-- Both writable, SAME key (the duplicate-mutable attack) ⇒ rejected. -/
+def ctxSameKey : Ctx := Ctx.ofAccounts [mutAcct keyA, mutAcct keyA]
+
+#guard genValidate dupStruct ctxDistinct = true
+#guard genValidate dupStruct ctxSameKey = false
+-- opt-out: the SAME-key ctx is allowed because `a` permits aliasing `b`.
+#guard genValidate dupOk ctxSameKey = true
+
+theorem dupStruct_M4 : M4Subset dupStruct := by decide
+/-- Closed loop: the distinct-mut-key check agrees with the contract for any ctx. -/
+theorem dupStruct_sound (c : Ctx) : genValidate dupStruct c = true ↔ validates dupStruct c :=
+  genValidate_sound dupStruct c dupStruct_M4
+
+/-! ## rent_exempt closed-loop (M8.5)
+
+`rent_exempt = enforce` is modelled as `Constraint.rentExempt` in the Lean AST. The runtime
+check compares `accounts[i].lamports` against the opaque `rentExemptMinimum accounts[i].data.size`
+— an uninterpreted wall, exactly like `sha256`. We therefore demonstrate the two honest halves:
+
+* `M4Subset rentExemptStruct` reduces under `decide` (it only inspects `isM4Constraint`, which
+  is a concrete Bool match on the constructor — fully decidable, no opaque call).
+* The symbolic soundness arrow `genValidate_sound` instantiated at `rentExemptStruct` — valid
+  for ALL contexts, schematic over `rentExemptMinimum`.
+
+We intentionally DO NOT write `#guard genValidate rentExemptStruct ctx = true/false` over any
+concrete lamport value because `rentExemptMinimum` is OPAQUE and will not reduce under `decide`.
+The empirical accept/reject lives in the Rust litesvm tests (an under-funded account is rejected
+on-chain; a properly-funded account is accepted). -/
+
+/-- A single account with `rent_exempt = enforce`. The macro emits `Constraint.rentExempt`. -/
+def rentExemptStruct : AccountsStruct :=
+  { programId := Pubkey.zero
+  , fields := [ { name := "vault", ty := AccountType.uncheckedAccount,
+                  constraints := [Constraint.rentExempt] } ] }
+
+/-- `rentExemptStruct` is in the M4 subset (`isM4Constraint .rentExempt = true` is decidable). -/
+theorem rentExemptStruct_M4 : M4Subset rentExemptStruct := by decide
+
+/-- THE rent_exempt CLOSED LOOP (symbolic): for any context, the generated rent-exemption
+    validator agrees with the M1 contract — the soundness theorem instantiated at the
+    rent-exempt struct. Schematic over the opaque `rentExemptMinimum`. -/
+theorem rentExemptStruct_sound (c : Ctx) :
+    genValidate rentExemptStruct c = true ↔ validates rentExemptStruct c :=
+  genValidate_sound rentExemptStruct c rentExemptStruct_M4
 
 end VerifiedAnchor.Codegen.Examples

@@ -28,8 +28,43 @@ struct PdaSpec<'info> {
 fn lean_spec_seeds() {
     let expected = "\
 { programId := Pubkey.zero, fields :=
-  [ { name := \"pda\", ty := AccountType.uncheckedAccount, constraints := [Constraint.seeds [SeedSpec.literal (ByteArray.mk #[118, 97, 117, 108, 116]), SeedSpec.instrArg 0 4] BumpSpec.canonical] } ] }";
+  [ { name := \"pda\", ty := AccountType.uncheckedAccount, constraints := [Constraint.seeds [SeedSpec.literal (ByteArray.mk #[118, 97, 117, 108, 116]), SeedSpec.instrArg 0 4] BumpSpec.canonical none] } ] }";
     assert_eq!(PdaSpec::lean_spec(), expected);
+}
+
+#[derive(VerifiedAccounts)]
+struct PdaStoredBumpSpec<'info> {
+    #[account(seeds = [b"vault"], bump = arg(0))]
+    pda: UncheckedAccount<'info>,
+}
+
+/// The opt-in `bump = arg(0)` emits `BumpSpec.stored 0` — the exact constructor proven sound
+/// in Lean (`genConstraint_seeds_iff`, `.stored` case).
+#[test]
+fn lean_spec_seeds_stored_bump() {
+    let expected = "\
+{ programId := Pubkey.zero, fields :=
+  [ { name := \"pda\", ty := AccountType.uncheckedAccount, constraints := [Constraint.seeds [SeedSpec.literal (ByteArray.mk #[118, 97, 117, 108, 116])] (BumpSpec.stored 0) none] } ] }";
+    assert_eq!(PdaStoredBumpSpec::lean_spec(), expected);
+}
+
+const FOREIGN_PROG: verified_anchor::solana_program::pubkey::Pubkey =
+    verified_anchor::solana_program::pubkey::Pubkey::new_from_array([7u8; 32]);
+
+#[derive(VerifiedAccounts)]
+struct PdaForeignProgramSpec<'info> {
+    #[account(seeds = [b"vault"], seeds::program = FOREIGN_PROG, bump)]
+    pda: UncheckedAccount<'info>,
+}
+
+/// `seeds::program = <expr>` emits the schematic `(some Pubkey.zero)` third field — the same
+/// ∀-over-pubkey placeholder the soundness theorem covers (à la `owner`/`address`).
+#[test]
+fn lean_spec_seeds_program() {
+    let expected = "\
+{ programId := Pubkey.zero, fields :=
+  [ { name := \"pda\", ty := AccountType.uncheckedAccount, constraints := [Constraint.seeds [SeedSpec.literal (ByteArray.mk #[118, 97, 117, 108, 116])] BumpSpec.canonical (some Pubkey.zero)] } ] }";
+    assert_eq!(PdaForeignProgramSpec::lean_spec(), expected);
 }
 
 #[derive(VerifiedAccounts)]

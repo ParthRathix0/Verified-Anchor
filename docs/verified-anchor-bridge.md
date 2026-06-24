@@ -15,6 +15,12 @@ what is and is not proven.
 | `if accounts.len() < n { Err(NotEnoughAccounts) }` | `decide (c.length = s.fields.length)` | `WellFormed` |
 | `if data[8..40] != target.key { Err(WrongHasOne) }` | `genHasOne` (read 32 bytes at offset 8, compare to the looked-up key) | `satisfies … (.hasOne field)` |
 | `let (pda,_) = find_program_address(seeds, program_id); if accounts[i].key != pda { Err(WrongPda) }` | `genSeeds` (canonical PDA equals the account key; bump matches) | `satisfies … (.seeds ss bump)` |
+| `let pda = create_program_address(seeds_with_stored_bump, pid); if accounts[i].key != pda { Err(WrongPda) }` | `genSeeds` with `BumpSpec.stored` (re-derive via `createProgramAddress` at the bump byte from `instr_data[off]`, no canonical requirement) | `satisfies … (.seeds ss (BumpSpec.stored off))` |
+| `let pid = <expr>; let (pda,_) = find_program_address(seeds, pid); if key != pda { Err(WrongPda) }` | `genSeeds` with a `program : some pid` field on `Constraint.seeds` (derive PDA against a foreign program id) | `satisfies … (.seeds ss bump)` with the resolved `pid` |
+| `if accounts[i].key != &expected { Err(WrongAddress) }` | `genConstraint … (.address e) := decide (a.key = e)` | `satisfies … (.address e)` |
+| `if !accounts[i].executable { Err(NotExecutable) }` | `genConstraint … .executable := a.executable` | `satisfies … .executable` |
+| iterate over all `(i,j)` pairs of `mut` fields; `if accounts[i].key == accounts[j].key { Err(DuplicateAccount) }` (unless `allow_duplicate` opts out per pair) | `distinctMutKeys` folded into `genValidate` (struct-level check, all pairwise-distinct-key obligations) | `satisfies … (struct-level distinct-mut-keys)` |
+| `let min = rent_exempt_minimum(accounts[i].data.len()); if accounts[i].lamports < min { Err(NotRentExempt) }` | `genConstraint … .rentExempt` via opaque `rentExemptMinimum : Nat → Lamports` (see Honesty boundary below) | `satisfies … .rentExempt` |
 | `invoke(create_account(...)) + write disc` | `applyInit` (state transformer) | `init_establishes_post`: post-state has owner set and at least `space + 8` bytes |
 | `dest.lamports += t.lamports; t.lamports = 0; mark` | `applyClose` (state transformer) | `close_establishes_post`: post-state has lamports zero and a closed-account marker |
 
@@ -42,9 +48,10 @@ no `sorryAx`, no `Classical.choice`, no `native_decide`. Per-constraint lemmas
 (`genConstraint_{signer,mut,owner,discriminator,hasOne,seeds,executable,address}_iff`, plus
 `bumpMatchesB_iff`) connect each `gen*` to the corresponding `satisfies` case in the contract.
 
-`M4Subset s` characterises structs in scope: every field's combined implied-and-declared
-constraint list contains only
-`{signer, mut, owner, hasOne, discriminator, seeds, executable, address}`.
+`M4Subset s` (now covering all M8 features) characterises structs in scope: every field's
+combined implied-and-declared constraint list contains only
+`{signer, mut, owner, hasOne, discriminator, seeds, executable, address, rentExempt}` and
+struct-level `distinctMutKeys` is discharged.
 
 **Wrapper base checks are modelled, not just transcribed.** The macro's `wrapper_implied`
 emits base checks for two typed wrappers beyond what the explicit `#[account(...)]`
@@ -118,10 +125,20 @@ The `.seeds` clause is decidable but does not reduce under `decide` (the same wa
 `discriminator`); the Lean example shows the crypto-free `resolveSeeds` slicing concretely
 and the soundness arrow symbolically.
 
-**Canonical-only.** The verified subset derives via `find_program_address` (the canonical
-bump). A declared `bump = n` must equal the canonical bump. Stock Anchor's
-`bump = <stored>` form (re-derive via `create_program_address` with a possibly non-canonical
-bump) is intentionally outside the supported subset.
+**Canonical-only (default).** The verified subset derives via `find_program_address` (the
+canonical bump). A declared `bump = n` must equal the canonical bump. This is the safe
+default. Stock Anchor's `bump = <stored>` form — re-derive via `create_program_address` with
+a possibly non-canonical bump — is an explicit opt-in: write `bump = arg(off)` to read the
+bump byte from instruction-data offset `off`. This uses `createProgramAddress` (`BumpSpec.stored`
+on the Lean side) and is modelled and proven; the canonical requirement is intentionally
+absent. The opt-in is deliberate: stored bumps are less safe than canonical bumps, so they are
+never the silent default.
+
+**`seeds::program`.** A PDA may be derived against a foreign program id by writing
+`seeds::program = <expr>`. The Lean model adds a `program : Option Pubkey` field to
+`Constraint.seeds`; `none` means own program id (the default), `some pid` means the foreign
+id. `lean_spec` emits the schematic `(some Pubkey.zero)` placeholder (∀-over-pubkey, exactly
+like `owner` and `address`). The proof holds uniformly.
 
 **Instruction-arg seeds.** A seed may be a concrete slice of the instruction data
 (`SeedSpec.instrArg off len` on the Lean side; `arg(off, len)` on the Rust side). Offsets into
@@ -136,6 +153,34 @@ panic.
 mapping (`arg(off, len)` to offset and length) is transcription, backed by native tests
 against the real `find_program_address` and a litesvm on-chain accept/reject
 (`rust/verified-anchor/tests/runtime_seeds.rs`), not proved across the language boundary.
+
+## Distinct-mutable-account checking (safety value-add)
+
+`genValidate` now folds a struct-level `distinctMutKeys` predicate that checks every pair of
+`mut`-annotated accounts has a distinct key. This is proven correct (`distinctMutKeysB_iff`)
+and included in `genValidate_sound` at `M4Subset`. Stock Anchor does not perform this check
+automatically; verified-anchor's default is therefore **stricter than stock Anchor** here —
+the "duplicate mutable accounts" bug class is closed by construction.
+
+Per-pair opt-out: add `#[account(allow_duplicate = <field>)]` to suppress the check for one
+specific pair. This is the explicit, user-visible escape hatch. The opt-out is never silent.
+`VAError::DuplicateAccount` (code 14) is the rejection code.
+
+## Honesty boundary: `rentExemptMinimum`
+
+`rent_exempt = enforce` checks that an account holds at least the runtime rent-exempt
+minimum for its data size. The runtime function `Rent::is_exempt` is not modelled
+axiomatically — that would require trusting an external spec. Instead, the Lean model
+introduces an opaque function `rentExemptMinimum : Nat → Lamports` (a new honesty wall,
+analogous to the existing `sha256`/`isOnCurve` walls). The theorem `genValidate_sound` holds
+over this opaque constant; the proof does not depend on its numeric value.
+
+The correspondence between `rentExemptMinimum` and Solana's actual `Rent::is_exempt` is
+verified **empirically**: the litesvm runtime tests exercise `rent_exempt = enforce` against
+a real Solana VM and confirm accept/reject behaviour matches. This is not a proof gap — it is
+an honest statement of what is and is not provable across the Rust/Solana boundary. The
+`rent_exempt = skip` annotation omits the check entirely (emits no constraint), as an explicit
+opt-out consistent with the safe-by-default tenet.
 
 ## Developer surface
 
