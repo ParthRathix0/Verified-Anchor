@@ -14,6 +14,11 @@ inductive SeedSpec where
 inductive BumpSpec where
   | declared (b : UInt8)
   | canonical
+  /-- Opt-in, non-canonical "stored" bump: the bump byte is read from the instruction data
+      at byte offset `argOff`. The PDA is derived with THAT specific bump via
+      `createProgramAddress` — there is NO canonical `findProgramAddress` requirement. This is
+      the deliberately less-safe explicit opt-in; canonical stays the safe default. -/
+  | stored (argOff : Nat)
   deriving Inhabited, DecidableEq
 
 /-- The Anchor constraint subset in scope for v1. -/
@@ -22,13 +27,27 @@ inductive Constraint where
   | mut
   | owner          (expected : Pubkey)
   | hasOne         (field : String)
-  | seeds          (seeds : List SeedSpec) (bump : BumpSpec)
+  /-- `program` is the `seeds::program = <expr>` override: `none` ⇒ derive the PDA against the
+      struct's own `s.programId` (back-compat); `some p` ⇒ derive against the FOREIGN id `p`. -/
+  | seeds          (seeds : List SeedSpec) (bump : BumpSpec) (program : Option Pubkey)
   | init           (payer : String) (space : Nat) (owner : Pubkey)
   | close          (dest : String)
   | discriminator  (expected : ByteArray)   -- 8 bytes
   | executable                              -- account is executable (Program<P> base check)
   | address        (expected : Pubkey)      -- account key equals `expected` (Program<P> id)
+  /-- `rent_exempt = enforce`: the account holds at least the rent-exempt minimum lamports for
+      its data size. The minimum is the OPAQUE `rentExemptMinimum a.data.size` (an uninterpreted
+      wall like `sha256`, cross-checked empirically by litesvm). `rent_exempt = skip` emits NO
+      constraint (the documented SAFE-BY-DEFAULT opt-out). -/
+  | rentExempt
   deriving Inhabited
+
+/-- Whether a constraint is the `mut` (writable) marker. A constructor test rather than full
+    `DecidableEq Constraint` — `Constraint` carries `ByteArray` payloads that lack
+    `DecidableEq`, so we test the single constructor the distinct-mut-key check cares about. -/
+def Constraint.isMut : Constraint → Bool
+  | .mut => true
+  | _    => false
 
 /-- Account wrapper types; each implies certain base constraints. -/
 inductive AccountType where
@@ -62,6 +81,11 @@ structure AccountField where
   name        : String
   ty          : AccountType
   constraints : List Constraint
+  /-- Per-field opt-out for the struct-level distinct-mutable-keys check (M8.4): the names of
+      fields THIS field is explicitly permitted to alias. A `mut`/`mut` pair `(i, fi), (j, fj)`
+      is EXEMPT iff `fj.name ∈ fi.allowDuplicate ∨ fi.name ∈ fj.allowDuplicate`. The default
+      `[]` keeps every existing `{ name, ty, constraints }` literal compiling unchanged. -/
+  allowDuplicate : List String := []
   deriving Inhabited
 
 structure AccountsStruct where

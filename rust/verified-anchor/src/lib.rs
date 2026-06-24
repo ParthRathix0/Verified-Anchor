@@ -38,6 +38,16 @@ pub enum VAError {
     WrongBump { field: &'static str },
     WrongDiscriminator { field: &'static str },
     BorshFailed { field: &'static str },
+    WrongAddress { field: &'static str },
+    NotExecutable { field: &'static str },
+    /// Two `mut` accounts resolved to the SAME key (the "duplicate mutable accounts" vuln
+    /// class). Rejected automatically unless the pair is explicitly opted out via
+    /// `#[account(allow_duplicate = <other_field>)]`. `field_a`/`field_b` are the colliding
+    /// struct field names (declaration order).
+    DuplicateAccount { field_a: &'static str, field_b: &'static str },
+    /// Account does not hold enough lamports to be rent-exempt.
+    /// Emitted by `rent_exempt = enforce`; accounts must satisfy `Rent::is_exempt`.
+    NotRentExempt { field: &'static str },
 }
 
 impl core::fmt::Display for VAError {
@@ -56,6 +66,12 @@ impl core::fmt::Display for VAError {
             VAError::WrongBump { field } => write!(f, "account `{field}` has a non-canonical bump"),
             VAError::WrongDiscriminator { field } => write!(f, "account `{field}` has the wrong 8-byte discriminator"),
             VAError::BorshFailed { field } => write!(f, "Borsh deserialization failed for `{field}`"),
+            VAError::WrongAddress { field } => write!(f, "account `{field}` has the wrong address"),
+            VAError::NotExecutable { field } => write!(f, "account `{field}` is not executable"),
+            VAError::DuplicateAccount { field_a, field_b } =>
+                write!(f, "mutable accounts `{field_a}` and `{field_b}` are the same account"),
+            VAError::NotRentExempt { field } =>
+                write!(f, "account `{field}` is not rent-exempt"),
         }
     }
 }
@@ -78,6 +94,10 @@ impl From<VAError> for solana_program::program_error::ProgramError {
             VAError::WrongBump { .. } => 9,
             VAError::WrongDiscriminator { .. } => 10,
             VAError::BorshFailed { .. } => 11,
+            VAError::WrongAddress { .. } => 12,
+            VAError::NotExecutable { .. } => 13,
+            VAError::DuplicateAccount { .. } => 14,
+            VAError::NotRentExempt { .. } => 15,
         };
         solana_program::program_error::ProgramError::Custom(code)
     }

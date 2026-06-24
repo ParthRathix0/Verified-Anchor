@@ -175,6 +175,95 @@ fn seeds_declared_bump_rejects_non_canonical() {
     }
 }
 
+#[derive(VerifiedAccounts)]
+struct PdaStoredBump<'info> {
+    #[account(seeds = [b"vault"], bump = arg(0))]
+    pda: UncheckedAccount<'info>,
+}
+
+/// Find a GENUINELY NON-CANONICAL off-curve bump: one strictly below the canonical bump.
+/// `find_program_address` returns the HIGHEST off-curve bump, so we search ascending from 0
+/// up to (but not including) `canon_bump` for the first b where `create_program_address`
+/// succeeds.  The resulting address is DIFFERENT from the canonical PDA (proven by
+/// `assert_ne!` in the caller).
+fn non_canonical_stored_bump(program_id: &Pubkey) -> (u8, Pubkey) {
+    let (_canon_key, canon_bump) = Pubkey::find_program_address(&[b"vault"], program_id);
+    for b in 0u8..canon_bump {
+        if let Ok(pk) = Pubkey::create_program_address(&[b"vault", &[b]], program_id) {
+            return (b, pk);
+        }
+    }
+    panic!("no non-canonical off-curve bump found below canonical bump {canon_bump} for b\"vault\" — change the seed literal");
+}
+
+#[test]
+fn seeds_stored_bump_accepts_matching_pda() {
+    let program_id = Pubkey::new_unique();
+    let (canon_key, canon_bump) = Pubkey::find_program_address(&[b"vault"], &program_id);
+    let (bump, pda) = non_canonical_stored_bump(&program_id);
+    // The stored bump MUST be strictly below the canonical bump, and the derived address
+    // MUST differ from the canonical PDA — this proves we are exercising a genuinely
+    // non-canonical PDA, not just re-testing what a canonical validator would also accept.
+    assert!(bump < canon_bump, "stored bump {bump} must be below canonical bump {canon_bump}");
+    assert_ne!(pda, canon_key, "non-canonical PDA must differ from canonical PDA");
+    // instr data byte 0 is the stored bump.
+    let mut a = Acct { key: pda, owner: Pubkey::new_unique(), lamports: 1, data: vec![], is_signer: false, is_writable: false };
+    let accts = [a.info()];
+    assert_eq!(PdaStoredBump::validate(&accts, &[bump], &program_id), Ok(()));
+}
+
+#[test]
+fn seeds_stored_bump_rejects_wrong_pda() {
+    let program_id = Pubkey::new_unique();
+    let (bump, _pda) = non_canonical_stored_bump(&program_id);
+    let mut a = Acct { key: Pubkey::new_unique(), owner: Pubkey::new_unique(), lamports: 1, data: vec![], is_signer: false, is_writable: false };
+    let accts = [a.info()];
+    assert_eq!(PdaStoredBump::validate(&accts, &[bump], &program_id), Err(VAError::WrongPda { field: "pda" }));
+}
+
+#[test]
+fn seeds_stored_bump_rejects_short_instr_data() {
+    let program_id = Pubkey::new_unique();
+    let (_bump, pda) = non_canonical_stored_bump(&program_id);
+    // empty instr data => no byte at offset 0 => clean reject (mirrors the Lean none-safe spec).
+    let mut a = Acct { key: pda, owner: Pubkey::new_unique(), lamports: 1, data: vec![], is_signer: false, is_writable: false };
+    let accts = [a.info()];
+    assert_eq!(PdaStoredBump::validate(&accts, &[], &program_id), Err(VAError::WrongPda { field: "pda" }));
+}
+
+const FOREIGN_PROGRAM: Pubkey = Pubkey::new_from_array([9u8; 32]);
+
+/// `seeds::program = <expr>` derives the PDA against the FOREIGN program id, not the struct's
+/// own `program_id`. The Lean model carries this as the third `Constraint.seeds` field.
+#[derive(VerifiedAccounts)]
+struct PdaForeignProgram<'info> {
+    #[account(seeds = [b"vault"], seeds::program = FOREIGN_PROGRAM, bump)]
+    pda: UncheckedAccount<'info>,
+}
+
+#[test]
+fn seeds_program_accepts_foreign_derived_pda() {
+    // The struct is invoked under THIS program id, but the PDA is derived against FOREIGN_PROGRAM.
+    let program_id = Pubkey::new_unique();
+    let (foreign_pda, _b) = Pubkey::find_program_address(&[b"vault"], &FOREIGN_PROGRAM);
+    let mut a = Acct { key: foreign_pda, owner: Pubkey::new_unique(), lamports: 1, data: vec![], is_signer: false, is_writable: false };
+    let accts = [a.info()];
+    assert_eq!(PdaForeignProgram::validate(&accts, &[], &program_id), Ok(()));
+}
+
+#[test]
+fn seeds_program_rejects_own_program_pda() {
+    // The PDA derived against the struct's OWN program id is the WRONG one here — the override
+    // must derive against FOREIGN_PROGRAM, so this is rejected (proves the override actually bites).
+    let program_id = Pubkey::new_unique();
+    let (own_pda, _b) = Pubkey::find_program_address(&[b"vault"], &program_id);
+    let (foreign_pda, _fb) = Pubkey::find_program_address(&[b"vault"], &FOREIGN_PROGRAM);
+    assert_ne!(own_pda, foreign_pda, "own-program PDA must differ from the foreign-program PDA");
+    let mut a = Acct { key: own_pda, owner: Pubkey::new_unique(), lamports: 1, data: vec![], is_signer: false, is_writable: false };
+    let accts = [a.info()];
+    assert_eq!(PdaForeignProgram::validate(&accts, &[], &program_id), Err(VAError::WrongPda { field: "pda" }));
+}
+
 fn disc(name: &str) -> [u8; 8] {
     let mut h = Sha256::new();
     h.update(b"account:");
@@ -426,6 +515,63 @@ fn execute_lifecycle_rejects_short_accounts() {
     );
 }
 
+// ── Task 1 (M8.1): explicit address / executable annotations ─────────────────────────
+
+const EXPECTED_ID: Pubkey = Pubkey::new_from_array([0xABu8; 32]);
+
+#[derive(VerifiedAccounts)]
+struct WithAddr<'info> {
+    #[account(address = crate::EXPECTED_ID)]
+    cfg: UncheckedAccount<'info>,
+    #[account(executable)]
+    prog: UncheckedAccount<'info>,
+}
+
+// Note: AccountInfo::new last-but-one bool is `executable`.
+fn make_info_exec(a: &mut Acct, executable: bool) -> AccountInfo {
+    AccountInfo::new(&a.key, a.is_signer, a.is_writable,
+        &mut a.lamports, &mut a.data, &a.owner, executable, 0)
+}
+
+#[test]
+fn address_and_executable_accept_valid() {
+    let mut cfg = Acct { key: EXPECTED_ID, owner: Pubkey::new_unique(), lamports: 1,
+                         data: vec![], is_signer: false, is_writable: false };
+    let mut prog = Acct { key: Pubkey::new_unique(), owner: Pubkey::new_unique(), lamports: 1,
+                          data: vec![], is_signer: false, is_writable: false };
+    let cfg_info = make_info_exec(&mut cfg, false);
+    let prog_info = make_info_exec(&mut prog, true);
+    let accts = [cfg_info, prog_info];
+    assert_eq!(WithAddr::validate(&accts, &[], &any_pid()), Ok(()));
+}
+
+#[test]
+fn address_rejects_wrong_key() {
+    let wrong_key = Pubkey::new_unique();  // not EXPECTED_ID
+    let mut cfg = Acct { key: wrong_key, owner: Pubkey::new_unique(), lamports: 1,
+                         data: vec![], is_signer: false, is_writable: false };
+    let mut prog = Acct { key: Pubkey::new_unique(), owner: Pubkey::new_unique(), lamports: 1,
+                          data: vec![], is_signer: false, is_writable: false };
+    let cfg_info = make_info_exec(&mut cfg, false);
+    let prog_info = make_info_exec(&mut prog, true);
+    let accts = [cfg_info, prog_info];
+    assert_eq!(WithAddr::validate(&accts, &[], &any_pid()),
+               Err(VAError::WrongAddress { field: "cfg" }));
+}
+
+#[test]
+fn executable_rejects_non_executable() {
+    let mut cfg = Acct { key: EXPECTED_ID, owner: Pubkey::new_unique(), lamports: 1,
+                         data: vec![], is_signer: false, is_writable: false };
+    let mut prog = Acct { key: Pubkey::new_unique(), owner: Pubkey::new_unique(), lamports: 1,
+                          data: vec![], is_signer: false, is_writable: false };
+    let cfg_info = make_info_exec(&mut cfg, false);
+    let prog_info = make_info_exec(&mut prog, false);  // not executable
+    let accts = [cfg_info, prog_info];
+    assert_eq!(WithAddr::validate(&accts, &[], &any_pid()),
+               Err(VAError::NotExecutable { field: "prog" }));
+}
+
 #[verified_anchor::account]
 pub struct VaultAttr { pub authority: solana_program::pubkey::Pubkey, pub amount: u64 }
 
@@ -438,4 +584,113 @@ fn account_attribute_implies_borsh_and_discriminator() {
     let v2: VaultAttr = borsh::from_slice(&bytes).unwrap();
     assert_eq!(v2.amount, 42);
     assert_eq!(v2.authority, v.authority);
+}
+
+// ---- M8.5: rent_exempt = enforce / skip ----
+//
+// Native tests can't call Rent::get() (no sysvar runtime). So we only verify:
+//   1. Structs with `rent_exempt = enforce` and `rent_exempt = skip` derive correctly.
+//   2. lean_spec() output for each is as expected (Constraint.rentExempt vs no rent entry).
+// The empirical on-chain reject/accept lives in runtime_rent.rs (litesvm).
+
+#[derive(VerifiedAccounts)]
+struct RentEnforce<'info> {
+    #[account(rent_exempt = enforce)]
+    vault: UncheckedAccount<'info>,
+}
+
+#[derive(VerifiedAccounts)]
+struct RentSkip<'info> {
+    #[account(rent_exempt = skip)]
+    vault: UncheckedAccount<'info>,
+}
+
+#[test]
+fn rent_enforce_lean_spec_contains_rentexempt() {
+    let spec = RentEnforce::lean_spec();
+    assert!(
+        spec.contains("Constraint.rentExempt"),
+        "rent_exempt = enforce must emit Constraint.rentExempt in lean_spec; got: {spec}"
+    );
+}
+
+#[test]
+fn rent_skip_lean_spec_has_no_rentexempt() {
+    let spec = RentSkip::lean_spec();
+    assert!(
+        !spec.contains("rentExempt"),
+        "rent_exempt = skip must NOT emit any rentExempt in lean_spec; got: {spec}"
+    );
+}
+
+// ---- M8.4: struct-level distinct mutable keys + explicit opt-out ----
+
+// Two writable accounts. The macro auto-adds the pairwise distinct-key check.
+#[derive(VerifiedAccounts)]
+struct DupMut<'info> {
+    #[account(mut)]
+    a: UncheckedAccount<'info>,
+    #[account(mut)]
+    b: UncheckedAccount<'info>,
+}
+
+// Same struct, but `a` is explicitly permitted to alias `b`: the pair is opted out.
+#[derive(VerifiedAccounts)]
+struct DupMutAllowed<'info> {
+    #[account(mut, allow_duplicate = b)]
+    a: UncheckedAccount<'info>,
+    #[account(mut)]
+    b: UncheckedAccount<'info>,
+}
+
+// A `mut` field paired with a NON-mut field: no distinct-key obligation (only mut pairs).
+#[derive(VerifiedAccounts)]
+struct OneMut<'info> {
+    #[account(mut)]
+    a: UncheckedAccount<'info>,
+    b: UncheckedAccount<'info>,
+}
+
+/// A writable account at a chosen key.
+fn writable_at(key: Pubkey) -> Acct {
+    Acct { key, owner: Pubkey::new_unique(), lamports: 1, data: vec![], is_signer: false, is_writable: true }
+}
+
+#[test]
+fn dup_mut_accepts_distinct_keys() {
+    let mut a = writable_at(Pubkey::new_unique());
+    let mut b = writable_at(Pubkey::new_unique());
+    let accts = [a.info(), b.info()];
+    assert_eq!(DupMut::validate(&accts, &[], &any_pid()), Ok(()));
+}
+
+#[test]
+fn dup_mut_rejects_same_key() {
+    let dup = Pubkey::new_unique();
+    let mut a = writable_at(dup);
+    let mut b = writable_at(dup);
+    let accts = [a.info(), b.info()];
+    assert_eq!(DupMut::validate(&accts, &[], &any_pid()),
+               Err(VAError::DuplicateAccount { field_a: "a", field_b: "b" }));
+}
+
+#[test]
+fn dup_mut_opt_out_allows_same_key() {
+    let dup = Pubkey::new_unique();
+    let mut a = writable_at(dup);
+    let mut b = writable_at(dup);
+    let accts = [a.info(), b.info()];
+    // The explicit `allow_duplicate = b` opt-out lets the collision through.
+    assert_eq!(DupMutAllowed::validate(&accts, &[], &any_pid()), Ok(()));
+}
+
+#[test]
+fn one_mut_pair_has_no_distinct_obligation() {
+    // a (mut) and b (read-only) share a key — only mut/mut pairs are checked, so this is fine.
+    let dup = Pubkey::new_unique();
+    let mut a = writable_at(dup);
+    let mut b = Acct { key: dup, owner: Pubkey::new_unique(), lamports: 1, data: vec![],
+                       is_signer: false, is_writable: false };
+    let accts = [a.info(), b.info()];
+    assert_eq!(OneMut::validate(&accts, &[], &any_pid()), Ok(()));
 }

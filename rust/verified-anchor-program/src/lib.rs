@@ -31,6 +31,41 @@ struct CheckPda<'info> {
     pda: verified_anchor::UncheckedAccount<'info>,
 }
 
+/// validate a PDA with an opt-in stored (non-canonical) bump read from instr data byte 0.
+/// Accounts: [pda]. Instruction data: [3, stored_bump].
+#[derive(VerifiedAccounts)]
+struct CheckStoredBump<'info> {
+    #[account(seeds = [b"vault"], bump = arg(0))]
+    pda: verified_anchor::UncheckedAccount<'info>,
+}
+
+/// A fixed FOREIGN program id the PDA derives against, regardless of which program runs this.
+const FOREIGN_PROGRAM: Pubkey = Pubkey::new_from_array([9u8; 32]);
+
+/// validate a PDA derived against a FOREIGN program id via `seeds::program`.
+/// Accounts: [pda]. Instruction data: [4].
+#[derive(VerifiedAccounts)]
+struct CheckForeignPda<'info> {
+    #[account(seeds = [b"vault"], seeds::program = FOREIGN_PROGRAM, bump)]
+    pda: verified_anchor::UncheckedAccount<'info>,
+}
+
+/// validate that an account is rent-exempt. Accounts: [vault]. Instruction data: [5].
+/// `rent_exempt = enforce` — rejects under-funded accounts on-chain.
+#[derive(VerifiedAccounts)]
+struct CheckRentExempt<'info> {
+    #[account(rent_exempt = enforce)]
+    vault: verified_anchor::UncheckedAccount<'info>,
+}
+
+/// validate an account with `rent_exempt = skip` — the opt-out.
+/// Under-funded accounts pass through. Accounts: [vault]. Instruction data: [6].
+#[derive(VerifiedAccounts)]
+struct CheckRentSkip<'info> {
+    #[account(rent_exempt = skip)]
+    vault: verified_anchor::UncheckedAccount<'info>,
+}
+
 entrypoint!(process);
 pub fn process(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]) -> ProgramResult {
     match data.first() {
@@ -50,6 +85,30 @@ pub fn process(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]) -> Pr
         Some(2) => {
             // instr_data after the 1-byte tag carries the 4-byte seed arg
             CheckPda::validate(accounts, &data[1..], program_id)
+                .map_err(|_| ProgramError::InvalidArgument)?;
+            Ok(())
+        }
+        Some(3) => {
+            // instr_data after the 1-byte tag carries the stored bump byte at offset 0
+            CheckStoredBump::validate(accounts, &data[1..], program_id)
+                .map_err(|_| ProgramError::InvalidArgument)?;
+            Ok(())
+        }
+        Some(4) => {
+            // PDA derived against the FOREIGN program id (seeds::program), not `program_id`.
+            CheckForeignPda::validate(accounts, &data[1..], program_id)
+                .map_err(|_| ProgramError::InvalidArgument)?;
+            Ok(())
+        }
+        Some(5) => {
+            // rent_exempt = enforce: rejects account that is not rent-exempt.
+            CheckRentExempt::validate(accounts, &data[1..], program_id)
+                .map_err(ProgramError::from)?;
+            Ok(())
+        }
+        Some(6) => {
+            // rent_exempt = skip: any account passes (opt-out, no check).
+            CheckRentSkip::validate(accounts, &data[1..], program_id)
                 .map_err(|_| ProgramError::InvalidArgument)?;
             Ok(())
         }

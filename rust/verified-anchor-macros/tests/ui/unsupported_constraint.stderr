@@ -1,4 +1,4 @@
-error: `realloc` is a stock-Anchor constraint that verified-anchor does not support; verified-anchor supports: signer, mut, owner, has_one, init, payer, space, close, seeds, bump, discriminator. See docs/migrating-from-anchor.md
+error: `realloc` is a stock-Anchor constraint that verified-anchor does not support; verified-anchor supports: signer, mut, owner, has_one, allow_duplicate, init, payer, space, close, seeds, seeds::program, bump, discriminator, address, executable, rent_exempt. See docs/migrating-from-anchor.md
  --> tests/ui/unsupported_constraint.rs:5:15
   |
 5 |     #[account(realloc = 8)]
