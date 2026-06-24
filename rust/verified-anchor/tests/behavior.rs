@@ -585,3 +585,75 @@ fn account_attribute_implies_borsh_and_discriminator() {
     assert_eq!(v2.amount, 42);
     assert_eq!(v2.authority, v.authority);
 }
+
+// ---- M8.4: struct-level distinct mutable keys + explicit opt-out ----
+
+// Two writable accounts. The macro auto-adds the pairwise distinct-key check.
+#[derive(VerifiedAccounts)]
+struct DupMut<'info> {
+    #[account(mut)]
+    a: UncheckedAccount<'info>,
+    #[account(mut)]
+    b: UncheckedAccount<'info>,
+}
+
+// Same struct, but `a` is explicitly permitted to alias `b`: the pair is opted out.
+#[derive(VerifiedAccounts)]
+struct DupMutAllowed<'info> {
+    #[account(mut, allow_duplicate = b)]
+    a: UncheckedAccount<'info>,
+    #[account(mut)]
+    b: UncheckedAccount<'info>,
+}
+
+// A `mut` field paired with a NON-mut field: no distinct-key obligation (only mut pairs).
+#[derive(VerifiedAccounts)]
+struct OneMut<'info> {
+    #[account(mut)]
+    a: UncheckedAccount<'info>,
+    b: UncheckedAccount<'info>,
+}
+
+/// A writable account at a chosen key.
+fn writable_at(key: Pubkey) -> Acct {
+    Acct { key, owner: Pubkey::new_unique(), lamports: 1, data: vec![], is_signer: false, is_writable: true }
+}
+
+#[test]
+fn dup_mut_accepts_distinct_keys() {
+    let mut a = writable_at(Pubkey::new_unique());
+    let mut b = writable_at(Pubkey::new_unique());
+    let accts = [a.info(), b.info()];
+    assert_eq!(DupMut::validate(&accts, &[], &any_pid()), Ok(()));
+}
+
+#[test]
+fn dup_mut_rejects_same_key() {
+    let dup = Pubkey::new_unique();
+    let mut a = writable_at(dup);
+    let mut b = writable_at(dup);
+    let accts = [a.info(), b.info()];
+    assert_eq!(DupMut::validate(&accts, &[], &any_pid()),
+               Err(VAError::DuplicateAccount { field_a: "a", field_b: "b" }));
+}
+
+#[test]
+fn dup_mut_opt_out_allows_same_key() {
+    let dup = Pubkey::new_unique();
+    let mut a = writable_at(dup);
+    let mut b = writable_at(dup);
+    let accts = [a.info(), b.info()];
+    // The explicit `allow_duplicate = b` opt-out lets the collision through.
+    assert_eq!(DupMutAllowed::validate(&accts, &[], &any_pid()), Ok(()));
+}
+
+#[test]
+fn one_mut_pair_has_no_distinct_obligation() {
+    // a (mut) and b (read-only) share a key — only mut/mut pairs are checked, so this is fine.
+    let dup = Pubkey::new_unique();
+    let mut a = writable_at(dup);
+    let mut b = Acct { key: dup, owner: Pubkey::new_unique(), lamports: 1, data: vec![],
+                       is_signer: false, is_writable: false };
+    let accts = [a.info(), b.info()];
+    assert_eq!(OneMut::validate(&accts, &[], &any_pid()), Ok(()));
+}
