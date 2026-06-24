@@ -1,5 +1,6 @@
 import VerifiedAnchor.Constraints.Context
 import VerifiedAnchor.Solana.Crypto
+import VerifiedAnchor.Solana.Rent
 
 /-- `o` holds some value satisfying `P`. The single combinator all constraint cases are
     built from, so decidability is compositional.
@@ -56,6 +57,10 @@ def satisfies (s : AccountsStruct) (c : Ctx) (idx : Nat) (f : AccountField) :
   | .owner expected => (Ctx.atField s c idx).satisfiesSome (fun a => a.owner = expected)
   | .executable => (Ctx.atField s c idx).satisfiesSome (fun a => a.executable = true)
   | .address expected => (Ctx.atField s c idx).satisfiesSome (fun a => a.key = expected)
+  | .rentExempt =>
+      -- The account's balance covers the (opaque) rent-exempt minimum for its data size.
+      -- `≤` on `UInt64` is decidable, so the `Decidable (satisfies)` instance still derives.
+      (Ctx.atField s c idx).satisfiesSome (fun a => rentExemptMinimum a.data.size ≤ a.lamports)
   | .discriminator d => (Ctx.atField s c idx).satisfiesSome (fun a => hasDiscriminator a d)
   | .hasOne field =>
       (Ctx.atField s c idx).satisfiesSome (fun a =>

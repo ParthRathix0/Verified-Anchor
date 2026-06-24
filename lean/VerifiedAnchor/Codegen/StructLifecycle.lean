@@ -62,6 +62,7 @@ theorem lifecycle_sound (s : AccountsStruct) (h : StructLifecycleWF s) :
   | seeds ss b program => trivial
   | executable => trivial
   | address e => trivial
+  | rentExempt => trivial
 
 /-- Sanity: a struct whose `init` payer resolves to a different field is well-formed; one
     whose payer resolves to itself is not. (Crypto-free, so `decide` reduces.) -/

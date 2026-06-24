@@ -35,6 +35,11 @@ inductive Constraint where
   | discriminator  (expected : ByteArray)   -- 8 bytes
   | executable                              -- account is executable (Program<P> base check)
   | address        (expected : Pubkey)      -- account key equals `expected` (Program<P> id)
+  /-- `rent_exempt = enforce`: the account holds at least the rent-exempt minimum lamports for
+      its data size. The minimum is the OPAQUE `rentExemptMinimum a.data.size` (an uninterpreted
+      wall like `sha256`, cross-checked empirically by litesvm). `rent_exempt = skip` emits NO
+      constraint (the documented SAFE-BY-DEFAULT opt-out). -/
+  | rentExempt
   deriving Inhabited
 
 /-- Whether a constraint is the `mut` (writable) marker. A constructor test rather than full
