@@ -37,6 +37,13 @@ inductive Constraint where
   | address        (expected : Pubkey)      -- account key equals `expected` (Program<P> id)
   deriving Inhabited
 
+/-- Whether a constraint is the `mut` (writable) marker. A constructor test rather than full
+    `DecidableEq Constraint` — `Constraint` carries `ByteArray` payloads that lack
+    `DecidableEq`, so we test the single constructor the distinct-mut-key check cares about. -/
+def Constraint.isMut : Constraint → Bool
+  | .mut => true
+  | _    => false
+
 /-- Account wrapper types; each implies certain base constraints. -/
 inductive AccountType where
   | account          (typeName : String) (layout : FieldLayout) (programId : Pubkey)
@@ -69,6 +76,11 @@ structure AccountField where
   name        : String
   ty          : AccountType
   constraints : List Constraint
+  /-- Per-field opt-out for the struct-level distinct-mutable-keys check (M8.4): the names of
+      fields THIS field is explicitly permitted to alias. A `mut`/`mut` pair `(i, fi), (j, fj)`
+      is EXEMPT iff `fj.name ∈ fi.allowDuplicate ∨ fi.name ∈ fj.allowDuplicate`. The default
+      `[]` keeps every existing `{ name, ty, constraints }` literal compiling unchanged. -/
+  allowDuplicate : List String := []
   deriving Inhabited
 
 structure AccountsStruct where
