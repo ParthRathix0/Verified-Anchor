@@ -330,10 +330,44 @@ fn typed_program_id() -> Pubkey {
     Pubkey::new_from_array([0x0Bu8; 32])
 }
 
-/// First call with a fresh (system-owned, empty) account initialises it:
-/// the account becomes program-owned and has at least 8 bytes of data.
+/// The seeded PDA the `InitIfNeeded` struct identifies: `seeds = [b"counter"]`.
+/// Matches `#[account(init_if_needed, ..., seeds = [b"counter"], bump)]` in the program.
+fn counter_pda(program_id: &Pubkey) -> (Pubkey, u8) {
+    Pubkey::find_program_address(&[b"counter"], program_id)
+}
+
+/// Counter::DISCRIMINATOR = sha256(b"account:Counter")[..8] — the real Anchor-wire discriminator
+/// the codegen now stamps into the fresh PDA. Recomputed here so the test asserts the exact bytes.
+fn counter_discriminator() -> [u8; 8] {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(b"account:");
+    h.update(b"Counter");
+    let out = h.finalize();
+    let mut d = [0u8; 8];
+    d.copy_from_slice(&out[..8]);
+    d
+}
+
+/// Build the tag-10 instruction. `pda_signer` is only meaningful for account metas — the PDA
+/// itself never signs the tx; the program signs the create_account CPI with the bump seed.
+fn init_if_needed_ix(program_id: Pubkey, pda: Pubkey, payer: Pubkey) -> Instruction {
+    Instruction {
+        program_id,
+        data: vec![10u8], // tag 10 = InitIfNeeded
+        accounts: vec![
+            AccountMeta::new(pda, false),
+            AccountMeta::new(payer, true),
+            AccountMeta::new_readonly(system_program_id(), false),
+        ],
+    }
+}
+
+/// Assertion (1): first call on a FRESH (system-owned, non-existent) PDA creates it via the
+/// normal `validate` + `execute_lifecycle` drop-in — the account becomes program-owned, sized,
+/// funded, and carries the REAL `Counter` discriminator (stamped by the codegen, not the test).
 #[test]
-fn init_if_needed_first_call_creates_account() {
+fn init_if_needed_first_call_creates_pda() {
     let mut svm = LiteSVM::new();
     let program_id = typed_program_id();
     svm.add_program_from_file(program_id, so_path()).expect("load .so");
@@ -341,43 +375,33 @@ fn init_if_needed_first_call_creates_account() {
     let payer = Keypair::new();
     svm.airdrop(&payer.pubkey(), 100_000_000).unwrap();
 
-    let data_acct = Keypair::new();
-    // Account does not exist yet (system-owned, empty) — first call must create it.
+    let (pda, _bump) = counter_pda(&program_id);
+    // PDA does not exist yet (system-owned, empty) — first call must create it.
 
-    let ix = Instruction {
-        program_id,
-        data: vec![10u8], // tag 10 = InitIfNeeded
-        accounts: vec![
-            AccountMeta::new(data_acct.pubkey(), true),
-            AccountMeta::new(payer.pubkey(), true),
-            AccountMeta::new_readonly(system_program_id(), false),
-        ],
-    };
+    let ix = init_if_needed_ix(program_id, pda, payer.pubkey());
     let bh = svm.latest_blockhash();
-    let tx = Transaction::new(&[&payer, &data_acct], Message::new(&[ix], Some(&payer.pubkey())), bh);
+    let tx = Transaction::new(&[&payer], Message::new(&[ix], Some(&payer.pubkey())), bh);
     let result = svm.send_transaction(tx);
     assert!(
         result.is_ok(),
-        "init_if_needed first call must succeed: {:?}",
+        "init_if_needed first call must succeed on a fresh PDA: {:?}",
         result.err().map(|e| e.meta.logs)
     );
 
-    let created = svm
-        .get_account(&data_acct.pubkey())
-        .expect("account must exist after first call");
+    let created = svm.get_account(&pda).expect("PDA must exist after first call");
+    assert_eq!(created.owner, program_id, "PDA must be program-owned after init");
+    assert!(created.data.len() >= 8, "PDA must have at least 8 bytes after init");
+    assert!(created.lamports > 0, "PDA must be funded after init");
     assert_eq!(
-        created.owner, program_id,
-        "account must be owned by the program after init"
+        &created.data[0..8],
+        &counter_discriminator(),
+        "codegen must stamp the REAL Counter discriminator into the fresh PDA"
     );
-    assert!(
-        created.data.len() >= 8,
-        "account must have at least 8 bytes after init"
-    );
-    assert!(created.lamports > 0, "account must be funded after init");
 }
 
-/// Second call on an already-initialised account succeeds without re-creating it
-/// (the needs-init guard short-circuits when the discriminator is non-zero).
+/// Assertion (2): second call on the now-initialised PDA is ACCEPTED (no re-init): lamports,
+/// owner, and data (including the discriminator) are preserved. Proves the drop-in idempotence
+/// and that the reinit-guard's else-branch accepts a valid program-owned, sized account.
 #[test]
 fn init_if_needed_second_call_accepted_not_reinit() {
     let mut svm = LiteSVM::new();
@@ -387,41 +411,23 @@ fn init_if_needed_second_call_accepted_not_reinit() {
     let payer = Keypair::new();
     svm.airdrop(&payer.pubkey(), 100_000_000).unwrap();
 
-    let data_acct = Keypair::new();
+    let (pda, _bump) = counter_pda(&program_id);
 
-    // ── first call: initialise the account ──
-    let ix1 = Instruction {
-        program_id,
-        data: vec![10u8],
-        accounts: vec![
-            AccountMeta::new(data_acct.pubkey(), true),
-            AccountMeta::new(payer.pubkey(), true),
-            AccountMeta::new_readonly(system_program_id(), false),
-        ],
-    };
+    // ── first call: initialise the PDA ──
+    let ix1 = init_if_needed_ix(program_id, pda, payer.pubkey());
     let bh1 = svm.latest_blockhash();
-    let tx1 = Transaction::new(
-        &[&payer, &data_acct],
-        Message::new(&[ix1], Some(&payer.pubkey())),
-        bh1,
-    );
+    let tx1 = Transaction::new(&[&payer], Message::new(&[ix1], Some(&payer.pubkey())), bh1);
     svm.send_transaction(tx1).expect("first call must succeed");
 
-    let after_first = svm
-        .get_account(&data_acct.pubkey())
-        .expect("account exists after first call");
+    let after_first = svm.get_account(&pda).expect("PDA exists after first call");
     let lamports_after_first = after_first.lamports;
+    let data_after_first = after_first.data.clone();
 
-    // ── second call: account already initialised, must not re-init ──
-    let ix2 = Instruction {
-        program_id,
-        data: vec![10u8],
-        accounts: vec![
-            AccountMeta::new(data_acct.pubkey(), false), // not a signer on second call
-            AccountMeta::new(payer.pubkey(), true),
-            AccountMeta::new_readonly(system_program_id(), false),
-        ],
-    };
+    // ── second call: PDA already initialised, must be accepted without re-init ──
+    // Expire the blockhash so this second (otherwise-identical) tx gets a distinct signature
+    // and is not deduplicated by the runtime.
+    svm.expire_blockhash();
+    let ix2 = init_if_needed_ix(program_id, pda, payer.pubkey());
     let bh2 = svm.latest_blockhash();
     let tx2 = Transaction::new(&[&payer], Message::new(&[ix2], Some(&payer.pubkey())), bh2);
     let result2 = svm.send_transaction(tx2);
@@ -431,18 +437,70 @@ fn init_if_needed_second_call_accepted_not_reinit() {
         result2.err().map(|e| e.meta.logs)
     );
 
-    let after_second = svm
-        .get_account(&data_acct.pubkey())
-        .expect("account still exists after second call");
-
-    // Lamports must not change: no top-up was needed (account already exists and is funded).
+    let after_second = svm.get_account(&pda).expect("PDA still exists after second call");
     assert_eq!(
         after_second.lamports, lamports_after_first,
         "lamports must not change on second call (no re-init)"
     );
-    // Owner unchanged.
     assert_eq!(
         after_second.owner, program_id,
         "owner must remain the program after second call"
+    );
+    assert_eq!(
+        after_second.data, data_after_first,
+        "data (incl. discriminator) must be preserved on second call (no re-init)"
+    );
+}
+
+/// Assertion (3) — the REINIT-DEFENSE proof: an attacker plants an EXISTING account at the PDA
+/// address that is owned by the WRONG owner (the system program, not this program). The
+/// else-branch reinit guard (`owner == program_id && data_len >= space+8`, matching the proven
+/// `applyInitIfNeeded`) must REJECT the tx — an attacker's pre-owned account is not silently
+/// accepted.
+#[test]
+fn init_if_needed_rejects_wrong_owner_existing_account() {
+    let mut svm = LiteSVM::new();
+    let program_id = typed_program_id();
+    svm.add_program_from_file(program_id, so_path()).expect("load .so");
+
+    let payer = Keypair::new();
+    svm.airdrop(&payer.pubkey(), 100_000_000).unwrap();
+
+    let (pda, _bump) = counter_pda(&program_id);
+
+    // Plant an ALREADY-INITIALISED account at the PDA address: non-zero discriminator (so the
+    // needs-init guard does NOT fire → else branch), sufficient size, but owned by the SYSTEM
+    // program rather than this program. This is the reinit / wrong-account attack.
+    svm.set_account(
+        pda,
+        Account {
+            lamports: 5_000_000,
+            data: {
+                let mut d = vec![0u8; 16];
+                d[0..8].copy_from_slice(&counter_discriminator()); // non-zero disc → "existing"
+                d
+            },
+            owner: system_program_id(), // WRONG owner
+            executable: false,
+            rent_epoch: 0,
+        },
+    )
+    .unwrap();
+
+    let ix = init_if_needed_ix(program_id, pda, payer.pubkey());
+    let bh = svm.latest_blockhash();
+    let tx = Transaction::new(&[&payer], Message::new(&[ix], Some(&payer.pubkey())), bh);
+    let result = svm.send_transaction(tx);
+    assert!(
+        result.is_err(),
+        "init_if_needed must REJECT an existing account with the wrong owner (reinit defense)"
+    );
+
+    // The planted account must be untouched (owner still the system program).
+    let after = svm.get_account(&pda).expect("planted account still present");
+    assert_eq!(
+        after.owner,
+        system_program_id(),
+        "rejected: attacker's account must not have been adopted by the program"
     );
 }

@@ -112,16 +112,16 @@ struct ZeroCheck<'info> {
     data: verified_anchor::UncheckedAccount<'info>,
 }
 
-/// Conditionally initialise a typed account.
-/// Accounts: [data (Account<Counter>), payer (mut signer), system_program].
+/// Conditionally initialise a typed SEEDED PDA — the real-world init_if_needed drop-in.
+/// Accounts: [data (PDA Account<Counter>), payer (mut signer), system_program].
 /// Instruction data: [10].
-/// `execute_lifecycle` is called without a preceding `validate` so that the first call (fresh
-/// system-owned account) does not fail the implied owner/discriminator checks.  After init the
-/// arm writes `Counter::DISCRIMINATOR` so the second call's needs-init guard sees a non-zero
-/// discriminator and skips the create_account CPI.
+/// The `seeds`/`bump` identify the account instance and hold on BOTH a fresh (system-owned)
+/// and an already-initialised account, so the normal `validate` + `execute_lifecycle` flow
+/// works as a genuine drop-in: validate identifies the PDA (its wrapper owner/disc checks are
+/// filtered out for the iin field), then execute_lifecycle inits-if-fresh / reinit-guards.
 #[derive(VerifiedAccounts)]
 struct InitIfNeeded<'info> {
-    #[account(init_if_needed, payer = payer, space = 8)]
+    #[account(init_if_needed, payer = payer, space = 8, seeds = [b"counter"], bump)]
     data: verified_anchor::Account<'info, Counter>,
     #[account(mut)]
     payer: verified_anchor::Signer<'info>,
@@ -197,21 +197,17 @@ pub fn process(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]) -> Pr
             Ok(())
         }
         Some(10) => {
-            // init_if_needed: skip validate (account may not yet be program-owned on first call).
-            // execute_lifecycle creates the account when needs_init is true; skips when false.
+            // init_if_needed DROP-IN: the normal validate + execute_lifecycle flow, no manual
+            // disc stamp, no validate-skip. `validate` identifies the seeded PDA (the iin
+            // field's wrapper owner/disc checks are filtered out in codegen); then
+            // `execute_lifecycle` inits the fresh PDA (stamping Counter::DISCRIMINATOR itself)
+            // or, on an already-initialised account, reinit-guards owner+size (rejecting a
+            // wrong-owner/undersized existing account).
             // 2_000_000 lamports covers the rent-exempt minimum for space=8+8=16 bytes.
+            InitIfNeeded::validate(accounts, &[], program_id)
+                .map_err(|_| ProgramError::InvalidArgument)?;
             InitIfNeeded::execute_lifecycle(accounts, program_id, 2_000_000)
                 .map_err(|_| ProgramError::InvalidArgument)?;
-            // Write Counter::DISCRIMINATOR so the second-call needs-init guard sees a non-zero
-            // discriminator and short-circuits (no re-init).
-            {
-                let mut d = accounts[0]
-                    .try_borrow_mut_data()
-                    .map_err(|_| ProgramError::InvalidArgument)?;
-                if d.len() >= 8 {
-                    d[..8].copy_from_slice(&Counter::DISCRIMINATOR);
-                }
-            }
             Ok(())
         }
         _ => Err(ProgramError::InvalidInstructionData),

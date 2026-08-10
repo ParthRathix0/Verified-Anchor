@@ -564,7 +564,16 @@ fn validate_body(specs: &[FieldSpec]) -> TokenStream2 {
     for (i, spec) in specs.iter().enumerate() {
         let name = &spec.name;
         let implied = wrapper_implied(&spec.kind);
+        // init_if_needed drop-in: a FRESH (system-owned, zero-disc) account cannot pass the
+        // wrapper-implied Owner(crate::ID)/Discriminator checks, which would block the very
+        // init path init_if_needed exists for. So for an iin field we filter OUT the
+        // wrapper-IMPLIED Owner/Discriminator here; the reinit guard (owner + size on an
+        // already-initialized account) is re-established in execute_lifecycle's iin ELSE
+        // branch, matching the proven Lean `applyInitIfNeeded`. Explicit seeds/address/etc.
+        // constraints are KEPT — they identify the account and hold on fresh AND existing.
+        let has_iin = spec.constraints.iter().any(|c| matches!(c, Constraint::InitIfNeeded));
         let effective: Vec<Constraint> = implied.into_iter()
+            .filter(|c| !(has_iin && matches!(c, Constraint::Owner(_) | Constraint::Discriminator(_))))
             .chain(spec.constraints.iter().cloned())
             .collect();
         for c in &effective {
@@ -920,6 +929,49 @@ fn lifecycle_body(specs: &[FieldSpec]) -> TokenStream2 {
             let n = spec.constraints.iter().find_map(|c|
                 if let Constraint::Space(n) = c { Some(*n) } else { None })
                 .unwrap_or_else(|| panic!("init_if_needed on `{}` needs space", fname));
+            // The Task 6 struct-level guard requires an iin field to be a typed
+            // `Account<'info, T>`; extract T so we can stamp its real Anchor discriminator
+            // (making the fresh account a valid, type-correct, re-detectable account) and
+            // reject a wrong-owner/undersized existing account in the ELSE branch.
+            let t = match &spec.kind {
+                WrapperKind::Account(t) => t.clone(),
+                _ => panic!("init_if_needed on `{}` must be a typed Account (Task 6 guard)", fname),
+            };
+            // Seeded-PDA iin fields must be created with `invoke_signed` (the PDA is off-curve
+            // and cannot sign as a tx signer). Re-derive the canonical bump inside
+            // `execute_lifecycle` from the field's seed literals/field-keys and pass the signer
+            // seeds. `arg(..)` seeds are NOT supported here — execute_lifecycle has no instr_data
+            // — so reject them at compile time with a clear message.
+            let seeds_for_signed: Option<Vec<TokenStream2>> = spec.constraints.iter()
+                .find_map(|c| if let Constraint::Seeds(elems) = c { Some(elems) } else { None })
+                .map(|elems| elems.iter().map(|se| match se {
+                    SeedElem::Literal(b) => quote! { &#b[..] },
+                    SeedElem::FieldKey(id) => {
+                        let fi = *index_of.get(&id.to_string())
+                            .unwrap_or_else(|| panic!("seed field `{}` is not a field of this struct", id));
+                        quote! { accounts[#fi].key.as_ref() }
+                    }
+                    SeedElem::InstrArg(_, _) => panic!(
+                        "init_if_needed on `{}` uses an `arg(..)` seed, which is unsupported (execute_lifecycle has no instruction data to derive it); use literal or field-key seeds", fname),
+                }).collect());
+            let init_create = match &seeds_for_signed {
+                Some(seed_exprs) => quote! {
+                    // Seeded PDA: derive the canonical bump, then invoke_signed so the PDA can
+                    // authorize its own creation.
+                    let __seeds: &[&[u8]] = &[ #(#seed_exprs),* ];
+                    let (__pda, __bump) = ::verified_anchor::solana_program::pubkey::Pubkey::find_program_address(__seeds, program_id);
+                    if accounts[#i].key != &__pda {
+                        return Err(::verified_anchor::VAError::InitFailed { field: #fname });
+                    }
+                    let __signer_seeds: &[&[u8]] = &[ #(#seed_exprs,)* &[__bump] ];
+                    ::verified_anchor::solana_program::program::invoke_signed(&ix, accounts, &[__signer_seeds])
+                        .map_err(|_| ::verified_anchor::VAError::InitFailed { field: #fname })?;
+                },
+                None => quote! {
+                    ::verified_anchor::solana_program::program::invoke(&ix, accounts)
+                        .map_err(|_| ::verified_anchor::VAError::InitFailed { field: #fname })?;
+                },
+            };
             lifecycle_steps.push(quote! {
                 {
                     let __needs_init = {
@@ -928,14 +980,31 @@ fn lifecycle_body(specs: &[FieldSpec]) -> TokenStream2 {
                         d.len() < 8 || d[0..8] == [0u8; 8]
                     };
                     if __needs_init {
+                        // FRESH branch (Lean `applyInit`): create the account owned by this
+                        // program and stamp T's REAL discriminator into the first 8 bytes so
+                        // the account is a valid, type-correct, non-zero-disc Anchor account.
                         let space_total: usize = #n + 8;
                         let ix = ::verified_anchor::solana_program::system_instruction::create_account(
                             accounts[#pi].key, accounts[#i].key, rent_lamports, space_total as u64, program_id);
-                        ::verified_anchor::solana_program::program::invoke(&ix, accounts)
-                            .map_err(|_| ::verified_anchor::VAError::InitFailed { field: #fname })?;
+                        #init_create
+                        let __disc = <#t as ::verified_anchor::AccountData>::DISCRIMINATOR;
                         let mut d = accounts[#i].try_borrow_mut_data()
                             .map_err(|_| ::verified_anchor::VAError::InitFailed { field: #fname })?;
-                        for b in d.iter_mut().take(8) { *b = 0; }
+                        if d.len() < 8 {
+                            return Err(::verified_anchor::VAError::InitFailed { field: #fname });
+                        }
+                        d[0..8].copy_from_slice(&__disc);
+                    } else {
+                        // EXISTING branch (Lean `applyInitIfNeeded` else): the account is
+                        // already initialized (non-zero disc). Accept it ONLY if it is a
+                        // program-owned account of sufficient size — otherwise this is a
+                        // reinit/wrong-account attack and we reject. (`owner` is `&Pubkey`;
+                        // `data_len()` is the data length, per the close/realloc steps above.)
+                        if accounts[#i].owner != program_id
+                            || accounts[#i].data_len() < (#n + 8)
+                        {
+                            return Err(::verified_anchor::VAError::InitFailed { field: #fname });
+                        }
                     }
                 }
             });
