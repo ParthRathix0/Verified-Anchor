@@ -3,7 +3,12 @@ use solana_program::{
     account_info::AccountInfo, entrypoint, entrypoint::ProgramResult,
     program_error::ProgramError, pubkey::Pubkey,
 };
-use verified_anchor::{Validate, VerifiedAccounts};
+use verified_anchor::{AccountData, Validate, VerifiedAccounts};
+
+// Needed so `Account<'info, T>` (which implies `owner = crate::ID`) compiles in the derive macro.
+// Tests that exercise typed accounts (init_if_needed, tag 10) load the program under this id.
+pub const ID: solana_program::pubkey::Pubkey =
+    solana_program::pubkey::Pubkey::new_from_array([0x0Bu8; 32]);
 
 /// init a new account. Accounts: [new, payer, system_program].
 #[derive(VerifiedAccounts)]
@@ -66,6 +71,63 @@ struct CheckRentSkip<'info> {
     vault: verified_anchor::UncheckedAccount<'info>,
 }
 
+// ── M9: realloc / zero / init_if_needed ─────────────────────────────────────
+
+/// Typed account used by init_if_needed (tag 10) and realloc (tags 7/8).
+/// Discriminator = sha256(b"account:Counter")[..8].
+#[verified_anchor::account]
+pub struct Counter {
+    pub value: u64,
+}
+
+/// Grow an account to 80 bytes.
+/// Accounts: [vault (mut), payer (mut signer), system_program].
+/// Instruction data: [7].
+#[derive(VerifiedAccounts)]
+struct ReallocGrow<'info> {
+    #[account(mut, realloc = 80, realloc::payer = payer)]
+    vault: verified_anchor::UncheckedAccount<'info>,
+    #[account(mut)]
+    payer: verified_anchor::Signer<'info>,
+    system_program: verified_anchor::Program<'info, verified_anchor::System>,
+}
+
+/// Shrink an account to 32 bytes (surplus lamports are preserved — not drained).
+/// Accounts: [vault (mut), payer (mut signer), system_program].
+/// Instruction data: [8].
+#[derive(VerifiedAccounts)]
+struct ReallocShrink<'info> {
+    #[account(mut, realloc = 32, realloc::payer = payer)]
+    vault: verified_anchor::UncheckedAccount<'info>,
+    #[account(mut)]
+    payer: verified_anchor::Signer<'info>,
+    system_program: verified_anchor::Program<'info, verified_anchor::System>,
+}
+
+/// Validate that a `zero`-annotated account has an all-zero 8-byte discriminator.
+/// Accounts: [data]. Instruction data: [9].
+#[derive(VerifiedAccounts)]
+struct ZeroCheck<'info> {
+    #[account(zero)]
+    data: verified_anchor::UncheckedAccount<'info>,
+}
+
+/// Conditionally initialise a typed account.
+/// Accounts: [data (Account<Counter>), payer (mut signer), system_program].
+/// Instruction data: [10].
+/// `execute_lifecycle` is called without a preceding `validate` so that the first call (fresh
+/// system-owned account) does not fail the implied owner/discriminator checks.  After init the
+/// arm writes `Counter::DISCRIMINATOR` so the second call's needs-init guard sees a non-zero
+/// discriminator and skips the create_account CPI.
+#[derive(VerifiedAccounts)]
+struct InitIfNeeded<'info> {
+    #[account(init_if_needed, payer = payer, space = 8)]
+    data: verified_anchor::Account<'info, Counter>,
+    #[account(mut)]
+    payer: verified_anchor::Signer<'info>,
+    system_program: verified_anchor::Program<'info, verified_anchor::System>,
+}
+
 entrypoint!(process);
 pub fn process(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]) -> ProgramResult {
     match data.first() {
@@ -110,6 +172,46 @@ pub fn process(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]) -> Pr
             // rent_exempt = skip: any account passes (opt-out, no check).
             CheckRentSkip::validate(accounts, &data[1..], program_id)
                 .map_err(|_| ProgramError::InvalidArgument)?;
+            Ok(())
+        }
+        Some(7) => {
+            // realloc grow: vault → 80 bytes; payer tops up rent if needed.
+            ReallocGrow::validate(accounts, &[], program_id)
+                .map_err(|_| ProgramError::InvalidArgument)?;
+            ReallocGrow::execute_lifecycle(accounts, program_id, 0)
+                .map_err(|_| ProgramError::InvalidArgument)?;
+            Ok(())
+        }
+        Some(8) => {
+            // realloc shrink: vault → 32 bytes; surplus lamports are preserved.
+            ReallocShrink::validate(accounts, &[], program_id)
+                .map_err(|_| ProgramError::InvalidArgument)?;
+            ReallocShrink::execute_lifecycle(accounts, program_id, 0)
+                .map_err(|_| ProgramError::InvalidArgument)?;
+            Ok(())
+        }
+        Some(9) => {
+            // zero: accept an all-zero discriminator; reject a non-zeroed one.
+            ZeroCheck::validate(accounts, &[], program_id)
+                .map_err(|_| ProgramError::InvalidArgument)?;
+            Ok(())
+        }
+        Some(10) => {
+            // init_if_needed: skip validate (account may not yet be program-owned on first call).
+            // execute_lifecycle creates the account when needs_init is true; skips when false.
+            // 2_000_000 lamports covers the rent-exempt minimum for space=8+8=16 bytes.
+            InitIfNeeded::execute_lifecycle(accounts, program_id, 2_000_000)
+                .map_err(|_| ProgramError::InvalidArgument)?;
+            // Write Counter::DISCRIMINATOR so the second-call needs-init guard sees a non-zero
+            // discriminator and short-circuits (no re-init).
+            {
+                let mut d = accounts[0]
+                    .try_borrow_mut_data()
+                    .map_err(|_| ProgramError::InvalidArgument)?;
+                if d.len() >= 8 {
+                    d[..8].copy_from_slice(&Counter::DISCRIMINATOR);
+                }
+            }
             Ok(())
         }
         _ => Err(ProgramError::InvalidInstructionData),
