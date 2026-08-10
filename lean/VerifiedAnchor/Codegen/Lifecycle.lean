@@ -39,17 +39,23 @@ def resize (d : ByteArray) (L : Nat) : ByteArray :=
   d.extract 0 (min d.size L) ++ ByteArray.mk (Array.replicate (L - min d.size L) 0)
 
 /-- Model of Anchor `realloc`: resize the target's data to `newLen`, TOP UP its lamports from
-    `payer` to the rent-exempt minimum (never debiting the account — surplus preserved), and
-    zero-fill the grown region. Fails (none) unless idx≠payerIdx, both in range, payer is a
-    writable signer, and the payer can cover the shortfall. -/
+    `payer` to the rent-exempt minimum, and zero-fill the grown region. Funding is
+    **top-up-only and surplus-preserving**: the modelled effect is
+    `lamports' = max lamports (rentExemptMinimum newLen)`, so the account is NEVER debited and
+    any surplus is kept. A realloc that needs no top-up (already rent-exempt for `newLen` —
+    every shrink and every over-funded account) SUCCEEDS and preserves lamports (`delta = 0`).
+    Fails (none) unless idx≠payerIdx, both in range, payer is a writable signer, and the payer
+    can cover the (possibly zero) top-up. Formulated around `max`/subtraction of the smaller
+    from the larger, so no `UInt64` op ever underflows. -/
 def applyRealloc (idx payerIdx newLen : Nat) (zero : Bool) (c : Ctx) : Option Ctx :=
   if idx = payerIdx then none else
   match c.accounts[idx]?, c.accounts[payerIdx]? with
   | some a, some p =>
-    let shortfall := rentExemptMinimum newLen - a.lamports
-    if p.isSigner = true ∧ p.isWritable = true ∧ shortfall ≤ p.lamports then
-      let c1 := c.update idx (fun a => { a with data := resize a.data newLen, lamports := a.lamports + shortfall })
-      some (c1.update payerIdx (fun p => { p with lamports := p.lamports - shortfall }))
+    let target := max a.lamports (rentExemptMinimum newLen)  -- surplus-preserving; never below min
+    let delta  := target - a.lamports                        -- 0 when already exempt; never underflows
+    if p.isSigner = true ∧ p.isWritable = true ∧ delta ≤ p.lamports then
+      let c1 := c.update idx (fun a => { a with data := resize a.data newLen, lamports := target })
+      some (c1.update payerIdx (fun p => { p with lamports := p.lamports - delta }))
     else none
   | _, _ => none
 
@@ -132,40 +138,111 @@ theorem resize_size (d : ByteArray) (L : Nat) : (resize d L).size = L := by
   rw [Array.size_replicate]
   omega
 
+-- `UInt64.max` order facts. The `Max UInt64` instance is `maxOfLe`, so
+-- `max a b = if a ≤ b then b else a` definitionally; these are the `le_max_left`/`le_max_right`/
+-- `max_eq_left` facts, reproven from `UInt64` order primitives (no Mathlib in scope).
+
+/-- The right argument is `≤` the `UInt64` max. -/
+theorem UInt64.le_max_right (a b : UInt64) : b ≤ max a b := by
+  show b ≤ if a ≤ b then b else a
+  split
+  · exact UInt64.le_rfl
+  · rename_i h; exact (UInt64.le_total a b).resolve_left h
+
+/-- The left argument is `≤` the `UInt64` max. -/
+theorem UInt64.le_max_left (a b : UInt64) : a ≤ max a b := by
+  show a ≤ if a ≤ b then b else a
+  split
+  · assumption
+  · exact UInt64.le_rfl
+
+/-- When the left argument dominates, the `UInt64` max is the left argument (surplus preserved). -/
+theorem UInt64.max_eq_left {a b : UInt64} (h : b ≤ a) : max a b = a := by
+  show (if a ≤ b then b else a) = a
+  split
+  · rename_i hab; exact UInt64.le_antisymm h hab
+  · rfl
+
 /-- `applyRealloc` establishes the M9 `realloc` post-condition for the target account:
-    it exists, has data of size exactly `newLen`, and is rent-exempt (holds at least
-    `rentExemptMinimum newLen` lamports). Top-up-only: the payer covers the shortfall, so the
-    target lands exactly at the minimum (surplus preserved when already above it). Schematic
-    over the opaque `rentExemptMinimum` — it never reduces. -/
+    it exists, has data of size exactly `newLen`, is rent-exempt (holds at least
+    `rentExemptMinimum newLen` lamports), and — the safety property — is **never debited**:
+    its post-lamports are `≥` its pre-lamports (`aPre` is the pre-state account read back from
+    the hypotheses). Top-up-only and surplus-preserving: post-lamports are
+    `max aPre.lamports (rentExemptMinimum newLen)`, so both the rent bound (`le_max_right`) and
+    the never-debited bound (`le_max_left`) hold with no subtraction/underflow. Schematic over
+    the opaque `rentExemptMinimum` — it never reduces. -/
 theorem realloc_establishes_post
-    (idx payerIdx newLen) (zero : Bool) (c c') (hne : idx ≠ payerIdx)
+    (idx payerIdx newLen) (zero : Bool) (c c' aPre) (hne : idx ≠ payerIdx)
+    (hpre : c.accounts[idx]? = some aPre)
     (h : applyRealloc idx payerIdx newLen zero c = some c') :
     ∃ a, c'.accounts[idx]? = some a ∧
       a.data.size = newLen ∧
-      rentExemptMinimum newLen ≤ a.lamports := by
+      rentExemptMinimum newLen ≤ a.lamports ∧
+      aPre.lamports ≤ a.lamports := by
   simp only [applyRealloc, if_neg hne] at h
   split at h
   · next a p ha hp =>
+    -- pin the pre-state account: `ha` and `hpre` agree, so `a = aPre`
+    rw [hpre] at ha; injection ha with ha; subst ha
     split at h
     · next hguard =>
       injection h with hc'
       subst hc'
       -- read back idx through the two updates: outer at payerIdx (skip), inner at idx (hit)
-      rw [Ctx.accounts_getElem?_update, if_neg hne, Ctx.accounts_getElem?_update, if_pos rfl, ha,
+      rw [Ctx.accounts_getElem?_update, if_neg hne, Ctx.accounts_getElem?_update, if_pos rfl, hpre,
         Option.map_some]
-      refine ⟨_, rfl, ?_, ?_⟩
-      · -- size: resize a.data newLen has size newLen by construction
-        exact resize_size a.data newLen
-      · -- rent: a.lamports + (rentExemptMinimum newLen - a.lamports) = rentExemptMinimum newLen
-        show rentExemptMinimum newLen ≤ a.lamports + (rentExemptMinimum newLen - a.lamports)
-        rw [UInt64.add_comm, UInt64.sub_add_cancel]
-        exact UInt64.le_rfl
+      refine ⟨_, rfl, ?_, ?_, ?_⟩
+      · -- size: resize aPre.data newLen has size newLen by construction
+        exact resize_size aPre.data newLen
+      · -- rent: rentExemptMinimum newLen ≤ max aPre.lamports (rentExemptMinimum newLen)
+        exact UInt64.le_max_right aPre.lamports (rentExemptMinimum newLen)
+      · -- never debited: aPre.lamports ≤ max aPre.lamports (rentExemptMinimum newLen)
+        exact UInt64.le_max_left aPre.lamports (rentExemptMinimum newLen)
     · exact absurd h (by simp)
   · exact absurd h (by simp)
 
+/-- **No-top-up ⇒ SUCCEED + PRESERVE (regression witness for finding #1).** When the target is
+    already rent-exempt for `newLen` (`rentExemptMinimum newLen ≤ a.lamports` — every shrink and
+    every over-funded account), `applyRealloc` returns `some` (given a writable-signer payer, no
+    balance requirement since the top-up is 0) and the target's lamports are UNCHANGED, i.e. the
+    account is not debited and its surplus is preserved. This is exactly the case the old
+    underflowing model wrongly rejected. Schematic over the opaque `rentExemptMinimum`. -/
+theorem applyRealloc_noTopUp_succeeds
+    (idx payerIdx newLen) (zero : Bool) (c) (a p) (hne : idx ≠ payerIdx)
+    (ha : c.accounts[idx]? = some a) (hp : c.accounts[payerIdx]? = some p)
+    (hsign : p.isSigner = true) (hwrite : p.isWritable = true)
+    (hexempt : rentExemptMinimum newLen ≤ a.lamports) :
+    ∃ c' a', applyRealloc idx payerIdx newLen zero c = some c' ∧
+      c'.accounts[idx]? = some a' ∧
+      a'.lamports = a.lamports ∧             -- SUCCEEDS with lamports PRESERVED (not debited)
+      a'.data.size = newLen := by
+  have hmax : max a.lamports (rentExemptMinimum newLen) = a.lamports := UInt64.max_eq_left hexempt
+  simp only [applyRealloc, if_neg hne, ha, hp, hmax, hsign, hwrite, UInt64.sub_self,
+    UInt64.zero_le, and_self, if_pos]
+  -- name the resulting ctx; read idx back through the two updates to expose the witness `a'`
+  refine ⟨_, { a with data := resize a.data newLen }, rfl, ?_, rfl, ?_⟩
+  · -- read back idx: outer at payerIdx (skip), inner at idx (hit)
+    rw [Ctx.accounts_getElem?_update, if_neg hne, Ctx.accounts_getElem?_update, if_pos rfl, ha,
+      Option.map_some]
+  · -- data resized to newLen
+    exact resize_size a.data newLen
+
 -- Closed-loop demonstration: `resize` truncates/grows to the exact requested length.
-#guard (resize (ByteArray.mk (Array.replicate 4 0)) 10).size = 10
-#guard (resize (ByteArray.mk (Array.replicate 40 0)) 8).size = 8
+#guard (resize (ByteArray.mk (Array.replicate 4 0)) 10).size = 10   -- grow
+#guard (resize (ByteArray.mk (Array.replicate 40 0)) 8).size = 8    -- shrink
+
+/-- Concrete surplus/shrink witness for finding #1: an over-funded, writable-signer payer and a
+    target holding more than any `rentExemptMinimum` (its lamports `⊔ m = its lamports` for the
+    minimum `m` it already dominates). `applyRealloc` returns `some` and the target keeps its
+    lamports. `rentExemptMinimum` is opaque so this cannot reduce under `#eval`; it is discharged
+    as an `example` from `applyRealloc_noTopUp_succeeds`. -/
+example (c : Ctx) (a p : AccountInfo)
+    (ha : c.accounts[0]? = some a) (hp : c.accounts[1]? = some p)
+    (hsign : p.isSigner = true) (hwrite : p.isWritable = true)
+    (hexempt : rentExemptMinimum 8 ≤ a.lamports) :
+    ∃ c' a', applyRealloc 0 1 8 true c = some c' ∧
+      c'.accounts[0]? = some a' ∧ a'.lamports = a.lamports ∧ a'.data.size = 8 :=
+  applyRealloc_noTopUp_succeeds 0 1 8 true c a p (by decide) ha hp hsign hwrite hexempt
 
 -- Axiom audit (run manually to confirm; kept as a comment so the build stays quiet):
 --   #print axioms realloc_establishes_post  ⇒  'depends on axioms: [propext, Quot.sound]'
