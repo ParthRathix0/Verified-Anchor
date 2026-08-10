@@ -1,0 +1,22 @@
+error: field `data` uses `realloc` but is not `mut`; realloc mutates the account
+ --> tests/ui/realloc_without_mut.rs:8:8
+  |
+8 | struct NeedsMut<'info> {
+  |        ^^^^^^^^
+
+error[E0277]: the trait bound `Vault: AccountData` is not satisfied
+  --> tests/ui/realloc_without_mut.rs:10:11
+   |
+10 |     data: verified_anchor::Account<'info, Vault>,
+   |           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ unsatisfied trait bound
+   |
+help: the trait `AccountData` is not implemented for `Vault`
+  --> tests/ui/realloc_without_mut.rs:5:1
+   |
+ 5 | struct Vault;
+   | ^^^^^^^^^^^^
+note: required by a bound in `verified_anchor::Account`
+  --> $WORKSPACE/verified-anchor/src/account.rs
+   |
+   | pub struct Account<'info, T: AccountData> {
+   |                              ^^^^^^^^^^^ required by this bound in `Account`

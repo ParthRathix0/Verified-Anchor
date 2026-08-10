@@ -160,6 +160,16 @@ enum Constraint {
     /// `rent_exempt = skip` — explicitly opt out of the rent-exemption check.
     /// Emits nothing in lean_spec and no runtime check (SAFE-BY-DEFAULT opt-out).
     RentExemptSkip,
+    /// `realloc = <newLen>` — resize the account data to `<newLen>` total bytes (lifecycle).
+    Realloc(usize),
+    /// `realloc::payer = <ident>` — funds the rent top-up on grow.
+    ReallocPayer(syn::Ident),
+    /// `realloc::zero = <bool>` — zero-fill the grown region.
+    ReallocZero(bool),
+    /// `zero` — the all-zero-discriminator reinit guard (a VALIDATION constraint).
+    Zero,
+    /// `init_if_needed` — conditional init (lifecycle); reuses `Payer`/`Space`.
+    InitIfNeeded,
 }
 
 impl Parse for Constraint {
@@ -276,9 +286,33 @@ impl Parse for Constraint {
                         format!("expected `enforce` or `skip` after `rent_exempt =`, got `{other}`"))),
                 }
             }
+            "zero" => Ok(Constraint::Zero),
+            "init_if_needed" => Ok(Constraint::InitIfNeeded),
+            "realloc" => {
+                // `realloc::payer = <ident>` / `realloc::zero = <bool>` / `realloc = <n>`
+                // Mirror the `seeds`/`seeds::program` `::`-peek pattern.
+                if input.peek(Token![::]) {
+                    input.parse::<Token![::]>()?;
+                    let key: syn::Ident = input.parse()?;
+                    input.parse::<Token![=]>()?;
+                    match key.to_string().as_str() {
+                        "payer" => Ok(Constraint::ReallocPayer(input.parse()?)),
+                        "zero" => {
+                            let b: syn::LitBool = input.parse()?;
+                            Ok(Constraint::ReallocZero(b.value))
+                        }
+                        other => Err(syn::Error::new(key.span(),
+                            format!("unsupported `realloc::` key `{other}` (expected `payer` or `zero`)"))),
+                    }
+                } else {
+                    input.parse::<Token![=]>()?;
+                    let lit: syn::LitInt = input.parse()?;
+                    Ok(Constraint::Realloc(lit.base10_parse()?))
+                }
+            }
             other => {
                 let known_unsupported = [
-                    "realloc", "zero", "constraint", "token", "mint",
+                    "constraint", "token", "mint",
                     "associated_token", "owner_program",
                     "token_program",
                 ];
@@ -289,7 +323,7 @@ impl Parse for Constraint {
                 };
                 Err(syn::Error::new(
                     ident.span(),
-                    format!("{hint}; verified-anchor supports: signer, mut, owner, has_one, allow_duplicate, init, payer, space, close, seeds, seeds::program, bump, discriminator, address, executable, rent_exempt. See docs/migrating-from-anchor.md"),
+                    format!("{hint}; verified-anchor supports: signer, mut, owner, has_one, allow_duplicate, init, init_if_needed, payer, space, close, seeds, seeds::program, bump, discriminator, address, executable, rent_exempt, realloc, realloc::payer, realloc::zero, zero. See docs/migrating-from-anchor.md"),
                 ))
             }
         }
@@ -399,6 +433,12 @@ fn lean_constraint(c: &Constraint) -> String {
         // `rent_exempt = enforce` emits the Lean constraint; `skip` emits nothing.
         Constraint::RentExemptEnforce => "Constraint.rentExempt".to_string(),
         Constraint::RentExemptSkip => String::new(),
+        // M9 lifecycle constraints: Lean emission is handled in Task 7; emit nothing for now.
+        Constraint::Realloc(_) | Constraint::ReallocPayer(_) | Constraint::ReallocZero(_) => String::new(),
+        // `zero` is a validation constraint; Lean emission handled in Task 7.
+        Constraint::Zero => String::new(),
+        // `init_if_needed` is a lifecycle marker; Lean emission handled in Task 7.
+        Constraint::InitIfNeeded => String::new(),
     }
 }
 
@@ -604,6 +644,18 @@ fn validate_body(specs: &[FieldSpec]) -> TokenStream2 {
                 }
                 // skip emits nothing — documented SAFE-BY-DEFAULT opt-out.
                 Constraint::RentExemptSkip => {
+                    continue;
+                }
+                // M9 lifecycle constraints: runtime codegen handled in Task 8; skip for now.
+                Constraint::Realloc(_) | Constraint::ReallocPayer(_) | Constraint::ReallocZero(_) => {
+                    continue;
+                }
+                // `zero`: validation codegen handled in Task 8; skip for now.
+                Constraint::Zero => {
+                    continue;
+                }
+                // `init_if_needed`: lifecycle codegen handled in Task 8; skip for now.
+                Constraint::InitIfNeeded => {
                     continue;
                 }
             };
@@ -828,6 +880,26 @@ pub fn derive_verified_accounts(input: TokenStream) -> TokenStream {
         Err(e) => return e.to_compile_error().into(),
     };
     let name = &input.ident;
+
+    // Guard: `realloc` requires `mut` — realloc mutates the account data in place.
+    // Guard: `init_if_needed` requires a typed `Account<'info, T>` — the wrapper's
+    //        owner+discriminator checks are the reinit guard (prevents reuse attacks).
+    for spec in &specs {
+        let has_realloc = spec.constraints.iter().any(|c| matches!(c, Constraint::Realloc(_)));
+        let has_mut = spec.constraints.iter().any(|c| matches!(c, Constraint::Mut));
+        if has_realloc && !has_mut {
+            return syn::Error::new_spanned(name,
+                format!("field `{}` uses `realloc` but is not `mut`; realloc mutates the account", spec.name))
+                .to_compile_error().into();
+        }
+        if spec.constraints.iter().any(|c| matches!(c, Constraint::InitIfNeeded))
+            && !matches!(spec.kind, WrapperKind::Account(_)) {
+            return syn::Error::new_spanned(name,
+                format!("field `{}` uses `init_if_needed` but is not a typed `Account<'info, T>`; the wrapper's owner+discriminator checks are the reinit guard", spec.name))
+                .to_compile_error().into();
+        }
+    }
+
     let body = validate_body(&specs);
     let lean = lean_spec_string(&specs);
     let lifecycle = lifecycle_body(&specs);

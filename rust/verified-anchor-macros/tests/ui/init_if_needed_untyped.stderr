@@ -1,0 +1,5 @@
+error: field `data` uses `init_if_needed` but is not a typed `Account<'info, T>`; the wrapper's owner+discriminator checks are the reinit guard
+ --> tests/ui/init_if_needed_untyped.rs:4:8
+  |
+4 | struct BadInit<'info> {
+  |        ^^^^^^^
