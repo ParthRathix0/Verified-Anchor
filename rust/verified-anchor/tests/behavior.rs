@@ -694,3 +694,56 @@ fn one_mut_pair_has_no_distinct_obligation() {
     let accts = [a.info(), b.info()];
     assert_eq!(OneMut::validate(&accts, &[], &any_pid()), Ok(()));
 }
+
+// ---- M9 Task 8: `zero` validate check ----
+//
+// `zero` checks that the first 8 bytes of the account data are all-zero (reinit guard).
+// An account whose first 8 bytes are [0u8; 8] is accepted; any non-zero byte is rejected
+// with `VAError::NotZeroed`.
+
+#[derive(VerifiedAccounts)]
+struct ZeroGuard<'info> {
+    #[account(zero)]
+    uninit: UncheckedAccount<'info>,
+}
+
+fn acct_with_zeros() -> Acct {
+    // 8 zero bytes — accepted by the `zero` constraint
+    Acct { key: Pubkey::new_unique(), owner: Pubkey::new_unique(), lamports: 1,
+           data: vec![0u8; 8], is_signer: false, is_writable: false }
+}
+
+fn acct_with_nonzero_disc() -> Acct {
+    // First byte non-zero — rejected by the `zero` constraint
+    Acct { key: Pubkey::new_unique(), owner: Pubkey::new_unique(), lamports: 1,
+           data: vec![1u8, 0, 0, 0, 0, 0, 0, 0], is_signer: false, is_writable: false }
+}
+
+#[test]
+fn zero_accepts_all_zero_discriminator() {
+    let mut a = acct_with_zeros();
+    let accts = [a.info()];
+    assert_eq!(ZeroGuard::validate(&accts, &[], &any_pid()), Ok(()));
+}
+
+#[test]
+fn zero_rejects_non_zero_discriminator() {
+    let mut a = acct_with_nonzero_disc();
+    let accts = [a.info()];
+    assert_eq!(
+        ZeroGuard::validate(&accts, &[], &any_pid()),
+        Err(VAError::NotZeroed { field: "uninit" })
+    );
+}
+
+#[test]
+fn zero_rejects_short_data() {
+    // Fewer than 8 bytes → also rejected (can't confirm all-zero prefix of length 8)
+    let mut a = Acct { key: Pubkey::new_unique(), owner: Pubkey::new_unique(), lamports: 1,
+                       data: vec![0u8; 4], is_signer: false, is_writable: false };
+    let accts = [a.info()];
+    assert_eq!(
+        ZeroGuard::validate(&accts, &[], &any_pid()),
+        Err(VAError::NotZeroed { field: "uninit" })
+    );
+}

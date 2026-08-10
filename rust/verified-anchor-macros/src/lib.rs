@@ -665,17 +665,23 @@ fn validate_body(specs: &[FieldSpec]) -> TokenStream2 {
                 Constraint::RentExemptSkip => {
                     continue;
                 }
-                // M9 lifecycle constraints: runtime codegen handled in Task 8; skip for now.
-                Constraint::Realloc(_) | Constraint::ReallocPayer(_) | Constraint::ReallocZero(_) => {
+                // Lifecycle markers (handled in execute_lifecycle, not validate).
+                Constraint::Realloc(_) | Constraint::ReallocPayer(_) | Constraint::ReallocZero(_)
+                | Constraint::InitIfNeeded => {
                     continue;
                 }
-                // `zero`: validation codegen handled in Task 8; skip for now.
+                // `zero`: reinit guard — checks the first 8 bytes are all-zero.
                 Constraint::Zero => {
-                    continue;
-                }
-                // `init_if_needed`: lifecycle codegen handled in Task 8; skip for now.
-                Constraint::InitIfNeeded => {
-                    continue;
+                    let fname = name;
+                    quote! {
+                        {
+                            let data = accounts[#i].try_borrow_data()
+                                .map_err(|_| ::verified_anchor::VAError::NotZeroed { field: #fname })?;
+                            if data.len() < 8 || data[0..8] != [0u8; 8] {
+                                return Err(::verified_anchor::VAError::NotZeroed { field: #fname });
+                            }
+                        }
+                    }
                 }
             };
             checks.push(check);
@@ -868,6 +874,69 @@ fn lifecycle_body(specs: &[FieldSpec]) -> TokenStream2 {
                     let mut d = accounts[#i].try_borrow_mut_data()
                         .map_err(|_| ::verified_anchor::VAError::CloseFailed { field: #fname })?;
                     for b in d.iter_mut().take(8) { *b = 0xff; }
+                }
+            });
+        }
+
+        // realloc
+        let realloc_newlen = spec.constraints.iter().find_map(|c|
+            if let Constraint::Realloc(n) = c { Some(*n) } else { None });
+        if let Some(newlen) = realloc_newlen {
+            let payer_name = spec.constraints.iter().find_map(|c|
+                if let Constraint::ReallocPayer(p) = c { Some(p.to_string()) } else { None })
+                .unwrap_or_else(|| panic!("realloc on `{}` needs realloc::payer", fname));
+            let pi = *index_of.get(&payer_name)
+                .unwrap_or_else(|| panic!("realloc::payer `{payer_name}` is not a field of this struct"));
+            let zero_flag = spec.constraints.iter().any(|c| matches!(c, Constraint::ReallocZero(true)));
+            lifecycle_steps.push(quote! {
+                {
+                    use ::verified_anchor::solana_program::sysvar::Sysvar as _;
+                    let __rent = ::verified_anchor::solana_program::rent::Rent::get()
+                        .map_err(|_| ::verified_anchor::VAError::ReallocFailed { field: #fname })?;
+                    let __min = __rent.minimum_balance(#newlen);
+                    let __cur = accounts[#i].lamports();
+                    if __min > __cur {
+                        let __delta = __min - __cur;
+                        // top-up: payer -> account (payer is a writable signer; system-owned)
+                        let __ix = ::verified_anchor::solana_program::system_instruction::transfer(
+                            accounts[#pi].key, accounts[#i].key, __delta);
+                        ::verified_anchor::solana_program::program::invoke(&__ix, accounts)
+                            .map_err(|_| ::verified_anchor::VAError::ReallocFailed { field: #fname })?;
+                    }
+                    accounts[#i].realloc(#newlen, #zero_flag)
+                        .map_err(|_| ::verified_anchor::VAError::ReallocFailed { field: #fname })?;
+                }
+            });
+        }
+
+        // init_if_needed
+        let has_iin = spec.constraints.iter().any(|c| matches!(c, Constraint::InitIfNeeded));
+        if has_iin {
+            let payer_name = spec.constraints.iter().find_map(|c|
+                if let Constraint::Payer(p) = c { Some(p.to_string()) } else { None })
+                .unwrap_or_else(|| panic!("init_if_needed on `{}` needs payer", fname));
+            let pi = *index_of.get(&payer_name)
+                .unwrap_or_else(|| panic!("init_if_needed payer `{payer_name}` is not a field"));
+            let n = spec.constraints.iter().find_map(|c|
+                if let Constraint::Space(n) = c { Some(*n) } else { None })
+                .unwrap_or_else(|| panic!("init_if_needed on `{}` needs space", fname));
+            lifecycle_steps.push(quote! {
+                {
+                    let __needs_init = {
+                        let d = accounts[#i].try_borrow_data()
+                            .map_err(|_| ::verified_anchor::VAError::InitFailed { field: #fname })?;
+                        d.len() < 8 || d[0..8] == [0u8; 8]
+                    };
+                    if __needs_init {
+                        let space_total: usize = #n + 8;
+                        let ix = ::verified_anchor::solana_program::system_instruction::create_account(
+                            accounts[#pi].key, accounts[#i].key, rent_lamports, space_total as u64, program_id);
+                        ::verified_anchor::solana_program::program::invoke(&ix, accounts)
+                            .map_err(|_| ::verified_anchor::VAError::InitFailed { field: #fname })?;
+                        let mut d = accounts[#i].try_borrow_mut_data()
+                            .map_err(|_| ::verified_anchor::VAError::InitFailed { field: #fname })?;
+                        for b in d.iter_mut().take(8) { *b = 0; }
+                    }
                 }
             });
         }
