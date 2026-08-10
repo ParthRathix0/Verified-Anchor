@@ -11,3 +11,5 @@ import VerifiedAnchor
 -/
 #print axioms VerifiedAnchor.genValidate_sound
 #print axioms VerifiedAnchor.lifecycle_sound
+#print axioms VerifiedAnchor.realloc_establishes_post
+#print axioms VerifiedAnchor.initIfNeeded_establishes_post

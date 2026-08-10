@@ -977,6 +977,11 @@ fn lifecycle_body(specs: &[FieldSpec]) -> TokenStream2 {
                     let __needs_init = {
                         let d = accounts[#i].try_borrow_data()
                             .map_err(|_| ::verified_anchor::VAError::InitFailed { field: #fname })?;
+                        // This predicate is a deliberate strict SUPERSET of the Lean model's
+                        // `isZeroDisc` on the short-data (`len < 8`) case: a genuinely fresh
+                        // account may present zero-length data, so we init it (create_account
+                        // still establishes the proven owner+size post); it is never an
+                        // attacker's already-initialized account.
                         d.len() < 8 || d[0..8] == [0u8; 8]
                     };
                     if __needs_init {

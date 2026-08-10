@@ -51,7 +51,7 @@ no `sorryAx`, no `Classical.choice`, no `native_decide`. Per-constraint lemmas
 (`genConstraint_{signer,mut,owner,discriminator,hasOne,seeds,executable,address}_iff`, plus
 `bumpMatchesB_iff`) connect each `gen*` to the corresponding `satisfies` case in the contract.
 
-`M4Subset s` (now covering all M9 features) characterises structs in scope: every field's
+`M4Subset s` (now covering all supported features) characterises structs in scope: every field's
 combined implied-and-declared constraint list contains only
 `{signer, mut, owner, hasOne, discriminator, seeds, executable, address, rentExempt, zero}` and
 struct-level `distinctMutKeys` is discharged.

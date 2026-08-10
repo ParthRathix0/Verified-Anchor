@@ -18,7 +18,10 @@ instance {α : Type _} (o : Option α) (P : α → Prop) [∀ a, Decidable (P a)
 
 namespace VerifiedAnchor
 
-/-- The 8 all-zero bytes an uninitialized Anchor account's discriminator slot holds. -/
+/-- The 8 all-zero bytes an uninitialized Anchor account's discriminator slot holds.
+    Note: shares the same byte content as `StructLifecycle.initDisc` (both are 8 zero bytes),
+    but is semantically distinct — this is the never-initialized-account sentinel, while
+    `initDisc` is the init-time discriminator marker written before stamping the real disc. -/
 def zeroDisc : ByteArray := ByteArray.mk (Array.replicate 8 0)
 
 /-- The account's discriminator slot is all-zero (allocated but never initialized). Crypto-free

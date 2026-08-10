@@ -47,7 +47,7 @@ def resize (d : ByteArray) (L : Nat) : ByteArray :=
     Fails (none) unless idx≠payerIdx, both in range, payer is a writable signer, and the payer
     can cover the (possibly zero) top-up. Formulated around `max`/subtraction of the smaller
     from the larger, so no `UInt64` op ever underflows. -/
-def applyRealloc (idx payerIdx newLen : Nat) (zero : Bool) (c : Ctx) : Option Ctx :=
+def applyRealloc (idx payerIdx newLen : Nat) (_zero : Bool) (c : Ctx) : Option Ctx :=
   if idx = payerIdx then none else
   match c.accounts[idx]?, c.accounts[payerIdx]? with
   | some a, some p =>
