@@ -1,8 +1,12 @@
 use verified_anchor::VerifiedAccounts;
 
-// Account<'info, T> - the T just needs to look like a type to the macro;
-// type-checking errors are irrelevant since the proc-macro guard fires first.
-struct Vault;
+// Vault must implement AccountData so Account<'info, Vault> compiles without
+// the secondary E0277 trait-bound error — leaving only the intended realloc-
+// requires-mut compile_error from the macro guard.
+#[verified_anchor::account]
+pub struct Vault {
+    pub balance: u64,
+}
 
 #[derive(VerifiedAccounts)]
 struct NeedsMut<'info> {
