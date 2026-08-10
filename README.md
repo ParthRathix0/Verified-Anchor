@@ -25,9 +25,10 @@ Verified Anchor closes the gap. Every macro expansion ships with a Lean 4 theore
 
 ## Status
 
+* `v0.3.0` — M9 lifecycle parity: `realloc` (+`realloc::payer`/`realloc::zero`, top-up-only and surplus-preserving), `zero` reinit guard, `init_if_needed` (drop-in on a typed `Account<'info, T>`).
 * `v0.2.0` — M8 constraint-surface completion: `address`/`executable` explicit annotations, stored/non-canonical bump opt-in, `seeds::program`, automatic distinct-mut-key checking, `rent_exempt = enforce/skip`.
 * Lean theorems' axioms: `[propext, Quot.sound]` only. Zero `sorry` / `admit`.
-* Out of scope: `realloc`, `zero`, token / mint / associated-token constraints. Custom `constraint = ...` expressions.
+* Out of scope: token / mint / associated-token constraints. Custom `constraint = ...` expressions.
 
 ## Packages
 
