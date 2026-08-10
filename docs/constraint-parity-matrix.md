@@ -1,6 +1,6 @@
 # Constraint parity matrix
 
-Every Anchor `#[account(...)]` constraint and its status in Verified Anchor as of v0.2.0.
+Every Anchor `#[account(...)]` constraint and its status in Verified Anchor as of v0.3.0.
 
 **Status key:**
 
@@ -52,11 +52,13 @@ Every Anchor `#[account(...)]` constraint and its status in Verified Anchor as o
 
 | Anchor `#[account(...)]` | Lean model | Status | Notes |
 |---|---|---|---|
-| `init, payer = p, space = n` | `applyInit` state transformer | **Proven** | `lifecycle_sound` / `init_establishes_post`. |
-| `close = dest` | `applyClose` state transformer | **Proven** | `lifecycle_sound` / `close_establishes_post`. |
-| `realloc, realloc::payer, realloc::zero` | — | **Planned (M9)** | Lifecycle parity milestone. |
-| `zero` | — | **Planned (M9)** | Reinit guard. |
-| `init_if_needed` | — | **Planned (M9)** | Guarded conditional init. |
+| `init, payer = p, space = n` | `applyInit` state transformer | **Proven** | `init_establishes_post`: post-state has owner set and data ≥ space+8. |
+| `close = dest` | `applyClose` state transformer | **Proven** | `close_establishes_post`: post-state has lamports zero and closed-account marker. |
+| `realloc = N` | `applyRealloc` state transformer | **Proven** | `realloc_establishes_post`: size=N, rent-exempt, never-debited. Requires `mut`. |
+| `realloc::payer = p` | `applyRealloc` (payerIdx parameter) | **Proven** | Funds the top-up; payer must be writable signer. |
+| `realloc::zero = <bool>` | `applyRealloc` (`zero : Bool` parameter) | **Proven** | Runtime zero-fill flag; schematic in the proof. |
+| `zero` | `Constraint.zero` (validation) | **Proven** | `genValidate_sound` / `genConstraint_zero_iff`. Checks first 8 bytes all-zero. Crypto-free. `VAError::NotZeroed`. |
+| `init_if_needed, payer = p, space = n` | `applyInitIfNeeded` state transformer | **Proven** | `initIfNeeded_establishes_post`: both branches leave owner=program ∧ data≥space+8. Requires typed `Account<'info, T>`. |
 
 ## Unsupported / planned constraints
 

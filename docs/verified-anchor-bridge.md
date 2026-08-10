@@ -23,6 +23,9 @@ what is and is not proven.
 | `let min = rent_exempt_minimum(accounts[i].data.len()); if accounts[i].lamports < min { Err(NotRentExempt) }` | `genConstraint … .rentExempt` via opaque `rentExemptMinimum : Nat → Lamports` (see Honesty boundary below) | `satisfies … .rentExempt` |
 | `invoke(create_account(...)) + write disc` | `applyInit` (state transformer) | `init_establishes_post`: post-state has owner set and at least `space + 8` bytes |
 | `dest.lamports += t.lamports; t.lamports = 0; mark` | `applyClose` (state transformer) | `close_establishes_post`: post-state has lamports zero and a closed-account marker |
+| `let min = rent.minimum_balance(newLen); if min > cur { transfer(delta) }; account.realloc(newLen, zero)` | `applyRealloc` (state transformer) | `realloc_establishes_post`: size=newLen ∧ rent-exempt ∧ never-debited |
+| `if data[..8] != [0u8;8] { Err(NotZeroed) }` | `genConstraint … .zero` | `satisfies … .zero`: the all-zero-discriminator reinit guard |
+| uninitialized branch: `invoke(create_account(...)) + write T::DISCRIMINATOR`; existing branch: `if owner≠program ∥ data_len<space+8 { Err(InitFailed) }` | `applyInitIfNeeded` (state transformer) | `initIfNeeded_establishes_post`: both branches leave owner=program ∧ data≥space+8 |
 
 The generated `validate` has signature
 `fn validate(accounts: &[AccountInfo], instr_data: &[u8], program_id: &Pubkey) -> Result<(), VAError>`
@@ -48,9 +51,9 @@ no `sorryAx`, no `Classical.choice`, no `native_decide`. Per-constraint lemmas
 (`genConstraint_{signer,mut,owner,discriminator,hasOne,seeds,executable,address}_iff`, plus
 `bumpMatchesB_iff`) connect each `gen*` to the corresponding `satisfies` case in the contract.
 
-`M4Subset s` (now covering all M8 features) characterises structs in scope: every field's
+`M4Subset s` (now covering all M9 features) characterises structs in scope: every field's
 combined implied-and-declared constraint list contains only
-`{signer, mut, owner, hasOne, discriminator, seeds, executable, address, rentExempt}` and
+`{signer, mut, owner, hasOne, discriminator, seeds, executable, address, rentExempt, zero}` and
 struct-level `distinctMutKeys` is discharged.
 
 **Wrapper base checks are modelled, not just transcribed.** The macro's `wrapper_implied`
@@ -115,6 +118,104 @@ Solana VM.
 matches `applyInit` (its documented effect — owner assigned, space allocated, lamports
 moved). The library models the effect, not the CPI dispatch. The litesvm runtime tests
 reduce the risk that the model diverges from reality.
+
+## Realloc
+
+`realloc = N`, `realloc::payer`, and `realloc::zero` are lifecycle effects modelled by the
+`applyRealloc` state transformer and proven by `realloc_establishes_post`.
+
+**Lamport model — top-up-only and surplus-preserving.** The modelled effect on lamports is
+
+```
+lamports' = max(lamports, rentExemptMinimum(newLen))
+```
+
+The account is **never debited**: if it already holds at least the rent-exempt minimum for
+the new size (every shrink, every over-funded account), `delta = 0` and its lamports are
+unchanged. This matches stock Anchor's behaviour exactly — no shrink refund and no surplus
+drain. The Rust codegen computes `delta = minimum_balance(newLen).saturating_sub(current)`
+and transfers only when positive; the Lean model formulates the same using `max` and
+subtraction from the larger side so no `UInt64` operation underflows.
+
+`realloc` requires `mut` — the macro emits a `compile_error!` if omitted.
+
+`realloc::zero` is the standard `bool` flag passed to `AccountInfo::realloc`; it controls
+whether the grown region is zeroed by the runtime. It has no Lean model of its own —
+zeroing is a data-content concern, not a state-safety concern — and `realloc_establishes_post`
+is schematic over it.
+
+**Opaque wall.** `realloc` uses the existing `rentExemptMinimum : Nat → Lamports` opaque
+constant introduced for `rent_exempt = enforce`. No new opaque wall is added. The
+correspondence with Solana's `Rent::minimum_balance` is cross-checked empirically by the
+litesvm runtime tests.
+
+**Proven.** `realloc_establishes_post` is at `[propext, Quot.sound]`. It establishes three
+post-conditions: `data.size = newLen`, `rentExemptMinimum newLen ≤ lamports'`, and
+`lamports ≤ lamports'` (never-debited). The companion theorem
+`applyRealloc_noTopUp_succeeds` is a regression witness proving that a already-exempt
+account succeeds and its lamports are preserved unchanged.
+
+## Zero
+
+`#[account(zero)]` is a **validation** constraint (not a lifecycle effect). It guards that
+the first 8 bytes of the account's data are all zero — the condition a freshly-allocated
+system account or a just-created-but-not-yet-written program account satisfies, and the
+condition a legitimately reused account does not.
+
+`genConstraint … .zero` checks `data[0..8] == [0u8; 8]` and rejects with `VAError::NotZeroed`
+on mismatch. The constraint is crypto-free and reduces under `decide`. It is folded into
+`genValidate_sound` at the grown `M4Subset` — specifically through
+`genConstraint_zero_iff` and `genConstraint_iff_satisfies_M4` — so it carries the same
+`[propext, Quot.sound]` soundness guarantee as every other supported validation constraint.
+No new opaque walls are introduced.
+
+## `init_if_needed`
+
+`init_if_needed` is a lifecycle effect modelled by the `applyInitIfNeeded` state transformer
+and proven by `initIfNeeded_establishes_post`.
+
+**Required field type.** The macro enforces that an `init_if_needed` field is a typed
+`Account<'info, T>`. A compile error is emitted otherwise. The requirement is structural:
+`execute_lifecycle` needs the concrete account type `T` to stamp its real discriminator on
+the fresh account and to enforce owner + size on an existing one.
+
+**How the two-phase design works.** `try_accounts` calls `validate` first, then
+Borsh-deserialises each field. For an `init_if_needed` field, `validate` **skips** the
+wrapper-implied `owner` and `discriminator` checks — they would block a fresh account
+(owned by the System Program, all-zero discriminator) from passing. Any explicitly declared
+`seeds` or `address` constraints are kept; they identify the account and are equally valid
+on a fresh or existing account. After validation passes, `execute_lifecycle` provides the
+actual two-branch guard:
+
+* **Fresh branch** (`data[0..8] == [0u8; 8]` or `data.len() < 8`): creates the account via
+  `system_instruction::create_account` (or `invoke_signed` for a PDA), then writes `T`'s
+  real discriminator into the first 8 bytes. This corresponds to `applyInit` in the Lean
+  model.
+* **Existing branch** (non-zero discriminator): accepts the account **only** if
+  `account.owner == program_id && account.data_len() >= space + 8`. If either condition
+  fails, `VAError::InitFailed` is returned. This is the reinit guard — the SELF-GUARD that
+  replaces the skipped wrapper checks — corresponding to the `else if a.owner = owner ∧
+  space + 8 ≤ a.data.size then some c else none` branch of `applyInitIfNeeded`.
+
+**Proven.** `initIfNeeded_establishes_post` holds at `[propext, Quot.sound]`. It shows that
+both branches establish the same post-condition as `init`: the target account exists, is
+owned by the program, and has at least `space + 8` bytes of data. The uninitialized branch
+delegates wholesale to `init_establishes_post`; the existing-account branch succeeds only
+because the guard (`owner = owner ∧ space + 8 ≤ a.data.size`) is a direct precondition of
+the `some c` outcome.
+
+**Recommended usage: pair with `seeds`.** An `init_if_needed` field without a `seeds`
+constraint relies only on owner + size to accept an existing account. A legitimate-looking,
+program-owned account of the correct size at the wrong identity would be accepted. Pairing
+with `seeds` (a PDA) binds the account's identity to the seeds on both branches: the fresh
+branch derives the canonical PDA and creates it at that address; the existing branch also
+checks the key against the PDA derivation (through the `validate`-side `seeds` check, which
+is kept). Seeds + `init_if_needed` is the safe default pattern; without seeds, the residual
+limitation is the same as in stock Anchor.
+
+**Trusted modelling assumption.** The same CPI-effect assumption as for `init` applies: that
+`system_instruction::create_account` produces an account owned by the program and funded to
+the declared size.
 
 ## PDA derivation
 
