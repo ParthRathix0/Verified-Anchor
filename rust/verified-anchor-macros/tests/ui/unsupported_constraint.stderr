@@ -1,5 +1,5 @@
-error: field `vault` uses `realloc` but is not `mut`; realloc mutates the account
- --> tests/ui/unsupported_constraint.rs:4:8
+error: `mint` is a stock-Anchor constraint that verified-anchor does not support; verified-anchor supports: signer, mut, owner, has_one, allow_duplicate, init, init_if_needed, payer, space, close, seeds, seeds::program, bump, discriminator, address, executable, rent_exempt, realloc, realloc::payer, realloc::zero, zero. See docs/migrating-from-anchor.md
+ --> tests/ui/unsupported_constraint.rs:5:15
   |
-4 | struct Bad<'info> {
-  |        ^^^
+5 |     #[account(mint)]
+  |               ^^^^

@@ -2,7 +2,7 @@ use verified_anchor::VerifiedAccounts;
 
 #[derive(VerifiedAccounts)]
 struct Bad<'info> {
-    #[account(realloc = 8)]
+    #[account(mint)]
     vault: verified_anchor::UncheckedAccount<'info>,
 }
 
