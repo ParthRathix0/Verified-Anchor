@@ -433,12 +433,11 @@ fn lean_constraint(c: &Constraint) -> String {
         // `rent_exempt = enforce` emits the Lean constraint; `skip` emits nothing.
         Constraint::RentExemptEnforce => "Constraint.rentExempt".to_string(),
         Constraint::RentExemptSkip => String::new(),
-        // M9 lifecycle constraints: Lean emission is handled in Task 7; emit nothing for now.
-        Constraint::Realloc(_) | Constraint::ReallocPayer(_) | Constraint::ReallocZero(_) => String::new(),
-        // `zero` is a validation constraint; Lean emission handled in Task 7.
-        Constraint::Zero => String::new(),
-        // `init_if_needed` is a lifecycle marker; Lean emission handled in Task 7.
-        Constraint::InitIfNeeded => String::new(),
+        // `zero` is a validation constraint (reinit guard); emitted directly in the spec.
+        Constraint::Zero => "Constraint.zero".to_string(),
+        // Lifecycle markers assembled in lean_spec_string; emit nothing standalone.
+        Constraint::Realloc(_) | Constraint::ReallocPayer(_) | Constraint::ReallocZero(_)
+        | Constraint::InitIfNeeded => String::new(),
     }
 }
 
@@ -464,6 +463,26 @@ fn lean_spec_string(specs: &[FieldSpec]) -> String {
         if let Some(dest) = spec.constraints.iter().find_map(|c|
             if let Constraint::Close(d) = c { Some(d.to_string()) } else { None }) {
             cs.push(format!("Constraint.close \"{}\"", dest));
+        }
+        // realloc: Realloc(newLen) + ReallocPayer(p) [+ ReallocZero(z)] -> Constraint.realloc "<p>" <newLen> <z>
+        if let Some(newlen) = spec.constraints.iter().find_map(|c|
+            if let Constraint::Realloc(n) = c { Some(*n) } else { None }) {
+            let payer = spec.constraints.iter().find_map(|c|
+                if let Constraint::ReallocPayer(p) = c { Some(p.to_string()) } else { None });
+            let zero = spec.constraints.iter().any(|c| matches!(c, Constraint::ReallocZero(true)));
+            if let Some(payer) = payer {
+                cs.push(format!("Constraint.realloc \"{}\" {} {}", payer, newlen, zero));
+            }
+        }
+        // init_if_needed: InitIfNeeded + Payer + Space -> Constraint.initIfNeeded "<payer>" <space> Pubkey.zero
+        if spec.constraints.iter().any(|c| matches!(c, Constraint::InitIfNeeded)) {
+            let payer = spec.constraints.iter().find_map(|c|
+                if let Constraint::Payer(p) = c { Some(p.to_string()) } else { None });
+            let space = spec.constraints.iter().find_map(|c|
+                if let Constraint::Space(n) = c { Some(*n) } else { None });
+            if let (Some(payer), Some(space)) = (payer, space) {
+                cs.push(format!("Constraint.initIfNeeded \"{}\" {} Pubkey.zero", payer, space));
+            }
         }
         let ty = match &spec.kind {
             WrapperKind::Account(t) => {
@@ -904,7 +923,8 @@ pub fn derive_verified_accounts(input: TokenStream) -> TokenStream {
     let lean = lean_spec_string(&specs);
     let lifecycle = lifecycle_body(&specs);
     let has_lifecycle = specs.iter().any(|s| s.constraints.iter().any(|c|
-        matches!(c, Constraint::InitMarker | Constraint::Close(_))));
+        matches!(c, Constraint::InitMarker | Constraint::Close(_)
+                  | Constraint::Realloc(_) | Constraint::InitIfNeeded)));
     let name_str = name.to_string();
 
     let has_info = !specs.is_empty();

@@ -2,6 +2,15 @@ use sha2::{Digest, Sha256};
 use verified_anchor::VerifiedAccounts;
 use verified_anchor::{Signer, UncheckedAccount};
 
+// Required so that Account<'info, T> (which implies owner = crate::ID) can be used in
+// init_if_needed tests below.
+solana_program::declare_id!("VASpec1111111111111111111111111111111111111");
+
+#[derive(borsh::BorshSerialize, borsh::BorshDeserialize, verified_anchor_macros::AccountData)]
+struct VaultAccount {
+    value: u64,
+}
+
 #[derive(VerifiedAccounts)]
 struct Transfer<'info> {
     #[account(mut)]
@@ -109,4 +118,46 @@ fn lean_spec_discriminator_bytes_match_anchor() {
     );
     let s = DiscSpec::lean_spec();
     assert!(s.contains(&expected_constraint), "spec missing real-Anchor discriminator bytes:\n{s}");
+}
+
+// ── M9 lifecycle constraint emission tests ────────────────────────────────────────────────
+
+#[derive(VerifiedAccounts)]
+struct ZeroSpec<'info> {
+    #[account(zero)]
+    vault: UncheckedAccount<'info>,
+}
+
+#[test]
+fn lean_spec_emits_zero_constraint() {
+    let s = ZeroSpec::lean_spec();
+    assert!(s.contains("Constraint.zero"), "Constraint.zero missing: {s}");
+}
+
+#[derive(VerifiedAccounts)]
+struct ReallocSpec<'info> {
+    #[account(mut, realloc = 64, realloc::payer = payer, realloc::zero = true)]
+    data: UncheckedAccount<'info>,
+    #[account(mut)]
+    payer: UncheckedAccount<'info>,
+}
+
+#[test]
+fn lean_spec_emits_realloc_constraint() {
+    let s = ReallocSpec::lean_spec();
+    assert!(s.contains("Constraint.realloc \"payer\" 64 true"), "Constraint.realloc missing: {s}");
+}
+
+#[derive(VerifiedAccounts)]
+struct InitIfNeededSpec<'info> {
+    #[account(init_if_needed, payer = payer, space = 64)]
+    data: verified_anchor::Account<'info, VaultAccount>,
+    #[account(mut)]
+    payer: UncheckedAccount<'info>,
+}
+
+#[test]
+fn lean_spec_emits_init_if_needed_constraint() {
+    let s = InitIfNeededSpec::lean_spec();
+    assert!(s.contains("Constraint.initIfNeeded \"payer\" 64 Pubkey.zero"), "Constraint.initIfNeeded missing: {s}");
 }
