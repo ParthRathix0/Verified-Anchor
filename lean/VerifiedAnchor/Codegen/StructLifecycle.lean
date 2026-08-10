@@ -21,6 +21,10 @@ def lifecyclePost (s : AccountsStruct) (idx : Nat) : Constraint → Prop
           applyRealloc idx payerIdx newLen z c = some c' →
             ∃ a, c'.accounts[idx]? = some a ∧ a.data.size = newLen ∧
               rentExemptMinimum newLen ≤ a.lamports ∧ aPre.lamports ≤ a.lamports
+  | .initIfNeeded payerName space owner =>
+      ∀ payerIdx, List.findIdx? (·.name == payerName) s.fields = some payerIdx →
+        ∀ rent c c', applyInitIfNeeded idx payerIdx space owner initDisc rent c = some c' →
+          ∃ a, c'.accounts[idx]? = some a ∧ a.owner = owner ∧ space + 8 ≤ a.data.size
   | _ => True
 
 /-- Decidable well-formedness: each init/close clause resolves payer/dest to a DIFFERENT
@@ -35,6 +39,10 @@ def lifecycleClauseWF (s : AccountsStruct) (idx : Nat) : Constraint → Bool
       | some di => decide (idx ≠ di)
       | none => true
   | .realloc payerName _ _ =>
+      match List.findIdx? (·.name == payerName) s.fields with
+      | some pi => decide (idx ≠ pi)
+      | none => true
+  | .initIfNeeded payerName _ _ =>
       match List.findIdx? (·.name == payerName) s.fields with
       | some pi => decide (idx ≠ pi)
       | none => true
@@ -79,7 +87,11 @@ theorem lifecycle_sound (s : AccountsStruct) (h : StructLifecycleWF s) :
     have hne : p.2 ≠ payerIdx := of_decide_eq_true hwf
     exact realloc_establishes_post p.2 payerIdx newLen z c c' aPre hne hpre heff
   | zero => trivial
-  | initIfNeeded payer space owner => trivial
+  | initIfNeeded payerName space owner =>
+    intro payerIdx hpayer rent c c' heff
+    simp only [lifecycleClauseWF, hpayer] at hwf
+    have hne : p.2 ≠ payerIdx := of_decide_eq_true hwf
+    exact initIfNeeded_establishes_post p.2 payerIdx space owner initDisc rent c c' hne (by decide) heff
 
 /-- Sanity: a struct whose `init` payer resolves to a different field is well-formed; one
     whose payer resolves to itself is not. (Crypto-free, so `decide` reduces.) -/
@@ -108,5 +120,19 @@ private def egReallocBad : AccountsStruct :=
                   constraints := [Constraint.realloc "data" 64 true] } ] }
 #guard decide (StructLifecycleWF egReallocGood) = true
 #guard decide (StructLifecycleWF egReallocBad) = false
+
+/-- Sanity: a struct whose `init_if_needed` payer resolves to a different field is well-formed; one
+    whose payer resolves to itself is not. (Crypto-free, so `decide` reduces.) -/
+private def egIinGood : AccountsStruct :=
+  { programId := Pubkey.zero
+  , fields := [ { name := "acct", ty := AccountType.uncheckedAccount,
+                  constraints := [Constraint.initIfNeeded "payer" 0 Pubkey.zero] }
+              , { name := "payer", ty := AccountType.uncheckedAccount, constraints := [] } ] }
+private def egIinBad : AccountsStruct :=
+  { programId := Pubkey.zero
+  , fields := [ { name := "acct", ty := AccountType.uncheckedAccount,
+                  constraints := [Constraint.initIfNeeded "acct" 0 Pubkey.zero] } ] }  -- payer = self
+#guard decide (StructLifecycleWF egIinGood) = true
+#guard decide (StructLifecycleWF egIinBad) = false
 
 end VerifiedAnchor

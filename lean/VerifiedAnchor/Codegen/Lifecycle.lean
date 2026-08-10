@@ -59,6 +59,19 @@ def applyRealloc (idx payerIdx newLen : Nat) (zero : Bool) (c : Ctx) : Option Ct
     else none
   | _, _ => none
 
+/-- Model of Anchor `init_if_needed`: if the account is uninitialized (all-zero discriminator),
+    run `applyInit`; otherwise accept it ONLY if it is already a valid, sufficiently-sized,
+    program-owned account (else `none` — the reinit guard). Both success branches establish the
+    same `init` post-condition (owned by `owner`, data ≥ space+8). -/
+def applyInitIfNeeded (idx payerIdx space : Nat) (owner : Pubkey) (disc : ByteArray)
+    (rent : UInt64) (c : Ctx) : Option Ctx :=
+  match c.accounts[idx]? with
+  | some a =>
+    if isZeroDisc a then applyInit idx payerIdx space owner disc rent c
+    else if a.owner = owner ∧ space + 8 ≤ a.data.size then some c
+    else none
+  | none => none
+
 /-- Read-back lemma for `Ctx.update`: an index reads through `g` exactly when it is the
     updated index (and stays in range), otherwise it is untouched. -/
 theorem Ctx.accounts_getElem?_update (c : Ctx) (i j : Nat) (g : AccountInfo → AccountInfo) :
@@ -244,7 +257,33 @@ example (c : Ctx) (a p : AccountInfo)
       c'.accounts[0]? = some a' ∧ a'.lamports = a.lamports ∧ a'.data.size = 8 :=
   applyRealloc_noTopUp_succeeds 0 1 8 true c a p (by decide) ha hp hsign hwrite hexempt
 
+/-- `applyInitIfNeeded` establishes the SAME `init` post-condition for the target account in BOTH
+    success branches: it exists, is owned by `owner`, and has data of size at least `space + 8`.
+    The uninitialized branch delegates to `init_establishes_post`; the existing-account branch is
+    the reinit guard — it only succeeds when the account is already program-owned and large enough,
+    so the post holds with no external hypothesis (a wrong-owner account returns `none`). -/
+theorem initIfNeeded_establishes_post
+    (idx payerIdx space owner disc rent c c') (hne : idx ≠ payerIdx) (hdisc : disc.size = 8)
+    (h : applyInitIfNeeded idx payerIdx space owner disc rent c = some c') :
+    ∃ a, c'.accounts[idx]? = some a ∧ a.owner = owner ∧ space + 8 ≤ a.data.size := by
+  unfold applyInitIfNeeded at h
+  split at h
+  · next a hpre =>
+    split at h
+    · -- uninitialized: applyInit … = some c'; reuse init_establishes_post wholesale
+      exact init_establishes_post idx payerIdx space owner disc rent c c' hne hdisc h
+    · -- existing account: split on the owner+size guard
+      split at h
+      · next hguard =>
+        -- guard passed: some c = some c', so c = c'; witness is the existing account `a`
+        injection h with hc'
+        subst hc'
+        exact ⟨a, hpre, hguard.1, hguard.2⟩
+      · exact absurd h (by simp)
+  · exact absurd h (by simp)
+
 -- Axiom audit (run manually to confirm; kept as a comment so the build stays quiet):
 --   #print axioms realloc_establishes_post  ⇒  'depends on axioms: [propext, Quot.sound]'
+--   #print axioms initIfNeeded_establishes_post  ⇒  'depends on axioms: [propext, Quot.sound]'
 
 end VerifiedAnchor
