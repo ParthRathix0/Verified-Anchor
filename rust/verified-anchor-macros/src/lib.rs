@@ -896,7 +896,7 @@ fn lifecycle_body(specs: &[FieldSpec]) -> TokenStream2 {
                     let __min = __rent.minimum_balance(#newlen);
                     let __cur = accounts[#i].lamports();
                     if __min > __cur {
-                        let __delta = __min - __cur;
+                        let __delta = __min.saturating_sub(__cur);
                         // top-up: payer -> account (payer is a writable signer; system-owned)
                         let __ix = ::verified_anchor::solana_program::system_instruction::transfer(
                             accounts[#pi].key, accounts[#i].key, __delta);
