@@ -312,4 +312,50 @@ theorem rentExemptStruct_sound (c : Ctx) :
     genValidate rentExemptStruct c = true ↔ validates rentExemptStruct c :=
   genValidate_sound rentExemptStruct c rentExemptStruct_M4
 
+/-! ## zero closed-loop (M4, crypto-free)
+
+`Constraint.zero` checks that the discriminator slot is all-zero (uninitialized account).
+Unlike `discriminator`, `isZeroDisc` compares against literal zeros — no `sha256` wall — so
+`genConstraint` DOES reduce under `decide`.
+
+`zeroStruct` has one field with an explicit `.zero` constraint.
+`zeroAcct` has 8 zero bytes (the discriminator slot); `nonZeroAcct` has a non-zero first byte. -/
+
+def zeroStruct : AccountsStruct :=
+  { programId := Pubkey.zero
+  , fields := [ { name := "acct", ty := AccountType.uncheckedAccount,
+                  constraints := [Constraint.zero] } ] }
+
+/-- Eight zero bytes in the discriminator slot — accepted by `zero`. -/
+def zeroAcct : AccountInfo :=
+  { key := Pubkey.zero, lamports := 0, data := ByteArray.mk (Array.replicate 8 0),
+    owner := Pubkey.zero, rentEpoch := 0, isSigner := false, isWritable := false,
+    executable := false }
+
+/-- Non-zero first byte — rejected by `zero`. -/
+def nonZeroAcct : AccountInfo := { zeroAcct with data := ByteArray.mk (Array.replicate 8 1) }
+
+#guard genConstraint zeroStruct (Ctx.ofAccounts [zeroAcct]) 0
+         { name := "acct", ty := AccountType.uncheckedAccount, constraints := [Constraint.zero] }
+         Constraint.zero = true
+#guard genConstraint zeroStruct (Ctx.ofAccounts [nonZeroAcct]) 0
+         { name := "acct", ty := AccountType.uncheckedAccount, constraints := [Constraint.zero] }
+         Constraint.zero = false
+#guard genValidate zeroStruct (Ctx.ofAccounts [zeroAcct]) = true
+#guard genValidate zeroStruct (Ctx.ofAccounts [nonZeroAcct]) = false
+
+theorem zeroStruct_M4 : M4Subset zeroStruct := by decide
+
+/-- THE zero CLOSED LOOP: decide confirms the constraint reduces (crypto-free), and
+    M4Subset + genValidate_sound close the proof obligation for the zero-data context. -/
+theorem zeroStruct_sound (c : Ctx) :
+    genValidate zeroStruct c = true ↔ validates zeroStruct c :=
+  genValidate_sound zeroStruct c zeroStruct_M4
+
+theorem zeroStruct_good_validates : validates zeroStruct (Ctx.ofAccounts [zeroAcct]) :=
+  (genValidate_sound zeroStruct (Ctx.ofAccounts [zeroAcct]) zeroStruct_M4).mp (by decide)
+
+-- `decide (M4Subset zeroStruct)` reduces to `true` — the subset check is crypto-free.
+#guard decide (M4Subset zeroStruct) = true
+
 end VerifiedAnchor.Codegen.Examples

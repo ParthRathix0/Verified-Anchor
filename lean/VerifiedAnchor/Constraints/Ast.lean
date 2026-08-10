@@ -40,6 +40,18 @@ inductive Constraint where
       wall like `sha256`, cross-checked empirically by litesvm). `rent_exempt = skip` emits NO
       constraint (the documented SAFE-BY-DEFAULT opt-out). -/
   | rentExempt
+  /-- `realloc = newLen` (+ `realloc::payer`, `realloc::zero`): resize the account's data to
+      `newLen` total bytes, top up lamports from `payer` to stay rent-exempt (never debits the
+      account), and (when `zero`) zero-fill the grown region. A lifecycle marker — not a
+      validation constraint (`genConstraint` returns false); modelled by `applyRealloc`. -/
+  | realloc        (payer : String) (newLen : Nat) (zero : Bool)
+  /-- `zero`: the account's 8-byte discriminator is currently all-zero (allocated, never
+      initialized) — the reinit guard. A VALIDATION constraint (crypto-free; reduces under
+      `decide`). -/
+  | zero
+  /-- `init_if_needed`: init the account when uninitialized, else accept the existing valid
+      account. A lifecycle marker; modelled by `applyInitIfNeeded`. -/
+  | initIfNeeded   (payer : String) (space : Nat) (owner : Pubkey)
   deriving Inhabited
 
 /-- Whether a constraint is the `mut` (writable) marker. A constructor test rather than full

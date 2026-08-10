@@ -61,6 +61,7 @@ def genConstraint (s : AccountsStruct) (c : Ctx) (idx : Nat) (f : AccountField) 
   | .discriminator d => (Ctx.atField s c idx).allB (fun a => decide (hasDiscriminator a d))
   | .hasOne field    => genHasOne s c idx f field
   | .seeds ss b program => genSeeds s c idx ss b program
+  | .zero            => (Ctx.atField s c idx).allB (fun a => decide (isZeroDisc a))
   | _                => false
 
 def genFieldValidate (s : AccountsStruct) (c : Ctx) (idx : Nat) (f : AccountField) : Bool :=

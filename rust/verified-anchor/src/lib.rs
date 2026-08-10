@@ -48,6 +48,10 @@ pub enum VAError {
     /// Account does not hold enough lamports to be rent-exempt.
     /// Emitted by `rent_exempt = enforce`; accounts must satisfy `Rent::is_exempt`.
     NotRentExempt { field: &'static str },
+    /// `realloc` failed (resize or rent top-up).
+    ReallocFailed { field: &'static str },
+    /// `zero` precondition failed: the account's 8-byte discriminator was not all-zero.
+    NotZeroed { field: &'static str },
 }
 
 impl core::fmt::Display for VAError {
@@ -72,6 +76,8 @@ impl core::fmt::Display for VAError {
                 write!(f, "mutable accounts `{field_a}` and `{field_b}` are the same account"),
             VAError::NotRentExempt { field } =>
                 write!(f, "account `{field}` is not rent-exempt"),
+            VAError::ReallocFailed { field } => write!(f, "realloc failed for `{field}`"),
+            VAError::NotZeroed { field } => write!(f, "account `{field}` is not zero-initialized"),
         }
     }
 }
@@ -98,6 +104,8 @@ impl From<VAError> for solana_program::program_error::ProgramError {
             VAError::NotExecutable { .. } => 13,
             VAError::DuplicateAccount { .. } => 14,
             VAError::NotRentExempt { .. } => 15,
+            VAError::ReallocFailed { .. } => 16,
+            VAError::NotZeroed { .. } => 17,
         };
         solana_program::program_error::ProgramError::Custom(code)
     }

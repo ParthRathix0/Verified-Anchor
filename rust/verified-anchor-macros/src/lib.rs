@@ -160,6 +160,16 @@ enum Constraint {
     /// `rent_exempt = skip` — explicitly opt out of the rent-exemption check.
     /// Emits nothing in lean_spec and no runtime check (SAFE-BY-DEFAULT opt-out).
     RentExemptSkip,
+    /// `realloc = <newLen>` — resize the account data to `<newLen>` total bytes (lifecycle).
+    Realloc(usize),
+    /// `realloc::payer = <ident>` — funds the rent top-up on grow.
+    ReallocPayer(syn::Ident),
+    /// `realloc::zero = <bool>` — zero-fill the grown region.
+    ReallocZero(bool),
+    /// `zero` — the all-zero-discriminator reinit guard (a VALIDATION constraint).
+    Zero,
+    /// `init_if_needed` — conditional init (lifecycle); reuses `Payer`/`Space`.
+    InitIfNeeded,
 }
 
 impl Parse for Constraint {
@@ -276,9 +286,33 @@ impl Parse for Constraint {
                         format!("expected `enforce` or `skip` after `rent_exempt =`, got `{other}`"))),
                 }
             }
+            "zero" => Ok(Constraint::Zero),
+            "init_if_needed" => Ok(Constraint::InitIfNeeded),
+            "realloc" => {
+                // `realloc::payer = <ident>` / `realloc::zero = <bool>` / `realloc = <n>`
+                // Mirror the `seeds`/`seeds::program` `::`-peek pattern.
+                if input.peek(Token![::]) {
+                    input.parse::<Token![::]>()?;
+                    let key: syn::Ident = input.parse()?;
+                    input.parse::<Token![=]>()?;
+                    match key.to_string().as_str() {
+                        "payer" => Ok(Constraint::ReallocPayer(input.parse()?)),
+                        "zero" => {
+                            let b: syn::LitBool = input.parse()?;
+                            Ok(Constraint::ReallocZero(b.value))
+                        }
+                        other => Err(syn::Error::new(key.span(),
+                            format!("unsupported `realloc::` key `{other}` (expected `payer` or `zero`)"))),
+                    }
+                } else {
+                    input.parse::<Token![=]>()?;
+                    let lit: syn::LitInt = input.parse()?;
+                    Ok(Constraint::Realloc(lit.base10_parse()?))
+                }
+            }
             other => {
                 let known_unsupported = [
-                    "realloc", "zero", "constraint", "token", "mint",
+                    "constraint", "token", "mint",
                     "associated_token", "owner_program",
                     "token_program",
                 ];
@@ -289,7 +323,7 @@ impl Parse for Constraint {
                 };
                 Err(syn::Error::new(
                     ident.span(),
-                    format!("{hint}; verified-anchor supports: signer, mut, owner, has_one, allow_duplicate, init, payer, space, close, seeds, seeds::program, bump, discriminator, address, executable, rent_exempt. See docs/migrating-from-anchor.md"),
+                    format!("{hint}; verified-anchor supports: signer, mut, owner, has_one, allow_duplicate, init, init_if_needed, payer, space, close, seeds, seeds::program, bump, discriminator, address, executable, rent_exempt, realloc, realloc::payer, realloc::zero, zero. See docs/migrating-from-anchor.md"),
                 ))
             }
         }
@@ -399,6 +433,11 @@ fn lean_constraint(c: &Constraint) -> String {
         // `rent_exempt = enforce` emits the Lean constraint; `skip` emits nothing.
         Constraint::RentExemptEnforce => "Constraint.rentExempt".to_string(),
         Constraint::RentExemptSkip => String::new(),
+        // `zero` is a validation constraint (reinit guard); emitted directly in the spec.
+        Constraint::Zero => "Constraint.zero".to_string(),
+        // Lifecycle markers assembled in lean_spec_string; emit nothing standalone.
+        Constraint::Realloc(_) | Constraint::ReallocPayer(_) | Constraint::ReallocZero(_)
+        | Constraint::InitIfNeeded => String::new(),
     }
 }
 
@@ -424,6 +463,26 @@ fn lean_spec_string(specs: &[FieldSpec]) -> String {
         if let Some(dest) = spec.constraints.iter().find_map(|c|
             if let Constraint::Close(d) = c { Some(d.to_string()) } else { None }) {
             cs.push(format!("Constraint.close \"{}\"", dest));
+        }
+        // realloc: Realloc(newLen) + ReallocPayer(p) [+ ReallocZero(z)] -> Constraint.realloc "<p>" <newLen> <z>
+        if let Some(newlen) = spec.constraints.iter().find_map(|c|
+            if let Constraint::Realloc(n) = c { Some(*n) } else { None }) {
+            let payer = spec.constraints.iter().find_map(|c|
+                if let Constraint::ReallocPayer(p) = c { Some(p.to_string()) } else { None });
+            let zero = spec.constraints.iter().any(|c| matches!(c, Constraint::ReallocZero(true)));
+            if let Some(payer) = payer {
+                cs.push(format!("Constraint.realloc \"{}\" {} {}", payer, newlen, zero));
+            }
+        }
+        // init_if_needed: InitIfNeeded + Payer + Space -> Constraint.initIfNeeded "<payer>" <space> Pubkey.zero
+        if spec.constraints.iter().any(|c| matches!(c, Constraint::InitIfNeeded)) {
+            let payer = spec.constraints.iter().find_map(|c|
+                if let Constraint::Payer(p) = c { Some(p.to_string()) } else { None });
+            let space = spec.constraints.iter().find_map(|c|
+                if let Constraint::Space(n) = c { Some(*n) } else { None });
+            if let (Some(payer), Some(space)) = (payer, space) {
+                cs.push(format!("Constraint.initIfNeeded \"{}\" {} Pubkey.zero", payer, space));
+            }
         }
         let ty = match &spec.kind {
             WrapperKind::Account(t) => {
@@ -505,7 +564,16 @@ fn validate_body(specs: &[FieldSpec]) -> TokenStream2 {
     for (i, spec) in specs.iter().enumerate() {
         let name = &spec.name;
         let implied = wrapper_implied(&spec.kind);
+        // init_if_needed drop-in: a FRESH (system-owned, zero-disc) account cannot pass the
+        // wrapper-implied Owner(crate::ID)/Discriminator checks, which would block the very
+        // init path init_if_needed exists for. So for an iin field we filter OUT the
+        // wrapper-IMPLIED Owner/Discriminator here; the reinit guard (owner + size on an
+        // already-initialized account) is re-established in execute_lifecycle's iin ELSE
+        // branch, matching the proven Lean `applyInitIfNeeded`. Explicit seeds/address/etc.
+        // constraints are KEPT — they identify the account and hold on fresh AND existing.
+        let has_iin = spec.constraints.iter().any(|c| matches!(c, Constraint::InitIfNeeded));
         let effective: Vec<Constraint> = implied.into_iter()
+            .filter(|c| !(has_iin && matches!(c, Constraint::Owner(_) | Constraint::Discriminator(_))))
             .chain(spec.constraints.iter().cloned())
             .collect();
         for c in &effective {
@@ -605,6 +673,24 @@ fn validate_body(specs: &[FieldSpec]) -> TokenStream2 {
                 // skip emits nothing — documented SAFE-BY-DEFAULT opt-out.
                 Constraint::RentExemptSkip => {
                     continue;
+                }
+                // Lifecycle markers (handled in execute_lifecycle, not validate).
+                Constraint::Realloc(_) | Constraint::ReallocPayer(_) | Constraint::ReallocZero(_)
+                | Constraint::InitIfNeeded => {
+                    continue;
+                }
+                // `zero`: reinit guard — checks the first 8 bytes are all-zero.
+                Constraint::Zero => {
+                    let fname = name;
+                    quote! {
+                        {
+                            let data = accounts[#i].try_borrow_data()
+                                .map_err(|_| ::verified_anchor::VAError::NotZeroed { field: #fname })?;
+                            if data.len() < 8 || data[0..8] != [0u8; 8] {
+                                return Err(::verified_anchor::VAError::NotZeroed { field: #fname });
+                            }
+                        }
+                    }
                 }
             };
             checks.push(check);
@@ -800,6 +886,134 @@ fn lifecycle_body(specs: &[FieldSpec]) -> TokenStream2 {
                 }
             });
         }
+
+        // realloc
+        let realloc_newlen = spec.constraints.iter().find_map(|c|
+            if let Constraint::Realloc(n) = c { Some(*n) } else { None });
+        if let Some(newlen) = realloc_newlen {
+            let payer_name = spec.constraints.iter().find_map(|c|
+                if let Constraint::ReallocPayer(p) = c { Some(p.to_string()) } else { None })
+                .unwrap_or_else(|| panic!("realloc on `{}` needs realloc::payer", fname));
+            let pi = *index_of.get(&payer_name)
+                .unwrap_or_else(|| panic!("realloc::payer `{payer_name}` is not a field of this struct"));
+            let zero_flag = spec.constraints.iter().any(|c| matches!(c, Constraint::ReallocZero(true)));
+            lifecycle_steps.push(quote! {
+                {
+                    use ::verified_anchor::solana_program::sysvar::Sysvar as _;
+                    let __rent = ::verified_anchor::solana_program::rent::Rent::get()
+                        .map_err(|_| ::verified_anchor::VAError::ReallocFailed { field: #fname })?;
+                    let __min = __rent.minimum_balance(#newlen);
+                    let __cur = accounts[#i].lamports();
+                    if __min > __cur {
+                        let __delta = __min.saturating_sub(__cur);
+                        // top-up: payer -> account (payer is a writable signer; system-owned)
+                        let __ix = ::verified_anchor::solana_program::system_instruction::transfer(
+                            accounts[#pi].key, accounts[#i].key, __delta);
+                        ::verified_anchor::solana_program::program::invoke(&__ix, accounts)
+                            .map_err(|_| ::verified_anchor::VAError::ReallocFailed { field: #fname })?;
+                    }
+                    accounts[#i].realloc(#newlen, #zero_flag)
+                        .map_err(|_| ::verified_anchor::VAError::ReallocFailed { field: #fname })?;
+                }
+            });
+        }
+
+        // init_if_needed
+        let has_iin = spec.constraints.iter().any(|c| matches!(c, Constraint::InitIfNeeded));
+        if has_iin {
+            let payer_name = spec.constraints.iter().find_map(|c|
+                if let Constraint::Payer(p) = c { Some(p.to_string()) } else { None })
+                .unwrap_or_else(|| panic!("init_if_needed on `{}` needs payer", fname));
+            let pi = *index_of.get(&payer_name)
+                .unwrap_or_else(|| panic!("init_if_needed payer `{payer_name}` is not a field"));
+            let n = spec.constraints.iter().find_map(|c|
+                if let Constraint::Space(n) = c { Some(*n) } else { None })
+                .unwrap_or_else(|| panic!("init_if_needed on `{}` needs space", fname));
+            // The Task 6 struct-level guard requires an iin field to be a typed
+            // `Account<'info, T>`; extract T so we can stamp its real Anchor discriminator
+            // (making the fresh account a valid, type-correct, re-detectable account) and
+            // reject a wrong-owner/undersized existing account in the ELSE branch.
+            let t = match &spec.kind {
+                WrapperKind::Account(t) => t.clone(),
+                _ => panic!("init_if_needed on `{}` must be a typed Account (Task 6 guard)", fname),
+            };
+            // Seeded-PDA iin fields must be created with `invoke_signed` (the PDA is off-curve
+            // and cannot sign as a tx signer). Re-derive the canonical bump inside
+            // `execute_lifecycle` from the field's seed literals/field-keys and pass the signer
+            // seeds. `arg(..)` seeds are NOT supported here — execute_lifecycle has no instr_data
+            // — so reject them at compile time with a clear message.
+            let seeds_for_signed: Option<Vec<TokenStream2>> = spec.constraints.iter()
+                .find_map(|c| if let Constraint::Seeds(elems) = c { Some(elems) } else { None })
+                .map(|elems| elems.iter().map(|se| match se {
+                    SeedElem::Literal(b) => quote! { &#b[..] },
+                    SeedElem::FieldKey(id) => {
+                        let fi = *index_of.get(&id.to_string())
+                            .unwrap_or_else(|| panic!("seed field `{}` is not a field of this struct", id));
+                        quote! { accounts[#fi].key.as_ref() }
+                    }
+                    SeedElem::InstrArg(_, _) => panic!(
+                        "init_if_needed on `{}` uses an `arg(..)` seed, which is unsupported (execute_lifecycle has no instruction data to derive it); use literal or field-key seeds", fname),
+                }).collect());
+            let init_create = match &seeds_for_signed {
+                Some(seed_exprs) => quote! {
+                    // Seeded PDA: derive the canonical bump, then invoke_signed so the PDA can
+                    // authorize its own creation.
+                    let __seeds: &[&[u8]] = &[ #(#seed_exprs),* ];
+                    let (__pda, __bump) = ::verified_anchor::solana_program::pubkey::Pubkey::find_program_address(__seeds, program_id);
+                    if accounts[#i].key != &__pda {
+                        return Err(::verified_anchor::VAError::InitFailed { field: #fname });
+                    }
+                    let __signer_seeds: &[&[u8]] = &[ #(#seed_exprs,)* &[__bump] ];
+                    ::verified_anchor::solana_program::program::invoke_signed(&ix, accounts, &[__signer_seeds])
+                        .map_err(|_| ::verified_anchor::VAError::InitFailed { field: #fname })?;
+                },
+                None => quote! {
+                    ::verified_anchor::solana_program::program::invoke(&ix, accounts)
+                        .map_err(|_| ::verified_anchor::VAError::InitFailed { field: #fname })?;
+                },
+            };
+            lifecycle_steps.push(quote! {
+                {
+                    let __needs_init = {
+                        let d = accounts[#i].try_borrow_data()
+                            .map_err(|_| ::verified_anchor::VAError::InitFailed { field: #fname })?;
+                        // This predicate is a deliberate strict SUPERSET of the Lean model's
+                        // `isZeroDisc` on the short-data (`len < 8`) case: a genuinely fresh
+                        // account may present zero-length data, so we init it (create_account
+                        // still establishes the proven owner+size post); it is never an
+                        // attacker's already-initialized account.
+                        d.len() < 8 || d[0..8] == [0u8; 8]
+                    };
+                    if __needs_init {
+                        // FRESH branch (Lean `applyInit`): create the account owned by this
+                        // program and stamp T's REAL discriminator into the first 8 bytes so
+                        // the account is a valid, type-correct, non-zero-disc Anchor account.
+                        let space_total: usize = #n + 8;
+                        let ix = ::verified_anchor::solana_program::system_instruction::create_account(
+                            accounts[#pi].key, accounts[#i].key, rent_lamports, space_total as u64, program_id);
+                        #init_create
+                        let __disc = <#t as ::verified_anchor::AccountData>::DISCRIMINATOR;
+                        let mut d = accounts[#i].try_borrow_mut_data()
+                            .map_err(|_| ::verified_anchor::VAError::InitFailed { field: #fname })?;
+                        if d.len() < 8 {
+                            return Err(::verified_anchor::VAError::InitFailed { field: #fname });
+                        }
+                        d[0..8].copy_from_slice(&__disc);
+                    } else {
+                        // EXISTING branch (Lean `applyInitIfNeeded` else): the account is
+                        // already initialized (non-zero disc). Accept it ONLY if it is a
+                        // program-owned account of sufficient size — otherwise this is a
+                        // reinit/wrong-account attack and we reject. (`owner` is `&Pubkey`;
+                        // `data_len()` is the data length, per the close/realloc steps above.)
+                        if accounts[#i].owner != program_id
+                            || accounts[#i].data_len() < (#n + 8)
+                        {
+                            return Err(::verified_anchor::VAError::InitFailed { field: #fname });
+                        }
+                    }
+                }
+            });
+        }
     }
 
     quote! {
@@ -828,11 +1042,32 @@ pub fn derive_verified_accounts(input: TokenStream) -> TokenStream {
         Err(e) => return e.to_compile_error().into(),
     };
     let name = &input.ident;
+
+    // Guard: `realloc` requires `mut` — realloc mutates the account data in place.
+    // Guard: `init_if_needed` requires a typed `Account<'info, T>` — the wrapper's
+    //        owner+discriminator checks are the reinit guard (prevents reuse attacks).
+    for spec in &specs {
+        let has_realloc = spec.constraints.iter().any(|c| matches!(c, Constraint::Realloc(_)));
+        let has_mut = spec.constraints.iter().any(|c| matches!(c, Constraint::Mut));
+        if has_realloc && !has_mut {
+            return syn::Error::new_spanned(name,
+                format!("field `{}` uses `realloc` but is not `mut`; realloc mutates the account", spec.name))
+                .to_compile_error().into();
+        }
+        if spec.constraints.iter().any(|c| matches!(c, Constraint::InitIfNeeded))
+            && !matches!(spec.kind, WrapperKind::Account(_)) {
+            return syn::Error::new_spanned(name,
+                format!("field `{}` uses `init_if_needed` but is not a typed `Account<'info, T>`; the wrapper's owner+discriminator checks are the reinit guard", spec.name))
+                .to_compile_error().into();
+        }
+    }
+
     let body = validate_body(&specs);
     let lean = lean_spec_string(&specs);
     let lifecycle = lifecycle_body(&specs);
     let has_lifecycle = specs.iter().any(|s| s.constraints.iter().any(|c|
-        matches!(c, Constraint::InitMarker | Constraint::Close(_))));
+        matches!(c, Constraint::InitMarker | Constraint::Close(_)
+                  | Constraint::Realloc(_) | Constraint::InitIfNeeded)));
     let name_str = name.to_string();
 
     let has_info = !specs.is_empty();

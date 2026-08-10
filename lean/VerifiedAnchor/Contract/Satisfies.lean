@@ -18,6 +18,20 @@ instance {α : Type _} (o : Option α) (P : α → Prop) [∀ a, Decidable (P a)
 
 namespace VerifiedAnchor
 
+/-- The 8 all-zero bytes an uninitialized Anchor account's discriminator slot holds.
+    Note: shares the same byte content as `StructLifecycle.initDisc` (both are 8 zero bytes),
+    but is semantically distinct — this is the never-initialized-account sentinel, while
+    `initDisc` is the init-time discriminator marker written before stamping the real disc. -/
+def zeroDisc : ByteArray := ByteArray.mk (Array.replicate 8 0)
+
+/-- The account's discriminator slot is all-zero (allocated but never initialized). Crypto-free
+    (compares against literal zeros), so it reduces under `decide` — unlike the typed
+    `accountDiscriminator` check, which hits the opaque `sha256` wall. -/
+def isZeroDisc (a : AccountInfo) : Prop := hasDiscriminator a zeroDisc
+
+instance (a : AccountInfo) : Decidable (isZeroDisc a) :=
+  inferInstanceAs (Decidable (hasDiscriminator a zeroDisc))
+
 /-- Whether an actual bump matches a declared bump spec (canonical accepts anything).
     The `.stored` opt-in does NOT go through `bumpMatches` (its PDA-derivation IS the check),
     so this case is never reached from `satisfies`; it accepts (`True`) only to stay total. -/
@@ -92,6 +106,16 @@ def satisfies (s : AccountsStruct) (c : Ctx) (idx : Nat) (f : AccountField) :
       (Ctx.atField s c idx).satisfiesSome (fun a =>
         (Ctx.lookup s c dest).satisfiesSome (fun _ => True) ∧
           a.lamports = 0 ∧ hasDiscriminator a closedAccountDiscriminator)
+  | .zero => (Ctx.atField s c idx).satisfiesSome (fun a => isZeroDisc a)
+  | .realloc payer _ _ =>
+      -- Contract precondition for the funding payer (the resize post is the Hoare obligation,
+      -- not this validate-side Prop). Kept decidable + total.
+      (Ctx.atField s c idx).satisfiesSome (fun _ =>
+        (Ctx.lookup s c payer).satisfiesSome (fun p => p.isSigner = true ∧ p.isWritable = true))
+  | .initIfNeeded payer space owner =>
+      (Ctx.atField s c idx).satisfiesSome (fun a =>
+        (Ctx.lookup s c payer).satisfiesSome (fun p =>
+          a.owner = owner ∧ p.isSigner = true ∧ p.isWritable = true ∧ space + 8 ≤ a.data.size))
 
 /-- The contract is decidable, constraint by constraint. Load-bearing for `validatesBool`.
     The `.seeds` case must also split on the `BumpSpec` so the inner `match b with` reduces to

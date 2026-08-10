@@ -1,0 +1,5 @@
+error: field `data` uses `realloc` but is not `mut`; realloc mutates the account
+  --> tests/ui/realloc_without_mut.rs:12:8
+   |
+12 | struct NeedsMut<'info> {
+   |        ^^^^^^^^
