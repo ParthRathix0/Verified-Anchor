@@ -233,3 +233,19 @@ fn lean_spec_emits_instr_args_and_arg_field_seeds() {
     assert!(s.contains("instrArgs := [(\"name\", Ty.string)]"), "spec was: {s}");
     assert!(s.contains("SeedSpec.argField \"name\""), "spec was: {s}");
 }
+/// A numeric `to_le_bytes()` seed emits the SAME `SeedSpec.argField` as the `as_bytes()` form —
+/// the surface spelling is a type check, not a second seed source. Lean `argBytes` decides the
+/// bytes from the declared `Ty` alone (`Ty.u64` takes the fixed-size arm, no framing to strip).
+#[derive(VerifiedAccounts)]
+#[instruction(amount: u64)]
+struct NumericSeedFromArg<'info> {
+    #[account(seeds = [b"vault", amount.to_le_bytes().as_ref()], bump)]
+    pda: UncheckedAccount<'info>,
+}
+
+#[test]
+fn lean_spec_emits_numeric_instr_arg_seeds() {
+    let s = NumericSeedFromArg::lean_spec();
+    assert!(s.contains("instrArgs := [(\"amount\", Ty.u64)]"), "spec was: {s}");
+    assert!(s.contains("SeedSpec.argField \"amount\""), "spec was: {s}");
+}

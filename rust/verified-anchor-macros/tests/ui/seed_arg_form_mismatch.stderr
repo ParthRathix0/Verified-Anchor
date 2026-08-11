@@ -1,0 +1,5 @@
+error: seed `amount.as_bytes()` on field `vault` does not match the declared type of `amount` in #[instruction(...)]; expected `to_le_bytes()` (Borsh integers are little-endian)
+  --> tests/ui/seed_arg_form_mismatch.rs:15:34
+   |
+15 |     #[account(seeds = [b"vault", amount.as_bytes()], bump)]
+   |                                  ^^^^^^

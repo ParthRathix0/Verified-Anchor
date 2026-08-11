@@ -984,13 +984,12 @@ fn seeds_reject_a_wrong_named_string_arg() {
 // exact raw byte strings — so they compare SEED BYTES, not merely the accept/reject verdict.
 const LEAN_ARG_FIXTURE: [u8; 14] = [1, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 104, 105];
 
-// `amount.as_bytes()` is not something rustc would accept on a real `u64` — but the seed list
-// is never emitted as Rust, it is parsed as syntax and resolved through the declared `Ty`. It
-// is written this way to exercise `argBytes`' fixed-size arm against the Lean fixture.
+// `amount.to_le_bytes()` is exactly what a real Anchor program writes for a numeric seed, and
+// `argBytes`' fixed-size arm returns exactly that little-endian encoding.
 #[derive(VerifiedAccounts)]
 #[instruction(amount: u64, label: String)]
 struct ArgFixedSeed<'info> {
-    #[account(seeds = [b"vault", amount.as_bytes()], bump)]
+    #[account(seeds = [b"vault", amount.to_le_bytes()], bump)]
     pda: UncheckedAccount<'info>,
 }
 
@@ -1108,4 +1107,112 @@ fn bumps_struct_resolves_a_named_arg_seed() {
     let (_s, bumps) =
         <SeedFromArg as Accounts>::try_accounts(&pid, &accts, &borsh_string_arg("alice")).unwrap();
     assert_eq!(bumps.pda, expected_bump);
+}
+
+// ── M10 Task 9: numeric seeds via `to_le_bytes()` ─────────────────────────────────────────
+//
+// The canonical Anchor spelling for a numeric PDA seed. `.as_ref()` is what real source writes
+// (a bare `[u8; 8]` does not coerce to `&[u8]` inside a seed list); it carries no meaning here
+// and is peeled, as is a leading `&`.
+
+#[derive(VerifiedAccounts)]
+#[instruction(amount: u64)]
+struct Deposit<'info> {
+    #[account(seeds = [b"vault", amount.to_le_bytes().as_ref()], bump)]
+    vault: UncheckedAccount<'info>,
+}
+
+#[derive(VerifiedAccounts)]
+#[instruction(amount: u64)]
+struct DepositRef<'info> {
+    #[account(seeds = [b"vault", &amount.to_le_bytes()], bump)]
+    vault: UncheckedAccount<'info>,
+}
+
+#[derive(VerifiedAccounts)]
+#[instruction(idx: u16, amount: u64)]
+struct DepositAtOffset<'info> {
+    #[account(seeds = [b"vault", amount.to_le_bytes().as_ref()], bump)]
+    vault: UncheckedAccount<'info>,
+}
+
+/// The address must be the one REAL ANCHOR would derive: built here straight from
+/// `amount.to_le_bytes()`, with no reference to our own decoding path.
+#[test]
+fn numeric_arg_seed_derives_the_anchor_address() {
+    let pid = any_pid();
+    let amount: u64 = 42;
+    let (expected, _) = Pubkey::find_program_address(&[b"vault", amount.to_le_bytes().as_ref()], &pid);
+    let mut p = acct_with_data(expected, vec![]);
+    let accts = [p.info()];
+    let data = amount.to_le_bytes().to_vec();
+    assert_eq!(Deposit::validate(&accts, &data, &pid), Ok(()));
+}
+
+/// `&amount.to_le_bytes()` is the same seed as `amount.to_le_bytes().as_ref()`.
+#[test]
+fn numeric_arg_seed_accepts_the_reference_spelling() {
+    let pid = any_pid();
+    let amount: u64 = 42;
+    let (expected, _) = Pubkey::find_program_address(&[b"vault", amount.to_le_bytes().as_ref()], &pid);
+    let mut p = acct_with_data(expected, vec![]);
+    let accts = [p.info()];
+    assert_eq!(DepositRef::validate(&accts, &amount.to_le_bytes(), &pid), Ok(()));
+}
+
+/// Negative: a different amount is a different PDA. Without this the test above would pass for
+/// an implementation that ignored the argument entirely.
+#[test]
+fn numeric_arg_seed_rejects_a_different_amount() {
+    let pid = any_pid();
+    let (expected, _) = Pubkey::find_program_address(&[b"vault", 42u64.to_le_bytes().as_ref()], &pid);
+    let mut p = acct_with_data(expected, vec![]);
+    let accts = [p.info()];
+    assert_eq!(
+        Deposit::validate(&accts, &43u64.to_le_bytes(), &pid),
+        Err(VAError::WrongPda { field: "vault" })
+    );
+}
+
+/// Big-endian is the failure this guard exists for: had `to_be_bytes()` been silently accepted,
+/// THIS is the address it would have derived. It must differ, and must be rejected.
+#[test]
+fn numeric_arg_seed_is_little_endian() {
+    let pid = any_pid();
+    let amount: u64 = 42;
+    let (le, _) = Pubkey::find_program_address(&[b"vault", amount.to_le_bytes().as_ref()], &pid);
+    let (be, _) = Pubkey::find_program_address(&[b"vault", amount.to_be_bytes().as_ref()], &pid);
+    assert_ne!(le, be, "the fixture must distinguish the two endiannesses");
+    let mut p = acct_with_data(be, vec![]);
+    let accts = [p.info()];
+    assert_eq!(
+        Deposit::validate(&accts, &amount.to_le_bytes(), &pid),
+        Err(VAError::WrongPda { field: "vault" })
+    );
+}
+
+/// A numeric seed behind another argument: the offset comes from Borsh, not from the seed list.
+#[test]
+fn numeric_arg_seed_at_a_nonzero_offset() {
+    let pid = any_pid();
+    let amount: u64 = 7;
+    let (expected, _) = Pubkey::find_program_address(&[b"vault", amount.to_le_bytes().as_ref()], &pid);
+    let mut p = acct_with_data(expected, vec![]);
+    let accts = [p.info()];
+    let mut data = 3u16.to_le_bytes().to_vec();   // idx, declared first
+    data.extend_from_slice(&amount.to_le_bytes());
+    assert_eq!(DepositAtOffset::validate(&accts, &data, &pid), Ok(()));
+}
+
+/// Fail-closed on a truncated numeric argument, same as the string arm.
+#[test]
+fn numeric_arg_seed_overrun_fails_closed() {
+    let pid = any_pid();
+    let (expected, _) = Pubkey::find_program_address(&[b"vault", 42u64.to_le_bytes().as_ref()], &pid);
+    let mut p = acct_with_data(expected, vec![]);
+    let accts = [p.info()];
+    assert_eq!(
+        Deposit::validate(&accts, &[42, 0, 0], &pid),
+        Err(VAError::WrongPda { field: "vault" })
+    );
 }

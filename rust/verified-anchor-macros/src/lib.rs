@@ -27,8 +27,28 @@ enum SeedElem {
     /// `arg(off, len)` — DEPRECATED raw slice of `instr_data`. Kept working (removing it would
     /// break existing verified-anchor users), but no real Anchor program writes it.
     InstrArg(usize, usize),
-    /// `name.as_bytes()` — a named `#[instruction(...)]` argument, the form real Anchor uses.
-    ArgField(syn::Ident),
+    /// A named `#[instruction(...)]` argument — the form real Anchor uses. The surface form is
+    /// carried along ONLY so the derive can check it against the argument's declared type; both
+    /// forms resolve to the same bytes and the same Lean `SeedSpec.argField`.
+    ArgField(syn::Ident, ArgSeedForm),
+}
+
+/// How a `#[instruction(...)]` argument was spelled in a `seeds = [...]` list.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ArgSeedForm {
+    /// `name.as_bytes()` — Anchor's spelling for `String`/`Vec` arguments.
+    AsBytes,
+    /// `amount.to_le_bytes()` (optionally `.as_ref()`) — Anchor's spelling for numeric arguments.
+    ToLeBytes,
+}
+
+impl ArgSeedForm {
+    fn spelling(self) -> &'static str {
+        match self {
+            ArgSeedForm::AsBytes => "as_bytes()",
+            ArgSeedForm::ToLeBytes => "to_le_bytes()",
+        }
+    }
 }
 
 /// Recognised field-type wrapper categories.
@@ -335,6 +355,50 @@ impl Parse for Constraint {
     }
 }
 
+/// Peel the wrappers Anchor seed lists put around an instruction argument and return the
+/// argument name plus the surface form used.
+///
+/// `&`-refs and a trailing `.as_ref()` are peeled because a seed list is `&[&[u8]]`: real Anchor
+/// source writes `amount.to_le_bytes().as_ref()` or `&amount.to_le_bytes()` since a bare
+/// `[u8; 8]` does not coerce to `&[u8]` there. They carry no meaning for us — the declared
+/// argument type is what determines the bytes.
+fn arg_seed_of(e: &Expr) -> Option<(syn::Ident, ArgSeedForm)> {
+    match e {
+        Expr::Reference(r) => arg_seed_of(&r.expr),
+        Expr::MethodCall(mc) if mc.args.is_empty() => {
+            let form = match mc.method.to_string().as_str() {
+                "as_bytes" => ArgSeedForm::AsBytes,
+                "to_le_bytes" => ArgSeedForm::ToLeBytes,
+                // Slice-coercion noise, not a seed source: keep peeling.
+                "as_ref" | "as_slice" => return arg_seed_of(&mc.receiver),
+                _ => return None,
+            };
+            match mc.receiver.as_ref() {
+                Expr::Path(p) => p.path.get_ident().map(|id| (id.clone(), form)),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Find a `to_be_bytes()`/`to_ne_bytes()` anywhere in a seed expression, for the endianness
+/// guard. Native-endian is refused alongside big-endian: it happens to be little-endian on BPF,
+/// so it would work by accident and break the moment anything evaluates the spec off-chain.
+fn big_or_native_endian_seed(e: &Expr) -> Option<String> {
+    match e {
+        Expr::Reference(r) => big_or_native_endian_seed(&r.expr),
+        Expr::MethodCall(mc) => {
+            let m = mc.method.to_string();
+            if m == "to_be_bytes" || m == "to_ne_bytes" {
+                return Some(format!("{m}()"));
+            }
+            big_or_native_endian_seed(&mc.receiver)
+        }
+        _ => None,
+    }
+}
+
 fn parse_seed_elem(e: Expr) -> syn::Result<SeedElem> {
     match e {
         Expr::Lit(syn::ExprLit { lit: syn::Lit::ByteStr(b), .. }) => Ok(SeedElem::Literal(b)),
@@ -346,17 +410,28 @@ fn parse_seed_elem(e: Expr) -> syn::Result<SeedElem> {
             }
             Err(syn::Error::new_spanned(mc.receiver, "seed `.key()` must be on a field name"))
         }
-        // `name.as_bytes()` — a named `#[instruction(...)]` argument. This is the form real
-        // Anchor source writes, and the whole point of M10 Task 9: an unmodified Anchor
-        // `#[derive(Accounts)]` struct must compile under `#[derive(VerifiedAccounts)]`.
-        Expr::MethodCall(mc) if mc.method == "as_bytes" && mc.args.is_empty() => {
-            if let Expr::Path(p) = mc.receiver.as_ref() {
-                if let Some(id) = p.path.get_ident() {
-                    return Ok(SeedElem::ArgField(id.clone()));
-                }
+        // `name.as_bytes()` / `amount.to_le_bytes()` — a named `#[instruction(...)]` argument.
+        // These are the forms real Anchor source writes, and the whole point of M10 Task 9: an
+        // unmodified Anchor `#[derive(Accounts)]` struct must compile under
+        // `#[derive(VerifiedAccounts)]`.
+        Expr::MethodCall(_) | Expr::Reference(_) => {
+            // WRONG-ENDIANNESS GUARD, checked before anything else. `to_be_bytes()` would derive
+            // a DIFFERENT address than the same source under real Anchor — silently, since a PDA
+            // mismatch looks like "wrong account" rather than "wrong seed encoding". Borsh (and
+            // therefore Lean `argBytes`' fixed-size arm) is little-endian, so there is no correct
+            // way to honour it: refuse to compile rather than derive a wrong address.
+            if let Some(bad) = big_or_native_endian_seed(&e) {
+                return Err(syn::Error::new_spanned(&e, format!(
+                    "seed `{bad}` is not supported: Borsh — and therefore the PDA Anchor derives \
+                     — is LITTLE-endian, so this would silently derive a different address than \
+                     the same program under Anchor. Use `to_le_bytes()`.")));
             }
-            Err(syn::Error::new_spanned(mc.receiver,
-                "seed `.as_bytes()` must be on an #[instruction(...)] argument name"))
+            match arg_seed_of(&e) {
+                Some((id, form)) => Ok(SeedElem::ArgField(id, form)),
+                None => Err(syn::Error::new_spanned(&e,
+                    "unsupported seed (expected b\"..\", field.key(), name.as_bytes(), \
+                     amount.to_le_bytes(), or arg(off, len))")),
+            }
         }
         Expr::Call(call) => {
             let is_arg = matches!(call.func.as_ref(),
@@ -389,6 +464,40 @@ struct InstrArg {
     rt: TokenStream2,
     /// The same descriptor as Lean `Ty` source, for the emitted `instrArgs` list.
     lean: String,
+    /// Which seed spelling this argument accepts. Purely a surface check — it does not affect
+    /// the bytes, which come from `rt` alone.
+    kind: ArgTyKind,
+}
+
+/// Coarse type category of a `#[instruction(...)]` argument, used to check that a seed is
+/// spelled the way Anchor would spell it for that type.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ArgTyKind {
+    /// `String`/`Vec<_>` — Borsh length-prefixed; Anchor writes `.as_bytes()`.
+    Prefixed,
+    /// Fixed-width integers — Anchor writes `.to_le_bytes()`.
+    Numeric,
+    /// Everything else we can map (`bool`, `Pubkey`, `Option<_>`): no seed spelling supported yet.
+    Other,
+}
+
+/// Classify by the type's OUTERMOST path segment, which is what decides the Borsh framing:
+/// `Option<String>` is length-prefixed at the `Option` layer, not the `String` layer, so it is
+/// `Other` rather than `Prefixed`.
+fn classify_arg_ty(ty: &syn::Type) -> ArgTyKind {
+    let name = match ty {
+        syn::Type::Path(p) => match p.path.segments.last() {
+            Some(seg) => seg.ident.to_string(),
+            None => return ArgTyKind::Other,
+        },
+        _ => return ArgTyKind::Other,
+    };
+    match name.as_str() {
+        "String" | "Vec" => ArgTyKind::Prefixed,
+        "u8" | "u16" | "u32" | "u64" | "u128"
+        | "i8" | "i16" | "i32" | "i64" | "i128" => ArgTyKind::Numeric,
+        _ => ArgTyKind::Other,
+    }
 }
 
 /// Parse `#[instruction(amount: u64, name: String)]` off the derive input.
@@ -412,7 +521,7 @@ fn parse_instruction_args(input: &DeriveInput) -> syn::Result<Vec<InstrArg>> {
             other => return Err(syn::Error::new_spanned(other, "expected an argument name")),
         };
         match crate::ty_map::map_ty(&pt.ty) {
-            Some((rt, lean)) => out.push(InstrArg { name, rt, lean }),
+            Some((rt, lean)) => out.push(InstrArg { name, rt, lean, kind: classify_arg_ty(&pt.ty) }),
             None => break,
         }
     }
@@ -422,7 +531,7 @@ fn parse_instruction_args(input: &DeriveInput) -> syn::Result<Vec<InstrArg>> {
 /// Does any field resolve a `name.as_bytes()` seed? Gates emission of the `INSTR_ARGS` const.
 fn uses_arg_field(specs: &[FieldSpec]) -> bool {
     specs.iter().any(|s| s.constraints.iter().any(|c| matches!(c,
-        Constraint::Seeds(elems) if elems.iter().any(|e| matches!(e, SeedElem::ArgField(_))))))
+        Constraint::Seeds(elems) if elems.iter().any(|e| matches!(e, SeedElem::ArgField(_, _))))))
 }
 
 /// The `INSTR_ARGS` Borsh field list, emitted as a local `const` in any generated function that
@@ -539,7 +648,7 @@ fn lean_constraint(c: &Constraint) -> String {
                 }
                 SeedElem::FieldKey(id) => format!("SeedSpec.fieldKey \"{}\"", id),
                 SeedElem::InstrArg(off, len) => format!("SeedSpec.instrArg {} {}", off, len),
-                SeedElem::ArgField(id) => format!("SeedSpec.argField \"{}\"", id),
+                SeedElem::ArgField(id, _) => format!("SeedSpec.argField \"{}\"", id),
             }).collect();
             format!("Constraint.seeds [{}] @@BUMP@@ @@PROG@@", seeds.join(", "))
         }
@@ -952,7 +1061,7 @@ fn validate_body(specs: &[FieldSpec], instr_args: &[InstrArg]) -> TokenStream2 {
                     // Lean model's `ByteArray.extract off (off+len)` (which clamps both bounds).
                     quote! { &instr_data[(#off).min(instr_data.len())..(#end).min(instr_data.len())] }
                 }
-                SeedElem::ArgField(id) => arg_field_seed_expr(id, fname),
+                SeedElem::ArgField(id, _) => arg_field_seed_expr(id, fname),
             }).collect();
             // Stored (non-canonical) bump opt-in: `bump = arg(off)`. Read the bump byte from
             // instr_data at `off`, derive the PDA with THAT specific bump via
@@ -1192,7 +1301,7 @@ fn lifecycle_body(specs: &[FieldSpec]) -> TokenStream2 {
                     }
                     SeedElem::InstrArg(_, _) => panic!(
                         "init_if_needed on `{}` uses an `arg(..)` seed, which is unsupported (execute_lifecycle has no instruction data to derive it); use literal or field-key seeds", fname),
-                    SeedElem::ArgField(_) => panic!(
+                    SeedElem::ArgField(_, _) => panic!(
                         "init_if_needed on `{}` uses a `name.as_bytes()` instruction-argument seed, which is unsupported (execute_lifecycle has no instruction data to derive it); use literal or field-key seeds", fname),
                 }).collect());
             let init_create = match &seeds_for_signed {
@@ -1300,16 +1409,40 @@ pub fn derive_verified_accounts(input: TokenStream) -> TokenStream {
         for c in &spec.constraints {
             let Constraint::Seeds(elems) = c else { continue };
             for e in elems {
-                let SeedElem::ArgField(id) = e else { continue };
-                if !instr_args.iter().any(|a| a.name == id.to_string()) {
+                let SeedElem::ArgField(id, form) = e else { continue };
+                let Some(arg) = instr_args.iter().find(|a| a.name == id.to_string()) else {
                     let declared: Vec<&str> = instr_args.iter().map(|a| a.name.as_str()).collect();
                     return syn::Error::new_spanned(id, format!(
-                        "seed `{id}.as_bytes()` on field `{}` does not name a declared \
+                        "seed `{id}.{}` on field `{}` does not name a declared \
                          #[instruction(...)] argument (declared and mappable: [{}]); add it to \
                          `#[instruction(...)]`, or — if its type is unsupported — note that every \
                          argument after the first unmappable one is dropped, because its Borsh \
                          offset cannot be computed",
-                        spec.name, declared.join(", ")))
+                        form.spelling(), spec.name, declared.join(", ")))
+                        .to_compile_error().into();
+                };
+                // The bytes come from the DECLARED TYPE, never from the method name, so a
+                // mismatch would silently succeed with bytes the spelling does not describe
+                // (`amount.as_bytes()` on a u64 yields the 8-byte LE encoding). Reject it: the
+                // seed list must read the way the equivalent Anchor source reads, or the two are
+                // only accidentally in agreement.
+                let ok = match (form, arg.kind) {
+                    (ArgSeedForm::AsBytes, ArgTyKind::Prefixed) => true,
+                    (ArgSeedForm::ToLeBytes, ArgTyKind::Numeric) => true,
+                    _ => false,
+                };
+                if !ok {
+                    let expected = match arg.kind {
+                        ArgTyKind::Prefixed => "`as_bytes()` (String/Vec are length-prefixed)",
+                        ArgTyKind::Numeric => "`to_le_bytes()` (Borsh integers are little-endian)",
+                        ArgTyKind::Other =>
+                            "no seed spelling yet — only String/Vec (`as_bytes()`) and integers \
+                             (`to_le_bytes()`) can be used as seeds",
+                    };
+                    return syn::Error::new_spanned(id, format!(
+                        "seed `{id}.{}` on field `{}` does not match the declared type of \
+                         `{id}` in #[instruction(...)]; expected {expected}",
+                        form.spelling(), spec.name))
                         .to_compile_error().into();
                 }
             }
@@ -1391,7 +1524,7 @@ pub fn derive_verified_accounts(input: TokenStream) -> TokenStream {
             // rejected a seed it could not resolve) but still TOTAL: `try_accounts` returns
             // `Result<_, VAError>`, so the fail-closed `?`/`return` inside this expression
             // type-checks here exactly as it does in `validate`.
-            SeedElem::ArgField(id) => arg_field_seed_expr(id, bumps_fname),
+            SeedElem::ArgField(id, _) => arg_field_seed_expr(id, bumps_fname),
         }).collect();
         let derive_pid: TokenStream2 = match spec.constraints.iter().find_map(|c| match c {
             Constraint::SeedsProgram(e) => Some(e),
