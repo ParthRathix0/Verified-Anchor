@@ -1,0 +1,5 @@
+error[E0080]: evaluation panicked: verified-anchor: `has_one = amount` requires `Vault::amount` to be a `Pubkey`; `has_one` compares it against an account key.
+  --> tests/ui/has_one_not_a_pubkey.rs:15:10
+   |
+15 | #[derive(VerifiedAccounts)]
+   |          ^^^^^^^^^^^^^^^^ evaluation of `<BadTarget<'info> as verified_anchor::Validate>::validate::_` failed here

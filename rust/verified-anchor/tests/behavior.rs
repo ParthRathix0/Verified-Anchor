@@ -869,3 +869,53 @@ fn lean_spec_carries_the_real_layout() {
     assert!(s.contains("(\"authority\", Ty.pubkey)"), "spec was: {s}");
     assert!(!s.contains("(\"authority\", 8)"), "spec still hardcodes offset 8: {s}");
 }
+
+/// The build-time `has_one` guard keys off the field NAME being present in the descriptor, not
+/// off the layout being fixed-width. A variable-width earlier field is perfectly locatable at
+/// runtime (its width comes from its length prefix), so this must still compile AND validate —
+/// i.e. the guard added for the truncated-descriptor case must not over-reject.
+#[verified_anchor::account]
+struct LabelVault {
+    label: String,
+    authority: Pubkey,
+}
+
+fn label_vault_data(label: &str, authority: Pubkey) -> Vec<u8> {
+    let mut d = <LabelVault as verified_anchor::AccountData>::DISCRIMINATOR.to_vec();
+    d.extend_from_slice(&(label.len() as u32).to_le_bytes());   // borsh String length prefix
+    d.extend_from_slice(label.as_bytes());
+    d.extend_from_slice(authority.as_ref());
+    d
+}
+
+#[derive(VerifiedAccounts)]
+struct CheckLabelHasOne<'info> {
+    #[account(has_one = authority)]
+    vault: verified_anchor::Account<'info, LabelVault>,
+    authority: UncheckedAccount<'info>,
+}
+
+#[test]
+fn has_one_locates_past_a_variable_width_field() {
+    let auth = Pubkey::new_unique();
+    let mut v = acct_with_data(Pubkey::new_unique(), label_vault_data("a-long-ish-label", auth));
+    v.owner = crate::ID;
+    let mut a = acct_with_data(auth, vec![]);
+    let accts = [v.info(), a.info()];
+    assert_eq!(CheckLabelHasOne::validate(&accts, &[], &any_pid()), Ok(()));
+}
+
+#[test]
+fn has_one_rejects_mismatch_past_a_variable_width_field() {
+    let mut v = acct_with_data(
+        Pubkey::new_unique(),
+        label_vault_data("a-long-ish-label", Pubkey::new_unique()),
+    );
+    v.owner = crate::ID;
+    let mut a = acct_with_data(Pubkey::new_unique(), vec![]);
+    let accts = [v.info(), a.info()];
+    assert_eq!(
+        CheckLabelHasOne::validate(&accts, &[], &any_pid()),
+        Err(VAError::WrongHasOne { field: "vault", target: "authority" })
+    );
+}

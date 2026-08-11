@@ -634,6 +634,44 @@ fn validate_body(specs: &[FieldSpec]) -> TokenStream2 {
                     };
                     quote! {
                         {
+                            // BUILD-TIME guard. `locate` needs the target to be present in the
+                            // descriptor; when it is not, the runtime check below rejects EVERY
+                            // account, including legitimate ones, and does so silently. That can
+                            // happen to correct-looking Anchor code: `#[derive(AccountData)]`
+                            // truncates the layout at the first field whose type `map_ty` cannot
+                            // map (fixed-size arrays, nested structs, enums are not covered yet),
+                            // because every offset behind such a field is unknowable. Deciding
+                            // this from the descriptor alone turns a bricked instruction into a
+                            // build error.
+                            const _: () = ::core::assert!(
+                                ::verified_anchor::layout::has_top_level_field(
+                                    <#inner as ::verified_anchor::AccountData>::LAYOUT, #tname),
+                                ::core::concat!(
+                                    "verified-anchor: `has_one = ", #tname,
+                                    "` cannot be located in the Borsh layout of `", ::core::stringify!(#inner),
+                                    "`. Either `", #tname, "` is not a field of `", ::core::stringify!(#inner),
+                                    "`, or an EARLIER field of `", ::core::stringify!(#inner),
+                                    "` has a type verified-anchor cannot map yet (fixed-size arrays, nested \
+                                     structs, enums): the layout is truncated at the first such field, because \
+                                     every offset behind it is unknowable. Move the target ahead of that field, \
+                                     or give that field a mappable type."),
+                            );
+                            // Same failure profile, different cause: a non-`Pubkey` target makes
+                            // `read_val` yield a non-`Key` value, so the check below would also
+                            // reject unconditionally. `has_one` on a non-key field is not valid
+                            // stock Anchor either. Short-circuited on the previous assertion's
+                            // condition so an ABSENT target reports only the (more informative)
+                            // truncation diagnostic, not both.
+                            const _: () = ::core::assert!(
+                                !::verified_anchor::layout::has_top_level_field(
+                                    <#inner as ::verified_anchor::AccountData>::LAYOUT, #tname)
+                                || ::verified_anchor::layout::has_top_level_pubkey_field(
+                                    <#inner as ::verified_anchor::AccountData>::LAYOUT, #tname),
+                                ::core::concat!(
+                                    "verified-anchor: `has_one = ", #tname, "` requires `",
+                                    ::core::stringify!(#inner), "::", #tname,
+                                    "` to be a `Pubkey`; `has_one` compares it against an account key."),
+                            );
                             let data = accounts[#i].try_borrow_data()
                                 .map_err(|_| ::verified_anchor::VAError::WrongHasOne { field: #fname, target: #tname })?;
                             let ty = <#inner as ::verified_anchor::AccountData>::LAYOUT;

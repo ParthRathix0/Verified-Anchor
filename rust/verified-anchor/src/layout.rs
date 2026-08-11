@@ -201,6 +201,68 @@ pub fn read_val<'a>(ty: &Ty, data: &'a [u8], off: usize) -> Option<Value<'a>> {
     }
 }
 
+/// `==` over `&str` in a `const` context. `str::eq` is not `const`, and `PartialEq` cannot be
+/// called from const code at all, so the byte compare is spelled out.
+const fn const_str_eq(a: &str, b: &str) -> bool {
+    let a = a.as_bytes();
+    let b = b.as_bytes();
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut i = 0;
+    while i < a.len() {
+        if a[i] != b[i] {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+
+/// The `Ty` of `name` among `ty`'s TOP-LEVEL fields, or `None` if there is no such field.
+///
+/// Deliberately const-evaluable, and deliberately NOT a second implementation of `locate`:
+/// `locate` consults the account BYTES (it must, to step over variable-width fields), so it can
+/// only ever run at runtime. This answers the strictly weaker, data-independent question
+/// "could `locate` ever find this field?", which is decidable from the descriptor alone. That
+/// is what lets `#[derive(VerifiedAccounts)]` turn an unlocatable `has_one` target into a BUILD
+/// error instead of an instruction that rejects every legitimate account at runtime.
+///
+/// Why an unlocatable target is reachable from correct-looking code: `map_ty` does not yet
+/// cover fixed-size arrays, nested structs or enums, and `#[derive(AccountData)]` truncates the
+/// descriptor at the first field it cannot map (everything after it has an unknowable offset).
+/// So a perfectly valid Anchor struct whose `has_one` target sits behind, say, a `[u8; 32]`
+/// yields a descriptor that simply does not mention the target.
+pub const fn top_level_field(ty: Ty, name: &str) -> Option<Ty> {
+    let fs = match ty {
+        Ty::Struct(fs) => fs,
+        _ => return None,
+    };
+    // const fn: manual loop, no iterators
+    let mut i = 0;
+    while i < fs.len() {
+        if const_str_eq(fs[i].0, name) {
+            return Some(fs[i].1);
+        }
+        i += 1;
+    }
+    None
+}
+
+/// True when `name` is a top-level field of `ty` — i.e. `locate(ty, &[name], .., ..)` has a
+/// chance of succeeding. See `top_level_field`.
+pub const fn has_top_level_field(ty: Ty, name: &str) -> bool {
+    top_level_field(ty, name).is_some()
+}
+
+/// True when `name` is a top-level field of `ty` AND is a `Pubkey`. `has_one` compares the
+/// stored value against an account key, so any other type makes `read_val` yield a non-`Key`
+/// `Value` and the check reject unconditionally — another silent runtime brick, caught at build
+/// time by the same mechanism.
+pub const fn has_top_level_pubkey_field(ty: Ty, name: &str) -> bool {
+    matches!(top_level_field(ty, name), Some(Ty::Pubkey))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -347,5 +409,65 @@ mod tests {
         assert_eq!(locate(&VAULT, &["authority"], empty, 0).map(|r| r.0), Some(1));
         // The offset is real but the bytes are not: read_val on that offset must fail closed.
         assert_eq!(read_val(&Ty::Pubkey, empty, 1), None);
+    }
+}
+
+#[cfg(test)]
+mod const_lookup_tests {
+    use super::*;
+
+    const VAULT: Ty = Ty::Struct(&[("bump", Ty::U8), ("authority", Ty::Pubkey)]);
+    // What `#[derive(AccountData)]` emits for `struct NameVault { name: [u8;32], authority: Pubkey }`
+    // today: `map_ty` has no fixed-array arm, so the descriptor TRUNCATES at `name` and never
+    // mentions `authority`. This is the shape the build-time `has_one` guard must reject.
+    const TRUNCATED: Ty = Ty::Struct(&[]);
+
+    // Evaluated by the compiler, not the test runner: these are the exact expressions the
+    // generated `const _: () = assert!(..)` relies on being const-evaluable at all.
+    const _: () = assert!(has_top_level_field(VAULT, "authority"));
+    const _: () = assert!(has_top_level_pubkey_field(VAULT, "authority"));
+    const _: () = assert!(!has_top_level_field(TRUNCATED, "authority"));
+
+    #[test]
+    fn finds_a_top_level_field_and_its_ty() {
+        assert_eq!(top_level_field(VAULT, "bump"), Some(Ty::U8));
+        assert_eq!(top_level_field(VAULT, "authority"), Some(Ty::Pubkey));
+    }
+
+    #[test]
+    fn misses_are_none() {
+        assert_eq!(top_level_field(VAULT, "nope"), None);
+        // A truncated descriptor is exactly how a legitimate struct loses its has_one target.
+        assert_eq!(top_level_field(TRUNCATED, "authority"), None);
+        // Non-struct descriptors have no named fields at all.
+        assert_eq!(top_level_field(Ty::Pubkey, "authority"), None);
+    }
+
+    #[test]
+    fn pubkey_predicate_rejects_present_but_wrongly_typed_targets() {
+        assert!(has_top_level_field(VAULT, "bump"));
+        assert!(!has_top_level_pubkey_field(VAULT, "bump"));
+    }
+
+    #[test]
+    fn const_str_eq_matches_the_runtime_operator() {
+        for (a, b) in [("a", "a"), ("a", "b"), ("", ""), ("ab", "a"), ("a", "ab"), ("ab", "ab")] {
+            assert_eq!(const_str_eq(a, b), a == b, "{a:?} vs {b:?}");
+        }
+    }
+
+    /// The const predicate must agree with the runtime `locate` it is guarding: whenever it says
+    /// "absent", `locate` must genuinely fail for every buffer, not just some.
+    #[test]
+    fn agrees_with_locate() {
+        let data = vec![0u8; 64];
+        for name in ["bump", "authority", "nope"] {
+            assert_eq!(
+                has_top_level_field(VAULT, name),
+                locate(&VAULT, &[name], &data, 8).is_some(),
+                "disagreement on {name:?}"
+            );
+        }
+        assert!(locate(&TRUNCATED, &["authority"], &data, 8).is_none());
     }
 }
