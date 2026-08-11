@@ -1,6 +1,7 @@
 import VerifiedAnchor.Solana.Pubkey
 import VerifiedAnchor.Solana.Layout
 import VerifiedAnchor.Solana.Discriminator
+import VerifiedAnchor.Solana.Borsh.Locate
 
 namespace VerifiedAnchor
 
@@ -63,7 +64,7 @@ def Constraint.isMut : Constraint → Bool
 
 /-- Account wrapper types; each implies certain base constraints. -/
 inductive AccountType where
-  | account          (typeName : String) (layout : FieldLayout) (programId : Pubkey)
+  | account          (typeName : String) (layout : Ty) (programId : Pubkey)
   | signer
   | program          (id : Pubkey)
   | systemAccount
@@ -84,10 +85,12 @@ def AccountType.impliedConstraints : AccountType → List Constraint
   | .systemAccount    => [Constraint.owner Pubkey.zero]
   | .uncheckedAccount => []
 
-/-- Look up the layout offset of a `Pubkey` field within an account type. -/
-def AccountType.layoutOffsetOf : AccountType → String → Option Nat
-  | .account _ layout _, name => layout.offsetOf name
-  | _, _ => none
+/-- Locate a named field inside this account's data. Offsets are measured from the start of
+    `data`, so the walk begins at 8 — past the Anchor discriminator. Non-`account` wrappers
+    have no modelled layout and yield `none`, which fails closed. -/
+def AccountType.locateField : AccountType → String → ByteArray → Option (Nat × Ty)
+  | .account _ layout _, name, data => locate layout [name] data 8
+  | _, _, _ => none
 
 structure AccountField where
   name        : String

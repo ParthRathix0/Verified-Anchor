@@ -123,7 +123,13 @@ def readVal (t : Ty) (data : ByteArray) (off : Nat) : Option Value :=
   | .bool => (readUIntLE data off 1).map (fun n => .bool (n != 0))
   | .pubkey =>
       if off + 32 ≤ data.size then
-        some (.key (Pubkey.ofBytes ((data.extract off (off + 32)).toList)))
+        -- The 32 bytes are gathered with an explicit `List.range`/`get!` map rather than the
+        -- more obvious `(data.extract off (off + 32)).toList`. `ByteArray.toList` is defined in
+        -- core by *well-founded* recursion (`termination_by bs.size - i`), so it is opaque to
+        -- the kernel and would make every `decide` that reaches a pubkey field get stuck — the
+        -- exact failure mode this file's regression examples exist to catch. `List.range` and
+        -- `List.map` are structural, so this formulation reduces. Same bytes either way.
+        some (.key (Pubkey.ofBytes ((List.range 32).map (fun i => data.get! (off + i)))))
       else none
   | .array _ _ | .string | .vec _ | .option _ | .struct _ => none
 
@@ -157,6 +163,12 @@ example : encodedWidth (.option .u64) (⟨#[0]⟩ : ByteArray) 0 = some 1 := by 
 example : encodedWidth (.option .u64) (⟨#[1,0,0,0,0,0,0,0,0]⟩ : ByteArray) 0 = some 9 := by decide
 example : readVal .u8 vaultBytes 8 = some (.nat 7) := by decide
 example : readVal .u64 (⟨#[1,2,3]⟩ : ByteArray) 0 = none := by decide
+-- The `.pubkey` arm specifically: this is the one that used to route through the
+-- well-founded `ByteArray.toList` and jam the kernel. `has_one` lives or dies on it.
+example :
+    readVal .pubkey vaultBytes 9 = some (.key (Pubkey.ofBytes (List.replicate 32 (3 : UInt8)))) := by
+  decide
+example : readVal .pubkey vaultBytes 10 = none := by decide
 -- `rfl` is strictly stronger than `decide`: it forces whnf of the walk itself.
 example : encodedWidth (.vec .u8) (⟨#[2,0,0,0,1,2]⟩ : ByteArray) 0 = some 6 := by rfl
 example : (locate namedTy ["owner"] namedBytes 8).map (·.1) = some 14 := by rfl

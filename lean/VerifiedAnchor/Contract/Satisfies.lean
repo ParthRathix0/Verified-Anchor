@@ -78,9 +78,9 @@ def satisfies (s : AccountsStruct) (c : Ctx) (idx : Nat) (f : AccountField) :
   | .discriminator d => (Ctx.atField s c idx).satisfiesSome (fun a => hasDiscriminator a d)
   | .hasOne field =>
       (Ctx.atField s c idx).satisfiesSome (fun a =>
-        (f.ty.layoutOffsetOf field).satisfiesSome (fun off =>
-          (readPubkey a.data off).satisfiesSome (fun val =>
-            (Ctx.lookup s c field).satisfiesSome (fun target => val = target.key))))
+        (f.ty.locateField field a.data).satisfiesSome (fun r =>
+          (readVal r.2 a.data r.1).satisfiesSome (fun val =>
+            (Ctx.lookup s c field).satisfiesSome (fun target => val = Value.key target.key))))
   | .seeds ss b program =>
       -- `seeds::program` override: derive against the FOREIGN id `program` if given, else the
       -- struct's own `s.programId`. `getD` is definitional, so the soundness proof is unchanged.

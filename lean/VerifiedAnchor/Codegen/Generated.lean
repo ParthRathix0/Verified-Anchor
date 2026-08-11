@@ -10,13 +10,13 @@ def Option.allB {α} (o : Option α) (p : α → Bool) : Bool :=
 
 namespace VerifiedAnchor
 
-/-- Relational has_one check: the Pubkey at the field's layout offset in this account's data
-    equals the looked-up field account's key. None-safe. -/
+/-- Relational has_one check: the value at the field's LOCATED offset equals the looked-up
+    field account's key. None-safe; an unlocatable or non-Pubkey field fails closed. -/
 def genHasOne (s : AccountsStruct) (c : Ctx) (idx : Nat) (f : AccountField) (field : String) : Bool :=
   (Ctx.atField s c idx).allB (fun a =>
-    (f.ty.layoutOffsetOf field).allB (fun off =>
-      (readPubkey a.data off).allB (fun val =>
-        (Ctx.lookup s c field).allB (fun target => decide (val = target.key)))))
+    (f.ty.locateField field a.data).allB (fun r =>
+      (readVal r.2 a.data r.1).allB (fun val =>
+        (Ctx.lookup s c field).allB (fun target => decide (val = Value.key target.key)))))
 
 /-- Bool mirror of `bumpMatches`: declared bumps must match exactly; canonical accepts any.
     `.stored` does not go through `bumpMatchesB` (its derivation IS the check); the `true` here

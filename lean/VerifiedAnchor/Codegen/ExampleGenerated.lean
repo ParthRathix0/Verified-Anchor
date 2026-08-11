@@ -56,7 +56,7 @@ so the per-constraint `checkConstraint` reduces on concrete data — demonstrati
 relational check biting on a matching vs forged authority. (The full `genValidate` for a
 typed account would also evaluate the implied `discriminator`, which is opaque under
 `sha256`; the soundness proof covers it symbolically, à la M1's Withdraw.) -/
-def vaultLayoutE : FieldLayout := [("authority", 8)]
+def vaultLayoutE : Ty := .struct [("authority", .pubkey)]
 def authKeyE : Pubkey := Pubkey.ofBytes (List.replicate 32 5)
 def vaultFieldE : AccountField :=
   { name := "vault", ty := AccountType.account "Vault" vaultLayoutE Pubkey.zero,
@@ -357,5 +357,78 @@ theorem zeroStruct_good_validates : validates zeroStruct (Ctx.ofAccounts [zeroAc
 
 -- `decide (M4Subset zeroStruct)` reduces to `true` — the subset check is crypto-free.
 #guard decide (M4Subset zeroStruct) = true
+
+/-! ## M10: `has_one` reads the named field, not a hardcoded offset.
+
+    `hasOneVaultTy` places `authority` AFTER a `u8`, so the target sits at offset 9, not 8.
+    Before M10 the model read offset 8 and this `#guard` would fail. -/
+
+private def hasOneVaultTy : Ty := .struct [("bump", .u8), ("authority", .pubkey)]
+
+private def authKey : Pubkey := Pubkey.ofBytes (List.replicate 32 (5 : UInt8))
+
+/-- 8 disc bytes, then bump = 7, then 32 bytes of `authKey`. -/
+private def hasOneVaultData : ByteArray :=
+  ⟨(Array.replicate 8 (0 : UInt8)) ++ #[(7 : UInt8)] ++ (Array.replicate 32 (5 : UInt8))⟩
+
+private def hasOneStruct : AccountsStruct :=
+  { programId := Pubkey.zero
+  , fields :=
+    [ { name := "vault"
+      , ty := AccountType.account "Vault" hasOneVaultTy Pubkey.zero
+      , constraints := [Constraint.hasOne "authority"] }
+    , { name := "authority", ty := AccountType.uncheckedAccount, constraints := [] } ] }
+
+private def hasOneVaultAcct : AccountInfo :=
+  { key := Pubkey.zero, lamports := 1, data := hasOneVaultData, owner := Pubkey.zero
+  , rentEpoch := 0, isSigner := false, isWritable := false, executable := false }
+
+private def hasOneAuthAcct : AccountInfo :=
+  { key := authKey, lamports := 1, data := ByteArray.empty, owner := Pubkey.zero
+  , rentEpoch := 0, isSigner := false, isWritable := false, executable := false }
+
+private def hasOneCtx : Ctx :=
+  Ctx.ofAccounts [hasOneVaultAcct, hasOneAuthAcct]
+
+-- the offset-9 field is found and matches
+#guard genConstraint hasOneStruct hasOneCtx 0 hasOneStruct.fields[0]!
+        (Constraint.hasOne "authority") == true
+
+-- a mismatched authority is rejected
+private def hasOneWrongCtx : Ctx :=
+  Ctx.ofAccounts [hasOneVaultAcct, { hasOneAuthAcct with key := Pubkey.zero }]
+
+#guard genConstraint hasOneStruct hasOneWrongCtx 0 hasOneStruct.fields[0]!
+        (Constraint.hasOne "authority") == false
+
+/- The `#guard`s above run in the elaborator, which evaluates via the compiler and is happy to
+   step through definitions the *kernel* refuses to unfold. The `by decide`s below are the
+   stronger claim: the whole `has_one` path — `locateField`, the `encodedWidth` walk over the
+   leading `u8`, and `readVal`'s `.pubkey` decode — reduces in the kernel. That is not free.
+   `readVal` originally gathered its 32 bytes with `ByteArray.toList`, which core defines by
+   well-founded recursion; it passed every `#guard` while being kernel-opaque, and these
+   examples are what surface that class of regression. -/
+
+/-- The located offset is 9, not 8: `bump : u8` sits in front of `authority`. This single
+    number is the entire defect M10 fixes. -/
+example :
+    (hasOneStruct.fields[0]!.ty.locateField "authority" hasOneVaultData).map (·.1) = some 9 := by
+  decide
+
+example :
+    genConstraint hasOneStruct hasOneCtx 0 hasOneStruct.fields[0]!
+      (Constraint.hasOne "authority") = true := by
+  decide
+
+example :
+    genConstraint hasOneStruct hasOneWrongCtx 0 hasOneStruct.fields[0]!
+      (Constraint.hasOne "authority") = false := by
+  decide
+
+/-- The model side reduces too, so the `iff` below is not bridging a stuck term to a stuck term. -/
+example : satisfies hasOneStruct hasOneCtx 0 hasOneStruct.fields[0]!
+    (Constraint.hasOne "authority") :=
+  (genConstraint_hasOne_iff hasOneStruct hasOneCtx 0 hasOneStruct.fields[0]! "authority").mp
+    (by decide)
 
 end VerifiedAnchor.Codegen.Examples
