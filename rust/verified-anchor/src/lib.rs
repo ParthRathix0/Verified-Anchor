@@ -19,6 +19,9 @@ pub use context::Context;
 
 pub mod prelude;
 
+pub mod layout;
+pub use layout::{locate, read_val, Ty, Value};
+
 pub use verified_anchor_macros::VerifiedAccounts;
 pub use verified_anchor_macros::AccountData as AccountData;
 pub use verified_anchor_macros::account;
