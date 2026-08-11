@@ -431,4 +431,38 @@ example : satisfies hasOneStruct hasOneCtx 0 hasOneStruct.fields[0]!
   (genConstraint_hasOne_iff hasOneStruct hasOneCtx 0 hasOneStruct.fields[0]! "authority").mp
     (by decide)
 
+/-! ## M10: named instruction arguments resolve through the Borsh machinery. -/
+
+private def argStruct : AccountsStruct :=
+  { programId := Pubkey.zero
+  , instrArgs := [("amount", Ty.u64), ("label", Ty.string)]
+  , fields := [] }
+
+/-- amount = 1 (u64 LE), then label = "hi" (u32 len + utf8). -/
+private def argCtx : Ctx :=
+  { accounts := []
+  , instrData := ⟨#[1,0,0,0,0,0,0,0, 2,0,0,0, 104, 105]⟩ }
+
+#guard (argStruct.argBytes argCtx "amount").map (·.toList)
+         == some [1,0,0,0,0,0,0,0]
+#guard (argStruct.argBytes argCtx "label").map (·.toList) == some [104, 105]
+#guard (argStruct.argBytes argCtx "missing") == none
+
+/- As with `Locate.lean`, the `#guard`s above only prove the elaborator can step through
+   `argBytes`; they say nothing about the kernel. `argBytes` is Task 9's contract — the Rust
+   macro must mirror it byte-for-byte, especially the length-prefix stripping on `string`/`vec`
+   — so it gets the same `by decide` regression treatment as `locate`/`readVal`/`has_one`. -/
+
+/-- `u64` is fixed-size: `argBytes` returns the whole 8-byte encoding, no framing to strip. -/
+example : argStruct.argBytes argCtx "amount" = some (⟨#[1,0,0,0,0,0,0,0]⟩ : ByteArray) := by
+  decide
+
+/-- THE POINT: `string`'s 4-byte length prefix is stripped. `label`'s raw Borsh encoding is
+    6 bytes (`2,0,0,0,104,105`); `argBytes` returns only the 2 payload bytes `[104,105]` —
+    exactly what Anchor's `label.as_bytes()` would hand seed code. -/
+example : argStruct.argBytes argCtx "label" = some (⟨#[104, 105]⟩ : ByteArray) := by
+  decide
+
+example : argStruct.argBytes argCtx "missing" = none := by decide
+
 end VerifiedAnchor.Codegen.Examples

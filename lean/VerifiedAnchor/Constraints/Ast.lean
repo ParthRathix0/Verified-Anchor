@@ -9,7 +9,10 @@ namespace VerifiedAnchor
 inductive SeedSpec where
   | literal (bytes : ByteArray)        -- e.g. b"vault"
   | fieldKey (field : String)          -- another account's key bytes
-  | instrArg (off : Nat) (len : Nat)   -- a concrete slice of the instruction data
+  | instrArg (off : Nat) (len : Nat)   -- DEPRECATED: raw slice; kept for back-compat
+  /-- A named `#[instruction(...)]` argument, resolved by Borsh-locating it in the
+      instruction data. This is what real Anchor source writes (`name.as_bytes()`). -/
+  | argField (name : String)
   deriving Inhabited
 
 inductive BumpSpec where
@@ -106,6 +109,9 @@ structure AccountField where
 structure AccountsStruct where
   programId : Pubkey
   fields    : List AccountField
+  /-- Declared `#[instruction(...)]` arguments in order, as a Borsh field list over
+      `Ctx.instrData`. Defaults to `[]` so existing literals keep compiling. -/
+  instrArgs : List (String × Ty) := []
   deriving Inhabited
 
 /-- Find a declared field by name. -/

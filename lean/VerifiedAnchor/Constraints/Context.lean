@@ -26,6 +26,26 @@ def Ctx.lookup (s : AccountsStruct) (c : Ctx) (name : String) : Option AccountIn
 def Ctx.atField (_s : AccountsStruct) (c : Ctx) (idx : Nat) : Option AccountInfo :=
   c.accounts[idx]?
 
+/-- The raw bytes of a named `#[instruction(...)]` argument, as a seed would use them.
+    For `string`/`vec` the LENGTH PREFIX IS STRIPPED — `name.as_bytes()` in Anchor yields the
+    payload, not the Borsh framing (real Anchor never hands seed code a length prefix).
+    Fixed-size types return their whole encoding. Lives here (not in `Ast.lean`) because it
+    needs `Ctx`, and `Ctx` is defined in this file, which `Ast.lean` cannot import without a
+    cycle. -/
+def AccountsStruct.argBytes (s : AccountsStruct) (c : Ctx) (name : String) : Option ByteArray := do
+  let (off, t) ← locate (Ty.struct s.instrArgs) [name] c.instrData 0
+  match t with
+  | .string | .vec _ => do
+      let n ← readUIntLE c.instrData off 4
+      if off + 4 + n ≤ c.instrData.size then
+        pure (c.instrData.extract (off + 4) (off + 4 + n))
+      else none
+  | other => do
+      let w ← encodedWidth other c.instrData off
+      if off + w ≤ c.instrData.size then
+        pure (c.instrData.extract off (off + w))
+      else none
+
 /-- Structural well-formedness: one account per declared field. -/
 def WellFormed (s : AccountsStruct) (c : Ctx) : Prop :=
   c.length = s.fields.length
