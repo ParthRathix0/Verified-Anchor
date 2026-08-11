@@ -747,3 +747,45 @@ fn zero_rejects_short_data() {
         Err(VAError::NotZeroed { field: "uninit" })
     );
 }
+
+// ---- M10 Task 5: `AccountData` carries the layout ----
+//
+// `LAYOUT` is the runtime Borsh descriptor the generated locator walks; `LAYOUT_LEAN` is the
+// same descriptor as Lean `Ty` source, spliced into `lean_spec()` at runtime.
+
+#[test]
+fn account_data_derive_emits_real_layout() {
+    use verified_anchor::layout::{locate, Ty};
+
+    #[derive(
+        verified_anchor::borsh::BorshSerialize,
+        verified_anchor::borsh::BorshDeserialize,
+        verified_anchor::AccountData,
+    )]
+    #[borsh(crate = "::verified_anchor::borsh")]
+    struct LayoutProbe {
+        bump: u8,
+        authority: solana_program::pubkey::Pubkey,
+    }
+
+    // The descriptor names the real fields in declaration order.
+    match <LayoutProbe as verified_anchor::AccountData>::LAYOUT {
+        Ty::Struct(fs) => {
+            assert_eq!(fs.len(), 2);
+            assert_eq!(fs[0].0, "bump");
+            assert_eq!(fs[1].0, "authority");
+            assert_eq!(fs[1].1, Ty::Pubkey);
+        }
+        other => panic!("expected a struct descriptor, got {other:?}"),
+    }
+
+    // authority sits at offset 1 within the struct body, NOT offset 0.
+    let data = vec![0u8; 33];
+    let ty = <LayoutProbe as verified_anchor::AccountData>::LAYOUT;
+    assert_eq!(locate(&ty, &["authority"], &data, 0).map(|r| r.0), Some(1));
+
+    assert_eq!(
+        <LayoutProbe as verified_anchor::AccountData>::LAYOUT_LEAN,
+        "(Ty.struct [(\"bump\", Ty.u8), (\"authority\", Ty.pubkey)])"
+    );
+}

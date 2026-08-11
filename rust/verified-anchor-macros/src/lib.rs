@@ -2,6 +2,7 @@ use proc_macro::TokenStream;
 
 mod account_data_derive;
 mod account_attr;
+mod ty_map;
 
 #[proc_macro_derive(AccountData)]
 pub fn derive_account_data(input: TokenStream) -> TokenStream {
