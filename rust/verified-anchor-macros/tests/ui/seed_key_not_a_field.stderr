@@ -1,0 +1,5 @@
+error: seed `nosuch.key()` on field `pda` is not a field of this struct (fields: [pda, user])
+  --> tests/ui/seed_key_not_a_field.rs:13:34
+   |
+13 |     #[account(seeds = [b"vault", nosuch.key().as_ref()], bump)]
+   |                                  ^^^^^^

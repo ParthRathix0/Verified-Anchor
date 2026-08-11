@@ -1,0 +1,5 @@
+error: seed `to_ne_bytes()` is not supported: Borsh — and therefore the PDA Anchor derives — is LITTLE-endian, so this would silently derive a different address than the same program under Anchor. Use `to_le_bytes()`.
+  --> tests/ui/seed_arg_native_endian.rs:14:34
+   |
+14 |     #[account(seeds = [b"vault", amount.to_ne_bytes().as_ref()], bump)]
+   |                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

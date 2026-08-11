@@ -1,0 +1,134 @@
+error: field `data` combines `init_if_needed` with the instruction-data seed `name.as_bytes()`, which verified-anchor cannot support: the account is created in `execute_lifecycle`, which receives no instruction data and so cannot rebuild the PDA's signer seeds. Use literal or `<field>.key()` seeds, or create the account with an explicit `init`
+  --> tests/ui/init_if_needed_arg_seed.rs:20:8
+   |
+20 | struct InitIfNeededArgSeed<'info> {
+   |        ^^^^^^^^^^^^^^^^^^^
+
+error[E0433]: failed to resolve: use of unresolved module or unlinked crate `borsh`
+  --> tests/ui/init_if_needed_arg_seed.rs:10:10
+   |
+10 | #[derive(borsh::BorshSerialize, borsh::BorshDeserialize, verified_anchor_macros::AccountData)]
+   |          ^^^^^ use of unresolved module or unlinked crate `borsh`
+
+error[E0433]: failed to resolve: use of unresolved module or unlinked crate `borsh`
+  --> tests/ui/init_if_needed_arg_seed.rs:10:33
+   |
+10 | #[derive(borsh::BorshSerialize, borsh::BorshDeserialize, verified_anchor_macros::AccountData)]
+   |                                 ^^^^^ use of unresolved module or unlinked crate `borsh`
+
+error[E0277]: the trait bound `VaultAccount: BorshSerialize` is not satisfied
+  --> tests/ui/init_if_needed_arg_seed.rs:11:12
+   |
+11 | pub struct VaultAccount {
+   |            ^^^^^^^^^^^^ unsatisfied trait bound
+   |
+help: the trait `BorshSerialize` is not implemented for `VaultAccount`
+  --> tests/ui/init_if_needed_arg_seed.rs:11:1
+   |
+11 | pub struct VaultAccount {
+   | ^^^^^^^^^^^^^^^^^^^^^^^
+note: there are multiple different versions of crate `borsh` in the dependency graph
+  --> $CARGO/borsh-$VERSION/src/ser/mod.rs
+   |
+   | pub trait BorshSerialize {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^ this is the expected trait
+   |
+  ::: $CARGO/borsh-$VERSION/src/ser/mod.rs
+   |
+   | pub trait BorshSerialize {
+   | ------------------------ this is the trait that was imported
+   = help: you can use `cargo tree` to explore your dependency tree
+   = help: the following other types implement trait `BorshSerialize`:
+             &T
+             ()
+             (T0, T1)
+             (T0, T1, T2)
+             (T0, T1, T2, T3)
+             (T0, T1, T2, T3, T4)
+             (T0, T1, T2, T3, T4, T5)
+             (T0, T1, T2, T3, T4, T5, T6)
+           and $N others
+note: required by a bound in `AccountData`
+  --> $WORKSPACE/verified-anchor/src/account_data.rs
+   |
+   | pub trait AccountData: borsh::BorshDeserialize + borsh::BorshSerialize {
+   |                                                  ^^^^^^^^^^^^^^^^^^^^^ required by this bound in `AccountData`
+
+error[E0277]: the trait bound `VaultAccount: BorshDeserialize` is not satisfied
+  --> tests/ui/init_if_needed_arg_seed.rs:11:12
+   |
+11 | pub struct VaultAccount {
+   |            ^^^^^^^^^^^^ unsatisfied trait bound
+   |
+help: the trait `BorshDeserialize` is not implemented for `VaultAccount`
+  --> tests/ui/init_if_needed_arg_seed.rs:11:1
+   |
+11 | pub struct VaultAccount {
+   | ^^^^^^^^^^^^^^^^^^^^^^^
+note: there are multiple different versions of crate `borsh` in the dependency graph
+  --> $CARGO/borsh-$VERSION/src/de/mod.rs
+   |
+   | pub trait BorshDeserialize: Sized {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ this is the expected trait
+   |
+  ::: $CARGO/borsh-$VERSION/src/de/mod.rs
+   |
+   | pub trait BorshDeserialize: Sized {
+   | --------------------------------- this is the trait that was imported
+   = help: you can use `cargo tree` to explore your dependency tree
+   = help: the following other types implement trait `BorshDeserialize`:
+             ()
+             (T0, T1)
+             (T0, T1, T2)
+             (T0, T1, T2, T3)
+             (T0, T1, T2, T3, T4)
+             (T0, T1, T2, T3, T4, T5)
+             (T0, T1, T2, T3, T4, T5, T6)
+             (T0, T1, T2, T3, T4, T5, T6, T7)
+           and $N others
+note: required by a bound in `AccountData`
+  --> $WORKSPACE/verified-anchor/src/account_data.rs
+   |
+   | pub trait AccountData: borsh::BorshDeserialize + borsh::BorshSerialize {
+   |                        ^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `AccountData`
+
+error[E0080]: evaluation panicked: Illegal base58 char
+ --> tests/ui/init_if_needed_arg_seed.rs:8:1
+  |
+8 | verified_anchor::solana_program::declare_id!("VAIinArg1111111111111111111111111111111111");
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `ID` failed inside this call
+  |
+note: inside `verified_anchor::prelude::Pubkey::from_str_const`
+ --> $CARGO/solana-pubkey-$VERSION/src/lib.rs
+  |
+  |         let id_array = five8_const::decode_32_const(s);
+  |                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+note: inside `five8_const::decode_32_const`
+ --> $CARGO/five8_const-$VERSION/src/lib.rs
+  |
+  | /     decode_const_unwrap::<
+  | |         N_32,
+  | |         BASE58_ENCODED_32_MAX_LEN,
+  | |         RAW58_SZ_32,
+  | |         INTERMEDIATE_SZ_32,
+  | |         BINARY_SZ_32,
+  | |     >(encoded, &DEC_TABLE_32)
+  | |_____________________________^
+note: inside `five8_const::decode_const_unwrap::<32, 44, 45, 9, 8>`
+ --> $CARGO/five8_const-$VERSION/src/lib.rs
+  |
+  |         Err(e) => unwrap_const(e),
+  |                   ^^^^^^^^^^^^^^^
+note: inside `five8_const::unwrap_const`
+ --> $CARGO/five8_const-$VERSION/src/lib.rs
+  |
+  |         DecodeError::InvalidChar(_) => panic!("Illegal base58 char"),
+  |                                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the failure occurred here
+
+note: erroneous constant encountered
+ --> tests/ui/init_if_needed_arg_seed.rs:8:1
+  |
+8 | verified_anchor::solana_program::declare_id!("VAIinArg1111111111111111111111111111111111");
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: this note originates in the macro `verified_anchor::solana_program::declare_id` (in Nightly builds, run with -Z macro-backtrace for more info)

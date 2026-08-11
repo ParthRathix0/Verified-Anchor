@@ -1,0 +1,46 @@
+error: seed `authority.as_ref()` on field `pda` names the #[instruction(...)] argument `authority`, which verified-anchor had to drop: its type, or the type of an argument declared before it, is not one verified-anchor can locate yet, and every argument at or after the first such type has a Borsh offset that cannot be computed. Give those arguments mappable types, or move `authority` ahead of them
+  --> tests/ui/seed_dropped_arg_collides_with_field.rs:20:34
+   |
+20 |     #[account(seeds = [b"vault", authority.as_ref()], bump)]
+   |                                  ^^^^^^^^^
+
+error[E0080]: evaluation panicked: Largest term greater than 2^32
+ --> tests/ui/seed_dropped_arg_collides_with_field.rs:8:1
+  |
+8 | verified_anchor::solana_program::declare_id!("VADrop11111111111111111111111111111111111111");
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ evaluation of `ID` failed inside this call
+  |
+note: inside `verified_anchor::prelude::Pubkey::from_str_const`
+ --> $CARGO/solana-pubkey-$VERSION/src/lib.rs
+  |
+  |         let id_array = five8_const::decode_32_const(s);
+  |                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+note: inside `five8_const::decode_32_const`
+ --> $CARGO/five8_const-$VERSION/src/lib.rs
+  |
+  | /     decode_const_unwrap::<
+  | |         N_32,
+  | |         BASE58_ENCODED_32_MAX_LEN,
+  | |         RAW58_SZ_32,
+  | |         INTERMEDIATE_SZ_32,
+  | |         BINARY_SZ_32,
+  | |     >(encoded, &DEC_TABLE_32)
+  | |_____________________________^
+note: inside `five8_const::decode_const_unwrap::<32, 44, 45, 9, 8>`
+ --> $CARGO/five8_const-$VERSION/src/lib.rs
+  |
+  |         Err(e) => unwrap_const(e),
+  |                   ^^^^^^^^^^^^^^^
+note: inside `five8_const::unwrap_const`
+ --> $CARGO/five8_const-$VERSION/src/lib.rs
+  |
+  |         DecodeError::LargestTermTooHigh => panic!("Largest term greater than 2^32"),
+  |                                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the failure occurred here
+
+note: erroneous constant encountered
+ --> tests/ui/seed_dropped_arg_collides_with_field.rs:8:1
+  |
+8 | verified_anchor::solana_program::declare_id!("VADrop11111111111111111111111111111111111111");
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: this note originates in the macro `verified_anchor::solana_program::declare_id` (in Nightly builds, run with -Z macro-backtrace for more info)

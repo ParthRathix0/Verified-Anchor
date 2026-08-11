@@ -507,15 +507,24 @@ enum ArgTyKind {
 /// `Option<String>` is length-prefixed at the `Option` layer, not the `String` layer, so it is
 /// `Other` rather than `Prefixed`.
 fn classify_arg_ty(ty: &syn::Type) -> ArgTyKind {
-    let name = match ty {
+    let seg = match ty {
         syn::Type::Path(p) => match p.path.segments.last() {
-            Some(seg) => seg.ident.to_string(),
+            Some(seg) => seg,
             None => return ArgTyKind::Other,
         },
         _ => return ArgTyKind::Other,
     };
+    let name = seg.ident.to_string();
     match name.as_str() {
-        "String" | "Vec" => ArgTyKind::Prefixed,
+        "String" => ArgTyKind::Prefixed,
+        // ONLY `Vec<u8>` is byte-shaped. For `Vec<T>` with a wider `T` the 4-byte prefix counts
+        // ELEMENTS, not bytes, so a seed would silently take `count` bytes instead of
+        // `count * size_of::<T>()`. Anchor could not compile such a seed either (`&Vec<u32>` is
+        // not `&[u8]`), so refusing it costs nothing and removes a way to get wrong seed bytes.
+        "Vec" => match vec_elem_is_u8(seg) {
+            true => ArgTyKind::Prefixed,
+            false => ArgTyKind::Other,
+        },
         "u8" | "u16" | "u32" | "u64" | "u128"
         | "i8" | "i16" | "i32" | "i64" | "i128" => ArgTyKind::Numeric,
         "Pubkey" => ArgTyKind::Key,
@@ -523,32 +532,64 @@ fn classify_arg_ty(ty: &syn::Type) -> ArgTyKind {
     }
 }
 
+/// Every `#[instruction(...)]` argument the developer WROTE, plus the prefix of them whose types
+/// verified-anchor can locate.
+struct InstrArgs {
+    /// The mappable prefix — the only ones whose Borsh offset is computable, so the only ones a
+    /// seed may resolve against.
+    mappable: Vec<InstrArg>,
+    /// EVERY declared name, including those at and after the unmappable cutoff.
+    ///
+    /// Load-bearing for correctness, not diagnostics: without it, a dropped argument whose name
+    /// also matches an account field would resolve to that FIELD, silently deriving a different
+    /// address than Anchor (which evaluates the seed with the argument in scope). Keeping the raw
+    /// list lets the resolution pass tell "you never declared this" apart from "you declared it
+    /// but we dropped it", and refuse both instead of falling through.
+    declared: Vec<String>,
+}
+
+/// Is this `Vec<...>` segment's element type exactly `u8`?
+fn vec_elem_is_u8(seg: &syn::PathSegment) -> bool {
+    let syn::PathArguments::AngleBracketed(a) = &seg.arguments else { return false };
+    a.args.iter().any(|g| matches!(g,
+        syn::GenericArgument::Type(syn::Type::Path(p)) if p.path.is_ident("u8")))
+}
+
 /// Parse `#[instruction(amount: u64, name: String)]` off the derive input.
 ///
-/// An argument whose type is not mappable STOPS the list: every argument after it sits at an
-/// offset we cannot compute (Borsh is positional and variable-width), so silently keeping it
-/// would hand later arguments a wrong offset. This is the same cutoff rule the account-layout
-/// derive uses; seeds/constraints naming a dropped argument become a compile error in
-/// `derive_verified_accounts` rather than a runtime brick.
-fn parse_instruction_args(input: &DeriveInput) -> syn::Result<Vec<InstrArg>> {
+/// An argument whose type is not mappable STOPS the mappable list: every argument after it sits
+/// at an offset we cannot compute (Borsh is positional and variable-width), so silently keeping
+/// it would hand later arguments a wrong offset. This is the same cutoff rule the account-layout
+/// derive uses. The names are still recorded in `declared`, so a seed naming one is a compile
+/// error rather than a runtime brick OR a silent fallback to a same-named account.
+fn parse_instruction_args(input: &DeriveInput) -> syn::Result<InstrArgs> {
     let attr = match input.attrs.iter().find(|a| a.path().is_ident("instruction")) {
         Some(a) => a,
-        None => return Ok(Vec::new()),
+        None => return Ok(InstrArgs { mappable: Vec::new(), declared: Vec::new() }),
     };
     let parser = Punctuated::<syn::PatType, Token![,]>::parse_terminated;
     let parsed = attr.parse_args_with(parser)?;
-    let mut out = Vec::new();
+    let mut mappable = Vec::new();
+    let mut declared = Vec::new();
+    let mut past_cutoff = false;
     for pt in parsed {
         let name = match pt.pat.as_ref() {
             syn::Pat::Ident(i) => i.ident.to_string(),
             other => return Err(syn::Error::new_spanned(other, "expected an argument name")),
         };
+        declared.push(name.clone());
+        // Keep walking after the cutoff purely to finish recording names — nothing past it can
+        // be mapped, because its offset depends on the width we could not compute.
+        if past_cutoff {
+            continue;
+        }
         match crate::ty_map::map_ty(&pt.ty) {
-            Some((rt, lean)) => out.push(InstrArg { name, rt, lean, kind: classify_arg_ty(&pt.ty) }),
-            None => break,
+            Some((rt, lean)) =>
+                mappable.push(InstrArg { name, rt, lean, kind: classify_arg_ty(&pt.ty) }),
+            None => past_cutoff = true,
         }
     }
-    Ok(out)
+    Ok(InstrArgs { mappable, declared })
 }
 
 /// Does any field resolve a `name.as_bytes()` seed? Gates emission of the `INSTR_ARGS` const.
@@ -1075,8 +1116,9 @@ fn validate_body(specs: &[FieldSpec], instr_args: &[InstrArg]) -> TokenStream2 {
             let seed_exprs: Vec<TokenStream2> = elems.iter().map(|se| match se {
                 SeedElem::Literal(b) => quote! { &#b[..] },
                 SeedElem::FieldKey(id) => {
+                    // Guarded with a span in `derive_verified_accounts`, which runs first.
                     let fi = *index_of.get(&id.to_string())
-                        .unwrap_or_else(|| panic!("seed field `{}` is not a field of this struct", id));
+                        .unwrap_or_else(|| unreachable!("seed field `{id}` reached codegen"));
                     quote! { accounts[#fi].key.as_ref() }
                 }
                 SeedElem::InstrArg(off, len) => {
@@ -1320,15 +1362,18 @@ fn lifecycle_body(specs: &[FieldSpec]) -> TokenStream2 {
                 .map(|elems| elems.iter().map(|se| match se {
                     SeedElem::Literal(b) => quote! { &#b[..] },
                     SeedElem::FieldKey(id) => {
+                        // Guarded with a span in `derive_verified_accounts`, which runs first.
                         let fi = *index_of.get(&id.to_string())
-                            .unwrap_or_else(|| panic!("seed field `{}` is not a field of this struct", id));
+                            .unwrap_or_else(|| unreachable!("seed field `{id}` reached codegen"));
                         quote! { accounts[#fi].key.as_ref() }
                     }
-                    SeedElem::InstrArg(_, _) => panic!(
-                        "init_if_needed on `{}` uses an `arg(..)` seed, which is unsupported (execute_lifecycle has no instruction data to derive it); use literal or field-key seeds", fname),
+                    SeedElem::InstrArg(off, len) => unreachable!(
+                        "init_if_needed + `arg({off}, {len})` seed on `{fname}` reached codegen"),
                     SeedElem::Unresolved(id) => unreachable!("unresolved seed `{id}` reached codegen"),
-                    SeedElem::ArgField(_, _) => panic!(
-                        "init_if_needed on `{}` uses a `name.as_bytes()` instruction-argument seed, which is unsupported (execute_lifecycle has no instruction data to derive it); use literal or field-key seeds", fname),
+                    // Both instruction-data seed kinds are rejected with a span by the
+                    // init_if_needed guard in `derive_verified_accounts`, which runs first.
+                    SeedElem::ArgField(id, _) => unreachable!(
+                        "init_if_needed + `{id}` arg seed on `{fname}` reached codegen"),
                 }).collect());
             let init_create = match &seeds_for_signed {
                 Some(seed_exprs) => quote! {
@@ -1450,8 +1495,25 @@ pub fn derive_verified_accounts(input: TokenStream) -> TokenStream {
                 for e in elems {
                     let SeedElem::Unresolved(id) = e else { continue };
                     let n = id.to_string();
-                    let is_arg = instr_args.iter().any(|a| a.name == n);
+                    let is_arg = instr_args.mappable.iter().any(|a| a.name == n);
                     let is_field = field_names.contains(&n);
+                    // CHECKED BEFORE the field fallback, and this order is the whole point: a
+                    // DECLARED argument that the unmappable-type cutoff dropped must not quietly
+                    // resolve to a same-named account. Anchor evaluates this seed with the
+                    // argument in scope, so falling back to the account's key bytes would derive
+                    // a DIFFERENT address with no diagnostic — our own tests and Lean model would
+                    // both agree with the wrong answer. `#[instruction(params: SomeStruct,
+                    // authority: Pubkey)]` next to an `authority` account is ordinary Anchor.
+                    if !is_arg && instr_args.declared.contains(&n) {
+                        return syn::Error::new_spanned(&*id, format!(
+                            "seed `{id}.as_ref()` on field `{field}` names the #[instruction(...)] \
+                             argument `{id}`, which verified-anchor had to drop: its type, or the \
+                             type of an argument declared before it, is not one verified-anchor \
+                             can locate yet, and every argument at or after the first such type \
+                             has a Borsh offset that cannot be computed. Give those arguments \
+                             mappable types, or move `{id}` ahead of them"))
+                            .to_compile_error().into();
+                    }
                     *e = match (is_arg, is_field) {
                         (true, true) => return syn::Error::new_spanned(&*id, format!(
                             "seed `{id}.as_ref()` on field `{field}` is ambiguous: `{id}` is both \
@@ -1462,7 +1524,7 @@ pub fn derive_verified_accounts(input: TokenStream) -> TokenStream {
                         (true, false) => SeedElem::ArgField(id.clone(), ArgSeedForm::Bare),
                         (false, true) => SeedElem::FieldKey(id.clone()),
                         (false, false) => {
-                            let args: Vec<&str> = instr_args.iter().map(|a| a.name.as_str()).collect();
+                            let args: Vec<&str> = instr_args.mappable.iter().map(|a| a.name.as_str()).collect();
                             return syn::Error::new_spanned(&*id, format!(
                                 "seed `{id}.as_ref()` on field `{field}` names neither a declared \
                                  #[instruction(...)] argument (declared and mappable: [{}]) nor an \
@@ -1486,15 +1548,24 @@ pub fn derive_verified_accounts(input: TokenStream) -> TokenStream {
             let Constraint::Seeds(elems) = c else { continue };
             for e in elems {
                 let SeedElem::ArgField(id, form) = e else { continue };
-                let Some(arg) = instr_args.iter().find(|a| a.name == id.to_string()) else {
-                    let declared: Vec<&str> = instr_args.iter().map(|a| a.name.as_str()).collect();
+                let Some(arg) = instr_args.mappable.iter().find(|a| a.name == id.to_string()) else {
+                    let mappable: Vec<&str> =
+                        instr_args.mappable.iter().map(|a| a.name.as_str()).collect();
+                    let why = if instr_args.declared.contains(&id.to_string()) {
+                        // Declared, but at or after the unmappable-type cutoff. Saying "not
+                        // declared" here would be actively misleading — the developer DID
+                        // declare it and can see it in the attribute.
+                        "was dropped: its type, or the type of an argument declared before it, is \
+                         not one verified-anchor can locate yet, and every argument at or after \
+                         the first such type has a Borsh offset that cannot be computed. Give \
+                         those arguments mappable types, or move it ahead of them"
+                    } else {
+                        "is not declared there; add it to `#[instruction(...)]`"
+                    };
                     return syn::Error::new_spanned(id, format!(
-                        "seed `{id}.{}` on field `{}` does not name a declared \
-                         #[instruction(...)] argument (declared and mappable: [{}]); add it to \
-                         `#[instruction(...)]`, or — if its type is unsupported — note that every \
-                         argument after the first unmappable one is dropped, because its Borsh \
-                         offset cannot be computed",
-                        form.spelling(), spec.name, declared.join(", ")))
+                        "seed `{id}.{}` on field `{}` names an #[instruction(...)] argument that \
+                         {why} (declared and mappable: [{}])",
+                        form.spelling(), spec.name, mappable.join(", ")))
                         .to_compile_error().into();
                 };
                 // The bytes come from the DECLARED TYPE, never from the method name, so a
@@ -1512,12 +1583,14 @@ pub fn derive_verified_accounts(input: TokenStream) -> TokenStream {
                 };
                 if !ok {
                     let expected = match arg.kind {
-                        ArgTyKind::Prefixed => "`as_bytes()` (String/Vec are length-prefixed)",
+                        ArgTyKind::Prefixed => "`as_bytes()` or `as_ref()` (String/Vec<u8> are length-prefixed)",
                         ArgTyKind::Numeric => "`to_le_bytes()` (Borsh integers are little-endian)",
                         ArgTyKind::Key => "`as_ref()` (a Pubkey is already byte-shaped)",
                         ArgTyKind::Other =>
-                            "no seed spelling yet — only String/Vec (`as_bytes()` or `as_ref()`), \
-                             integers (`to_le_bytes()`) and Pubkey (`as_ref()`) can be seeds",
+                            "no seed spelling yet — seeds can be String/Vec<u8> (`as_bytes()` \
+                             or `as_ref()`), an integer (`to_le_bytes()`) or a Pubkey \
+                             (`as_ref()`). Note a `Vec<T>` with a wider element is NOT \
+                             byte-shaped: its 4-byte prefix counts ELEMENTS, not bytes",
                     };
                     return syn::Error::new_spanned(id, format!(
                         "seed `{id}.{}` on field `{}` does not match the declared type of \
@@ -1525,6 +1598,55 @@ pub fn derive_verified_accounts(input: TokenStream) -> TokenStream {
                         form.spelling(), spec.name))
                         .to_compile_error().into();
                 }
+            }
+        }
+    }
+
+    // Guard: a `<field>.key()` seed must name a field of THIS struct. Raised here, with a span,
+    // rather than left to the `index_of` lookups inside `validate_body`/the `Bumps` init: those
+    // are `panic!`s, and a proc-macro panic surfaces as `proc-macro derive panicked` with no
+    // source location at all. Two lookup sites share this one guard.
+    for spec in &specs {
+        for c in &spec.constraints {
+            let Constraint::Seeds(elems) = c else { continue };
+            for e in elems {
+                let SeedElem::FieldKey(id) = e else { continue };
+                if !specs.iter().any(|s| s.name == id.to_string()) {
+                    let fields: Vec<&str> = specs.iter().map(|s| s.name.as_str()).collect();
+                    return syn::Error::new_spanned(id, format!(
+                        "seed `{id}.key()` on field `{}` is not a field of this struct \
+                         (fields: [{}])",
+                        spec.name, fields.join(", ")))
+                        .to_compile_error().into();
+                }
+            }
+        }
+    }
+
+    // Guard: `init_if_needed` cannot combine with an instruction-data seed. `execute_lifecycle`
+    // has no `instr_data` to derive the PDA from, so the signer seeds cannot be rebuilt there.
+    // This is VALID Anchor source, so it must fail as a spanned compile error explaining the
+    // limitation — not as the `panic!` inside `lifecycle_body`, which loses the span entirely.
+    for spec in &specs {
+        if !spec.constraints.iter().any(|c| matches!(c, Constraint::InitIfNeeded)) {
+            continue;
+        }
+        for c in &spec.constraints {
+            let Constraint::Seeds(elems) = c else { continue };
+            let bad = elems.iter().find_map(|e| match e {
+                SeedElem::ArgField(id, form) => Some(format!("{id}.{}", form.spelling())),
+                SeedElem::InstrArg(off, len) => Some(format!("arg({off}, {len})")),
+                _ => None,
+            });
+            if let Some(bad) = bad {
+                return syn::Error::new_spanned(name, format!(
+                    "field `{}` combines `init_if_needed` with the instruction-data seed `{bad}`, \
+                     which verified-anchor cannot support: the account is created in \
+                     `execute_lifecycle`, which receives no instruction data and so cannot \
+                     rebuild the PDA's signer seeds. Use literal or `<field>.key()` seeds, or \
+                     create the account with an explicit `init`",
+                    spec.name))
+                    .to_compile_error().into();
             }
         }
     }
@@ -1560,8 +1682,8 @@ pub fn derive_verified_accounts(input: TokenStream) -> TokenStream {
         }
     }
 
-    let body = validate_body(&specs, &instr_args);
-    let (lean_tpl, lean_args) = lean_spec_string(&specs, &instr_args);
+    let body = validate_body(&specs, &instr_args.mappable);
+    let (lean_tpl, lean_args) = lean_spec_string(&specs, &instr_args.mappable);
     let lifecycle = lifecycle_body(&specs);
     let has_lifecycle = specs.iter().any(|s| s.constraints.iter().any(|c|
         matches!(c, Constraint::InitMarker | Constraint::Close(_)
@@ -1591,8 +1713,9 @@ pub fn derive_verified_accounts(input: TokenStream) -> TokenStream {
         let seed_exprs: Vec<TokenStream2> = elems.iter().map(|se| match se {
             SeedElem::Literal(b) => quote! { &#b[..] },
             SeedElem::FieldKey(id) => {
+                // Guarded with a span in `derive_verified_accounts`, which runs first.
                 let fi = *bumps_index_of.get(&id.to_string())
-                    .unwrap_or_else(|| panic!("seed field `{}` is not a field of this struct", id));
+                    .unwrap_or_else(|| unreachable!("seed field `{id}` reached codegen"));
                 quote! { accounts[#fi].key.as_ref() }
             }
             SeedElem::InstrArg(off, len) => {
@@ -1681,7 +1804,7 @@ pub fn derive_verified_accounts(input: TokenStream) -> TokenStream {
 
     // The Bumps init inside `try_accounts` re-derives seeds, so it needs the same const.
     let try_accounts_instr_args = if uses_arg_field(&specs) {
-        instr_args_const(&instr_args)
+        instr_args_const(&instr_args.mappable)
     } else {
         quote! {}
     };
