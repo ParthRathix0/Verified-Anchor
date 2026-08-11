@@ -268,3 +268,60 @@ fn lean_spec_emits_as_ref_seed_spellings() {
     assert!(s.contains("SeedSpec.argField \"authority\""), "spec was: {s}");
     assert!(s.contains("SeedSpec.fieldKey \"user\""), "spec was: {s}");
 }
+// ── M10 Task 12: `constraint = <expr>` emission ────────────────────────────────────────────
+
+#[derive(borsh::BorshSerialize, borsh::BorshDeserialize, verified_anchor_macros::AccountData)]
+struct ExprVault {
+    bump: u8,
+    amount: u64,
+}
+
+#[derive(VerifiedAccounts)]
+struct CheckExpr<'info> {
+    #[account(constraint = vault.amount >= 1000)]
+    vault: verified_anchor::Account<'info, ExprVault>,
+    user: UncheckedAccount<'info>,
+}
+
+#[test]
+fn lean_spec_emits_the_expression_constraint() {
+    let s = CheckExpr::lean_spec();
+    assert!(
+        s.contains("Constraint.expr (Expr.cmp Cmp.ge (Operand.field 0 [\"amount\"]) (Operand.lit (Value.nat 1000)))"),
+        "spec was: {s}"
+    );
+}
+
+#[derive(VerifiedAccounts)]
+struct StrictOrSpec<'info> {
+    #[account(constraint = user.is_signer || user.key() < 1)]
+    user: UncheckedAccount<'info>,
+}
+
+/// The emitted Lean term is `Expr.or`, whose `evalExpr` arm is STRICT. The Rust codegen must
+/// agree with it (see `tests/behavior.rs::strict_or_rejects_when_right_operand_is_unevaluable`).
+#[test]
+fn lean_spec_emits_strict_boolean_structure() {
+    let s = StrictOrSpec::lean_spec();
+    assert!(
+        s.contains("Constraint.expr (Expr.or (Expr.truthy (Operand.isSigner 0)) (Expr.cmp Cmp.lt (Operand.key 0) (Operand.lit (Value.nat 1))))"),
+        "spec was: {s}"
+    );
+}
+
+/// An expression OUTSIDE the sublanguage compiles to nothing at all — no `Constraint.expr`, and
+/// crucially no `compile_error!`. Real Anchor accepts arbitrary expressions, so the macro must
+/// too; M10 Task 13's escape hatch is what will actually run this one.
+#[derive(VerifiedAccounts)]
+struct UncompilableExprSpec<'info> {
+    #[account(constraint = user.lamports() > some_helper())]
+    user: UncheckedAccount<'info>,
+}
+
+fn some_helper() -> u64 { 0 }
+
+#[test]
+fn lean_spec_omits_expressions_outside_the_sublanguage() {
+    let s = UncompilableExprSpec::lean_spec();
+    assert!(!s.contains("Constraint.expr"), "spec was: {s}");
+}

@@ -2,6 +2,7 @@ use proc_macro::TokenStream;
 
 mod account_data_derive;
 mod account_attr;
+mod expr;
 mod ty_map;
 
 #[proc_macro_derive(AccountData)]
@@ -204,6 +205,10 @@ enum Constraint {
     Zero,
     /// `init_if_needed` — conditional init (lifecycle); reuses `Payer`/`Space`.
     InitIfNeeded,
+    /// `constraint = <expr>` — the RAW parsed expression. Compilation into the proven
+    /// relational sublanguage (`expr::compile_expr`) is deferred until field indices are known,
+    /// which is only true once every field has been collected.
+    Expr(Expr),
 }
 
 impl Parse for Constraint {
@@ -322,6 +327,15 @@ impl Parse for Constraint {
             }
             "zero" => Ok(Constraint::Zero),
             "init_if_needed" => Ok(Constraint::InitIfNeeded),
+            // Deliberately parsed as an arbitrary `syn::Expr` and NOT validated here: whether
+            // it lands inside the proven sublanguage is decided later, by `expr::compile_expr`,
+            // and an expression that does not is routed to the escape hatch rather than
+            // rejected. Real Anchor accepts arbitrary Rust here, so refusing to parse would
+            // break the drop-in property outright.
+            "constraint" => {
+                input.parse::<Token![=]>()?;
+                Ok(Constraint::Expr(input.parse()?))
+            }
             "realloc" => {
                 // `realloc::payer = <ident>` / `realloc::zero = <bool>` / `realloc = <n>`
                 // Mirror the `seeds`/`seeds::program` `::`-peek pattern.
@@ -346,7 +360,7 @@ impl Parse for Constraint {
             }
             other => {
                 let known_unsupported = [
-                    "constraint", "token", "mint",
+                    "token", "mint",
                     "associated_token", "owner_program",
                     "token_program",
                 ];
@@ -357,7 +371,7 @@ impl Parse for Constraint {
                 };
                 Err(syn::Error::new(
                     ident.span(),
-                    format!("{hint}; verified-anchor supports: signer, mut, owner, has_one, allow_duplicate, init, init_if_needed, payer, space, close, seeds, seeds::program, bump, discriminator, address, executable, rent_exempt, realloc, realloc::payer, realloc::zero, zero. See docs/migrating-from-anchor.md"),
+                    format!("{hint}; verified-anchor supports: signer, mut, owner, has_one, allow_duplicate, init, init_if_needed, payer, space, close, seeds, seeds::program, bump, discriminator, address, executable, rent_exempt, realloc, realloc::payer, realloc::zero, zero, constraint. See docs/migrating-from-anchor.md"),
                 ))
             }
         }
@@ -696,6 +710,62 @@ fn collect_fields(input: &DeriveInput) -> syn::Result<Vec<FieldSpec>> {
     Ok(specs)
 }
 
+/// The name→index and name→inner-type maps `expr::ExprCtx` needs.
+///
+/// Built by one function used from BOTH `validate_body` and `lean_spec_string`: the runtime
+/// check and the Lean spec must agree on how every name in a `constraint = <expr>` resolves, and
+/// two independent copies of this resolution could drift into emitting a check for one account
+/// while the spec names another.
+fn expr_maps(specs: &[FieldSpec])
+    -> (std::collections::HashMap<String, usize>, std::collections::HashMap<String, syn::Type>)
+{
+    let index_of = specs.iter().enumerate().map(|(i, s)| (s.name.clone(), i)).collect();
+    // Only `Account<'info, T>` has a modelled Borsh layout, so only those fields can carry a
+    // data-field operand. Everything else resolves to metadata operands or falls out.
+    let inner_ty = specs.iter().filter_map(|s| match &s.kind {
+        WrapperKind::Account(t) => {
+            let ty: syn::Type = syn::parse_quote! { #t };
+            Some((s.name.clone(), ty))
+        }
+        _ => None,
+    }).collect();
+    (index_of, inner_ty)
+}
+
+/// A readable rendering of a `constraint = <expr>`, for the `ConstraintViolated` error. Purely
+/// diagnostic — nothing branches on it.
+///
+/// Deliberately NOT `Span::source_text()`: on stable, `Spanned::span()` for a multi-token
+/// expression cannot join spans and falls back to the FIRST token, so `vault.amount >= 1000`
+/// came back as just `"vault"`. Rendering the tokens is the only faithful option; the
+/// substitutions below only undo `quote!`'s uniform token spacing.
+/// `tests/behavior.rs::constraint_violation_names_the_expression` pins the result.
+fn expr_source(e: &Expr) -> String {
+    // Only these two: `quote!` puts spaces around every token, and the sublanguage's only
+    // multi-token idioms are field access (`vault . amount`) and zero-argument method calls
+    // (`a . key ()`). A blanket `" (" -> "("` would also glue grouping parens to the operator
+    // before them (`a &&(b || c)`), so it is left alone.
+    quote!(#e).to_string()
+        .replace(" . ", ".")
+        .replace(" ()", "()")
+}
+
+/// `lean_constraint`, plus the `constraint = <expr>` arm that needs name resolution.
+///
+/// An expression OUTSIDE the sublanguage emits NOTHING — not a `compile_error!`. That is the
+/// deliberate contract with M10 Task 13: `compile_expr` returning `None` means "the escape hatch
+/// owns this one", and until Task 13 lands such an expression is simply absent from both the
+/// spec and the runtime checks.
+fn lean_constraint_with(c: &Constraint, ctx: &crate::expr::ExprCtx) -> String {
+    if let Constraint::Expr(e) = c {
+        return match crate::expr::compile_expr(e, ctx) {
+            Some(v) => format!("Constraint.expr ({})", v.to_lean()),
+            None => String::new(),
+        };
+    }
+    lean_constraint(c)
+}
+
 fn lean_constraint(c: &Constraint) -> String {
     match c {
         Constraint::Signer => "Constraint.signer".to_string(),
@@ -740,6 +810,8 @@ fn lean_constraint(c: &Constraint) -> String {
         // Lifecycle markers assembled in lean_spec_string; emit nothing standalone.
         Constraint::Realloc(_) | Constraint::ReallocPayer(_) | Constraint::ReallocZero(_)
         | Constraint::InitIfNeeded => String::new(),
+        // Needs the `ExprCtx` to resolve names; reached only through `lean_constraint_with`.
+        Constraint::Expr(_) => String::new(),
     }
 }
 
@@ -761,9 +833,17 @@ fn lean_constraint(c: &Constraint) -> String {
 fn lean_spec_string(specs: &[FieldSpec], instr_args: &[InstrArg]) -> (String, Vec<TokenStream2>) {
     let mut fields = Vec::new();
     let mut args: Vec<TokenStream2> = Vec::new();
+    // Same resolution the runtime checks use — see `expr_maps`.
+    let (expr_index_of, expr_inner_ty) = expr_maps(specs);
+    let expr_arg_names: Vec<String> = instr_args.iter().map(|a| a.name.clone()).collect();
+    let expr_ctx = crate::expr::ExprCtx {
+        index_of: &expr_index_of,
+        inner_ty: &expr_inner_ty,
+        instr_args: &expr_arg_names,
+    };
     for spec in specs {
         let cs: Vec<String> = spec.constraints.iter()
-            .map(lean_constraint)
+            .map(|c| lean_constraint_with(c, &expr_ctx))
             .filter(|s| !s.is_empty())
             .collect();
         let mut cs = cs;   // make mutable
@@ -901,9 +981,21 @@ fn lean_spec_string(specs: &[FieldSpec], instr_args: &[InstrArg]) -> (String, Ve
 
 fn validate_body(specs: &[FieldSpec], instr_args: &[InstrArg]) -> TokenStream2 {
     let n = specs.len();
-    // Build a name→index map so has_one can look up the target field's position.
-    let index_of: std::collections::HashMap<String, usize> =
-        specs.iter().enumerate().map(|(i, s)| (s.name.clone(), i)).collect();
+    // name→index (has_one / seed targets) and name→inner type (`constraint = <expr>` data
+    // fields), built together so the runtime checks and the Lean spec resolve names identically.
+    let (index_of, inner_ty) = expr_maps(specs);
+    let expr_arg_names: Vec<String> = instr_args.iter().map(|a| a.name.clone()).collect();
+    let expr_ctx = crate::expr::ExprCtx {
+        index_of: &index_of,
+        inner_ty: &inner_ty,
+        instr_args: &expr_arg_names,
+    };
+    // Carried forward from M10 Task 9: `INSTR_ARGS` used to be emitted only when a SEED
+    // referenced an instruction argument. `Operand::InstrArg`'s codegen references the same
+    // const, so the gate is widened here to "a seed needs it OR a compiled expression reads an
+    // argument". Emitting it unconditionally is not an option — an unused local `const` raises
+    // `dead_code` in every user crate that has neither.
+    let mut needs_instr_args = uses_arg_field(specs);
     let mut checks = Vec::new();
     for (i, spec) in specs.iter().enumerate() {
         let name = &spec.name;
@@ -1082,6 +1174,22 @@ fn validate_body(specs: &[FieldSpec], instr_args: &[InstrArg]) -> TokenStream2 {
                 | Constraint::InitIfNeeded => {
                     continue;
                 }
+                // `constraint = <expr>`: compile into the proven sublanguage, or hand it to the
+                // escape hatch. `compile_expr` returning `None` is NOT an error — real Anchor
+                // accepts arbitrary expressions, so a `compile_error!` here would break the
+                // drop-in property. Until M10 Task 13 lands, such an expression is DROPPED: it
+                // is neither emitted into `lean_spec` nor checked at runtime.
+                Constraint::Expr(e) => {
+                    match crate::expr::compile_expr(e, &expr_ctx) {
+                        Some(v) => {
+                            if v.uses_instr_arg() {
+                                needs_instr_args = true;
+                            }
+                            v.to_tokens_check(name, &expr_source(e), &expr_ctx)
+                        }
+                        None => continue,
+                    }
+                }
                 // `zero`: reinit guard — checks the first 8 bytes are all-zero.
                 Constraint::Zero => {
                     let fname = name;
@@ -1218,9 +1326,10 @@ fn validate_body(specs: &[FieldSpec], instr_args: &[InstrArg]) -> TokenStream2 {
         }
     }
 
-    // Emitted only when a `name.as_bytes()` seed actually needs it: an unused local `const`
-    // would raise `dead_code` in every user crate that has no such seed.
-    let instr_args_decl = if uses_arg_field(specs) {
+    // Emitted only when a `name.as_bytes()` seed or a compiled `constraint = <expr>` actually
+    // needs it: an unused local `const` would raise `dead_code` in every user crate that has
+    // neither. See `needs_instr_args` above.
+    let instr_args_decl = if needs_instr_args {
         instr_args_const(instr_args)
     } else {
         quote! {}

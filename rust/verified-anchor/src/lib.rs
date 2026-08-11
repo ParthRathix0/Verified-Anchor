@@ -55,6 +55,9 @@ pub enum VAError {
     ReallocFailed { field: &'static str },
     /// `zero` precondition failed: the account's 8-byte discriminator was not all-zero.
     NotZeroed { field: &'static str },
+    /// A `constraint = <expr>` evaluated to false, or could not be evaluated at all
+    /// (out-of-bounds read, unknown field, type-confused comparison). Fails closed.
+    ConstraintViolated { field: &'static str, expr: &'static str },
 }
 
 impl core::fmt::Display for VAError {
@@ -81,6 +84,8 @@ impl core::fmt::Display for VAError {
                 write!(f, "account `{field}` is not rent-exempt"),
             VAError::ReallocFailed { field } => write!(f, "realloc failed for `{field}`"),
             VAError::NotZeroed { field } => write!(f, "account `{field}` is not zero-initialized"),
+            VAError::ConstraintViolated { field, expr } =>
+                write!(f, "account `{field}` violates constraint `{expr}`"),
         }
     }
 }
@@ -109,6 +114,7 @@ impl From<VAError> for solana_program::program_error::ProgramError {
             VAError::NotRentExempt { .. } => 15,
             VAError::ReallocFailed { .. } => 16,
             VAError::NotZeroed { .. } => 17,
+            VAError::ConstraintViolated { .. } => 18,
         };
         solana_program::program_error::ProgramError::Custom(code)
     }

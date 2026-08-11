@@ -1342,3 +1342,242 @@ fn literal_seed_spellings_all_derive_the_same_address() {
     let (other, _) = Pubkey::find_program_address(&[b"tail", b"x", b"vault"], &pid);
     assert_ne!(expected, other);
 }
+
+// ── M10 Task 12: `constraint = <expr>` compiled into the proven sublanguage ────────────────
+
+#[derive(
+    verified_anchor::borsh::BorshSerialize,
+    verified_anchor::borsh::BorshDeserialize,
+    verified_anchor::AccountData,
+)]
+#[borsh(crate = "::verified_anchor::borsh")]
+struct ExprVault {
+    bump: u8,
+    amount: u64,
+}
+
+#[derive(VerifiedAccounts)]
+struct CheckExpr<'info> {
+    #[account(constraint = vault.amount >= 1000)]
+    vault: verified_anchor::Account<'info, ExprVault>,
+    user: UncheckedAccount<'info>,
+}
+
+fn expr_vault_data(bump: u8, amount: u64) -> Vec<u8> {
+    let mut d = <ExprVault as verified_anchor::AccountData>::DISCRIMINATOR.to_vec();
+    d.push(bump);
+    d.extend_from_slice(&amount.to_le_bytes());
+    d
+}
+
+#[test]
+fn constraint_expr_accepts_when_satisfied() {
+    let mut v = acct_with_data(Pubkey::new_unique(), expr_vault_data(1, 1000));
+    // `Account<'info, T>` implies `owner = crate::ID`; without it validate stops before the expr.
+    v.owner = crate::ID;
+    let mut u = acct_with_data(Pubkey::new_unique(), vec![]);
+    let accts = [v.info(), u.info()];
+    assert_eq!(CheckExpr::validate(&accts, &[], &any_pid()), Ok(()));
+}
+
+#[test]
+fn constraint_expr_rejects_when_violated() {
+    let mut v = acct_with_data(Pubkey::new_unique(), expr_vault_data(1, 999));
+    // `Account<'info, T>` implies `owner = crate::ID`; without it validate stops before the expr.
+    v.owner = crate::ID;
+    let mut u = acct_with_data(Pubkey::new_unique(), vec![]);
+    let accts = [v.info(), u.info()];
+    assert!(matches!(
+        CheckExpr::validate(&accts, &[], &any_pid()),
+        Err(VAError::ConstraintViolated { field: "vault", .. })
+    ));
+}
+
+#[derive(VerifiedAccounts)]
+struct CheckKeyExpr<'info> {
+    #[account(constraint = a.key() != b.key())]
+    a: UncheckedAccount<'info>,
+    b: UncheckedAccount<'info>,
+}
+
+#[test]
+fn constraint_expr_compares_keys() {
+    let mut a = acct_with_data(Pubkey::new_unique(), vec![]);
+    let mut b = acct_with_data(Pubkey::new_unique(), vec![]);
+    assert_eq!(CheckKeyExpr::validate(&[a.info(), b.info()], &[], &any_pid()), Ok(()));
+
+    let k = Pubkey::new_unique();
+    let mut c = acct_with_data(k, vec![]);
+    let mut d = acct_with_data(k, vec![]);
+    assert!(CheckKeyExpr::validate(&[c.info(), d.info()], &[], &any_pid()).is_err());
+}
+
+// ── STRICTNESS: `&&`/`||` must NOT lower to Rust's short-circuiting operators ──────────────
+//
+// Lean's `evalExpr` binds BOTH operands through the `Option` monad before combining, so an
+// unevaluable operand poisons the whole expression regardless of the other side. `key() < 1`
+// is unevaluable BY CONSTRUCTION (`evalCmp` has no ordering arm for `key`/`nat`, deliberately —
+// see the type-confusion guarantee in `Codegen/ExampleGenerated.lean`), so these fixtures pin
+// the semantics without depending on any particular account bytes.
+
+#[derive(VerifiedAccounts)]
+struct StrictOr<'info> {
+    // `true || <unevaluable>`. Under Rust's native `||` this SHORT-CIRCUITS to `true` and the
+    // account set is ACCEPTED — while the Lean contract says `none`, i.e. REJECT. That gap is
+    // precisely "verified-anchor accepts an account set the contract rejects", the milestone's
+    // headline guarantee. If a future refactor swaps the strict combinator for native `||`,
+    // `strict_or_rejects_when_right_operand_is_unevaluable` below turns red.
+    #[account(constraint = user.is_signer || user.key() < 1)]
+    user: UncheckedAccount<'info>,
+}
+
+#[test]
+fn strict_or_rejects_when_right_operand_is_unevaluable() {
+    let mut u = acct(true, false); // is_signer = true → the left operand is `Some(true)`
+    let accts = [u.info()];
+    assert!(
+        matches!(
+            StrictOr::validate(&accts, &[], &any_pid()),
+            Err(VAError::ConstraintViolated { field: "user", .. })
+        ),
+        "`true || <unevaluable>` MUST reject: Lean's `evalExpr` yields `none`, not `some true`. \
+         Native Rust `||` would short-circuit and accept."
+    );
+}
+
+#[derive(VerifiedAccounts)]
+struct StrictAnd<'info> {
+    // `false && <unevaluable>`: rejects under both semantics, so this is not a safety
+    // difference — it is here so the `and` arm is exercised at all, and so the pair documents
+    // exactly where the asymmetry lies.
+    #[account(constraint = user.is_signer && user.key() < 1)]
+    user: UncheckedAccount<'info>,
+}
+
+#[test]
+fn strict_and_rejects_when_an_operand_is_unevaluable() {
+    let mut u = acct(false, false);
+    let accts = [u.info()];
+    assert!(StrictAnd::validate(&accts, &[], &any_pid()).is_err());
+}
+
+#[derive(VerifiedAccounts)]
+struct EvaluableOr<'info> {
+    // The control: when BOTH operands evaluate, `or` behaves like ordinary disjunction. Without
+    // this, "reject everything" would pass the two strictness tests above.
+    #[account(constraint = a.is_signer || b.is_signer)]
+    a: UncheckedAccount<'info>,
+    b: UncheckedAccount<'info>,
+}
+
+#[test]
+fn evaluable_or_still_accepts_and_rejects_normally() {
+    let mut a = acct(false, false);
+    let mut b = acct(true, false);
+    assert_eq!(EvaluableOr::validate(&[a.info(), b.info()], &[], &any_pid()), Ok(()));
+    let mut c = acct(false, false);
+    let mut d = acct(false, false);
+    assert!(EvaluableOr::validate(&[c.info(), d.info()], &[], &any_pid()).is_err());
+}
+
+#[derive(VerifiedAccounts)]
+struct NotExpr<'info> {
+    #[account(constraint = !user.is_writable)]
+    user: UncheckedAccount<'info>,
+}
+
+#[test]
+fn not_expr_negates() {
+    let mut r = acct(false, false);
+    assert_eq!(NotExpr::validate(&[r.info()], &[], &any_pid()), Ok(()));
+    let mut w = acct(false, true);
+    assert!(NotExpr::validate(&[w.info()], &[], &any_pid()).is_err());
+}
+
+// A bare truthy operand — `#[account(constraint = user.is_signer)]` with no comparison.
+#[derive(VerifiedAccounts)]
+struct TruthyExpr<'info> {
+    #[account(constraint = user.is_signer)]
+    user: UncheckedAccount<'info>,
+}
+
+#[test]
+fn truthy_expr_reads_the_metadata_flag() {
+    let mut s = acct(true, false);
+    assert_eq!(TruthyExpr::validate(&[s.info()], &[], &any_pid()), Ok(()));
+    let mut n = acct(false, false);
+    assert!(TruthyExpr::validate(&[n.info()], &[], &any_pid()).is_err());
+}
+
+// A `constraint` over a named `#[instruction(...)]` argument. This is the case that forced the
+// `INSTR_ARGS` emission gate to widen: before Task 12 the const was emitted only when a SEED
+// referenced an argument, so this struct would not have compiled.
+#[derive(VerifiedAccounts)]
+#[instruction(amount: u64)]
+struct ArgExpr<'info> {
+    #[account(constraint = vault.amount >= amount)]
+    vault: verified_anchor::Account<'info, ExprVault>,
+}
+
+#[test]
+fn constraint_expr_reads_an_instruction_argument() {
+    let mut v = acct_with_data(Pubkey::new_unique(), expr_vault_data(1, 1000));
+    // `Account<'info, T>` implies `owner = crate::ID`; without it validate stops before the expr.
+    v.owner = crate::ID;
+    let accts = [v.info()];
+    assert_eq!(ArgExpr::validate(&accts, &1000u64.to_le_bytes(), &any_pid()), Ok(()));
+    assert!(ArgExpr::validate(&accts, &1001u64.to_le_bytes(), &any_pid()).is_err());
+    // Truncated instruction data: the argument cannot be located → `none` → fail closed.
+    assert!(ArgExpr::validate(&accts, &[], &any_pid()).is_err());
+}
+
+// An out-of-bounds data read fails CLOSED rather than panicking or reading adjacent bytes.
+#[test]
+fn constraint_expr_fails_closed_on_truncated_data() {
+    let mut short = <ExprVault as verified_anchor::AccountData>::DISCRIMINATOR.to_vec();
+    short.push(1); // `bump` present, `amount` truncated away
+    let mut v = acct_with_data(Pubkey::new_unique(), short);
+    // `Account<'info, T>` implies `owner = crate::ID`; without it validate stops before the expr.
+    v.owner = crate::ID;
+    let mut u = acct_with_data(Pubkey::new_unique(), vec![]);
+    let accts = [v.info(), u.info()];
+    assert!(CheckExpr::validate(&accts, &[], &any_pid()).is_err());
+}
+
+/// The rejection names the constraint the developer wrote. Pinned because `expr_source` renders
+/// TOKENS (stable `Span::source_text()` cannot join a multi-token span and returns only the
+/// first token — it once produced a bare `"vault"` here).
+#[test]
+fn constraint_violation_names_the_expression() {
+    let mut v = acct_with_data(Pubkey::new_unique(), expr_vault_data(1, 999));
+    v.owner = crate::ID;
+    let mut u = acct_with_data(Pubkey::new_unique(), vec![]);
+    let accts = [v.info(), u.info()];
+    assert_eq!(
+        CheckExpr::validate(&accts, &[], &any_pid()),
+        Err(VAError::ConstraintViolated { field: "vault", expr: "vault.amount >= 1000" })
+    );
+}
+
+/// The `Display` arm, and the distinct `ProgramError` custom code.
+#[test]
+fn constraint_violated_renders_and_maps_to_a_distinct_code() {
+    let e = VAError::ConstraintViolated { field: "vault", expr: "vault.amount >= 1000" };
+    assert_eq!(e.to_string(), "account `vault` violates constraint `vault.amount >= 1000`");
+    assert_eq!(
+        solana_program::program_error::ProgramError::from(e),
+        solana_program::program_error::ProgramError::Custom(18)
+    );
+}
+
+/// `a.key() != b.key()` renders through the same path, method calls and all.
+#[test]
+fn constraint_violation_renders_method_calls() {
+    let k = Pubkey::new_unique();
+    let mut c = acct_with_data(k, vec![]);
+    let mut d = acct_with_data(k, vec![]);
+    assert_eq!(
+        CheckKeyExpr::validate(&[c.info(), d.info()], &[], &any_pid()),
+        Err(VAError::ConstraintViolated { field: "a", expr: "a.key() != b.key()" })
+    );
+}
