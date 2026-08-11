@@ -42,9 +42,9 @@ impl Cmp {
 pub(crate) enum Operand {
     LitNat(u128),
     /// A NEGATED integer literal. Split from `LitNat` because Lean's `Value` distinguishes
-    /// `.nat` from `.int` and `evalCmp` refuses to order across the two (deliberately — see
-    /// the refusal examples in `Codegen/ExampleGenerated.lean`), so the two literal kinds are
-    /// genuinely different operands, not two spellings of one.
+    /// `.nat` from `.int`, and only `.int` can carry a negative number at all. Since M10's
+    /// `evalCmp` widening the two compare NUMERICALLY against each other, so this split is now
+    /// about representability, not about which comparisons are answerable.
     LitInt(i128),
     LitBool(bool),
     Field(usize, Vec<String>),
@@ -432,49 +432,93 @@ impl Operand {
 impl Cmp {
     /// The `evalCmp` arms for THIS operator, over two already-evaluated `Value`s.
     ///
-    /// `eq`/`ne` are TOTAL (Rust's derived `PartialEq` on `Value` compares the discriminant
-    /// first, exactly like Lean's derived `DecidableEq`, so `Nat(1) == Int(1)` is `false`).
-    /// The four orderings exist ONLY for `nat`/`nat` and `int`/`int`; every other pairing —
-    /// `nat` vs `int` included — yields `None`, so a type-confused comparison REJECTS rather
-    /// than silently passing. Do NOT add a coercion: `-1i64` and `u64::MAX` share their bytes,
-    /// so any coercion picks a sign convention on the developer's behalf, and picking wrong
-    /// turns a rejecting constraint into an accepting one.
+    /// NUMERIC pairs — `Nat`/`Nat`, `Int`/`Int`, AND the mixed pairings — compare as
+    /// mathematical integers, mirroring Lean's `Value.toInt?` + `evalCmp`. The mixed case is
+    /// load-bearing, not a nicety: under the old constructor-sensitive comparison,
+    /// `constraint = delta != 0` on an `i64` field was a TAUTOLOGY (`Int(-1) != Nat(0)` is
+    /// `true` for EVERY `delta`, zero included), i.e. a guard the developer wrote and the
+    /// codegen silently disabled. `delta == 0` was the mirror-image brick.
+    ///
+    /// The earlier "do NOT add a coercion, `-1i64` and `u64::MAX` share their bytes" reasoning
+    /// confused decode time with comparison time: `read_val` has already used the declared `Ty`
+    /// to pick the sign, so by here there are two distinct, unambiguous integers and comparing
+    /// them numerically picks nothing. Do not re-narrow this on the old argument.
+    ///
+    /// NON-numeric pairs are unchanged: `eq`/`ne` stay TOTAL over `Value` (Rust's derived
+    /// `PartialEq` matches Lean's derived `DecidableEq` for those), the four orderings yield
+    /// `None`, so `key < nat` REJECTS rather than silently passing.
     fn apply(&self, l: TokenStream2, r: TokenStream2) -> TokenStream2 {
-        match self {
+        // The one place Rust needs a guard Lean does not: `Int` is unbounded in Lean, but
+        // `u128` and `i128` do not share a range, so a `Nat` above `i128::MAX` cannot be cast.
+        // It is also unambiguously larger than any `i128`, hence `Greater`/`Less` directly.
+        // Specified by the boundary examples in `Codegen/ExampleGenerated.lean`.
+        let ord = quote! {
+            match (__l, __r) {
+                (
+                    ::core::option::Option::Some(::verified_anchor::layout::Value::Nat(__a)),
+                    ::core::option::Option::Some(::verified_anchor::layout::Value::Nat(__b)),
+                ) => ::core::option::Option::Some(::core::cmp::Ord::cmp(&__a, &__b)),
+                (
+                    ::core::option::Option::Some(::verified_anchor::layout::Value::Int(__a)),
+                    ::core::option::Option::Some(::verified_anchor::layout::Value::Int(__b)),
+                ) => ::core::option::Option::Some(::core::cmp::Ord::cmp(&__a, &__b)),
+                (
+                    ::core::option::Option::Some(::verified_anchor::layout::Value::Nat(__a)),
+                    ::core::option::Option::Some(::verified_anchor::layout::Value::Int(__b)),
+                ) => ::core::option::Option::Some(
+                    if __a > i128::MAX as u128 {
+                        ::core::cmp::Ordering::Greater
+                    } else {
+                        ::core::cmp::Ord::cmp(&(__a as i128), &__b)
+                    }
+                ),
+                (
+                    ::core::option::Option::Some(::verified_anchor::layout::Value::Int(__a)),
+                    ::core::option::Option::Some(::verified_anchor::layout::Value::Nat(__b)),
+                ) => ::core::option::Option::Some(
+                    if __b > i128::MAX as u128 {
+                        ::core::cmp::Ordering::Less
+                    } else {
+                        ::core::cmp::Ord::cmp(&__a, &(__b as i128))
+                    }
+                ),
+                // Non-numeric on at least one side: Lean's `Value.toInt?` is `none` here too.
+                _ => ::core::option::Option::None,
+            }
+        };
+        // Which `Ordering`s satisfy this operator.
+        let sat = match self {
+            Cmp::Eq => quote! { __o == ::core::cmp::Ordering::Equal },
+            Cmp::Ne => quote! { __o != ::core::cmp::Ordering::Equal },
+            Cmp::Lt => quote! { __o == ::core::cmp::Ordering::Less },
+            Cmp::Le => quote! { __o != ::core::cmp::Ordering::Greater },
+            Cmp::Gt => quote! { __o == ::core::cmp::Ordering::Greater },
+            Cmp::Ge => quote! { __o != ::core::cmp::Ordering::Less },
+        };
+        // Lean's `| _, _ =>` fallback arm, reached only when a side is non-numeric.
+        let fallback = match self {
             Cmp::Eq | Cmp::Ne => {
-                let op = if matches!(self, Cmp::Eq) {
-                    quote! { == }
-                } else {
-                    quote! { != }
-                };
+                let op = if matches!(self, Cmp::Eq) { quote! { == } } else { quote! { != } };
                 quote! {
-                    match (#l, #r) {
+                    match (__l, __r) {
                         (::core::option::Option::Some(__a), ::core::option::Option::Some(__b)) =>
                             ::core::option::Option::Some(__a #op __b),
                         _ => ::core::option::Option::None,
                     }
                 }
             }
-            _ => {
-                let op = match self {
-                    Cmp::Lt => quote! { < },
-                    Cmp::Le => quote! { <= },
-                    Cmp::Gt => quote! { > },
-                    Cmp::Ge => quote! { >= },
-                    _ => unreachable!("eq/ne handled above"),
-                };
-                quote! {
-                    match (#l, #r) {
-                        (
-                            ::core::option::Option::Some(::verified_anchor::layout::Value::Nat(__a)),
-                            ::core::option::Option::Some(::verified_anchor::layout::Value::Nat(__b)),
-                        ) => ::core::option::Option::Some(__a #op __b),
-                        (
-                            ::core::option::Option::Some(::verified_anchor::layout::Value::Int(__a)),
-                            ::core::option::Option::Some(::verified_anchor::layout::Value::Int(__b)),
-                        ) => ::core::option::Option::Some(__a #op __b),
-                        _ => ::core::option::Option::None,
-                    }
+            _ => quote! { ::core::option::Option::None },
+        };
+        quote! {
+            {
+                // `Option<Value<'static>>` is `Copy`, so both bindings are readable twice: once
+                // for the numeric ordering, once for the non-numeric `eq`/`ne` fallback.
+                let __l: ::core::option::Option<::verified_anchor::layout::Value<'static>> = #l;
+                let __r: ::core::option::Option<::verified_anchor::layout::Value<'static>> = #r;
+                let __ord: ::core::option::Option<::core::cmp::Ordering> = #ord;
+                match __ord {
+                    ::core::option::Option::Some(__o) => ::core::option::Option::Some(#sat),
+                    ::core::option::Option::None => #fallback,
                 }
             }
         }

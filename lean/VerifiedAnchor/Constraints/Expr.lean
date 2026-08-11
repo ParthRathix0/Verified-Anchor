@@ -31,22 +31,54 @@ def evalOperand (s : AccountsStruct) (c : Ctx) : Operand → Option Value
       let (off, t) ← locate (Ty.struct s.instrArgs) [n] c.instrData 0
       readVal t c.instrData off
 
-/-- Apply a comparison. `eq`/`ne` are total over `Value` (the derived `DecidableEq` compares
-    constructors too, so `nat 1 == int 1` is simply `false`). Ordering is defined ONLY for
-    like-typed numeric pairs; every other pairing yields `none` rather than `false`, so a
-    type-confused comparison REJECTS rather than silently passing. -/
-def evalCmp : Cmp → Value → Value → Option Bool
-  | .eq, a, b => some (a == b)
-  | .ne, a, b => some (a != b)
-  | .lt, .nat a, .nat b => some (a < b)
-  | .le, .nat a, .nat b => some (a ≤ b)
-  | .gt, .nat a, .nat b => some (a > b)
-  | .ge, .nat a, .nat b => some (a ≥ b)
-  | .lt, .int a, .int b => some (a < b)
-  | .le, .int a, .int b => some (a ≤ b)
-  | .gt, .int a, .int b => some (a > b)
-  | .ge, .int a, .int b => some (a ≥ b)
-  | _, _, _ => none
+/-- The mathematical integer a NUMERIC `Value` denotes, or `none` for a non-numeric one.
+
+    `nat` and `int` are two ENCODINGS of one number line, not two incomparable universes. The
+    old `evalCmp` refused to compare across them, on the grounds that `-1 : i64` and
+    `18446744073709551615 : u64` share their bytes so any coercion would silently pick a sign
+    convention. That argument is true at DECODE time and irrelevant here: `readVal` has already
+    consulted the declared `Ty` and picked the sign, so by the time `evalCmp` runs it is holding
+    two distinct, unambiguous mathematical integers. Comparing them in unbounded `Int` is exact
+    and picks nothing. Do not re-narrow this on the old reasoning.
+
+    Note this is deliberately a helper used ONLY by `evalCmp`. `Value`'s derived
+    `DecidableEq`/`BEq` is left alone — `has_one` and the discriminator checks depend on
+    constructor-sensitive equality, and widening it there would change unrelated code. -/
+def Value.toInt? : Value → Option Int
+  | .nat n => some (n : Int)
+  | .int i => some i
+  | _      => none
+
+/-- Apply a comparison.
+
+    NUMERIC pairs — `nat`/`nat`, `int`/`int`, AND the mixed `nat`/`int` pairings — compare as
+    mathematical integers via `Value.toInt?`. The mixed case is not a convenience: without it,
+    `delta != 0` on an `i64` field was a TAUTOLOGY (`int (-1) != nat 0` is `true` under
+    constructor equality for every value of `delta`, including `0`), i.e. a security check the
+    developer wrote and the model silently disabled. The `eq` direction was the mirror-image
+    brick. A constant-valued guard that always ACCEPTS survives every happy-path test and
+    surfaces only as an exploit, which is why this is a fix rather than a documented gap.
+
+    NON-numeric pairs keep the old behaviour exactly: `eq`/`ne` stay TOTAL over `Value` (so
+    `key k == bool b` is simply `false` — "is this the same value" is always answerable), while
+    the four orderings yield `none` rather than `false`, so a type-confused comparison such as
+    `key < nat` REJECTS rather than silently passing. -/
+def evalCmp (op : Cmp) (a b : Value) : Option Bool :=
+  match a.toInt?, b.toInt? with
+  | some x, some y =>
+      some <|
+        match op with
+        | .eq => x == y
+        | .ne => x != y
+        | .lt => x < y
+        | .le => x ≤ y
+        | .gt => x > y
+        | .ge => x ≥ y
+  | _, _ =>
+      match op with
+      | .eq => some (a == b)
+      | .ne => some (a != b)
+      | _   => none
 
 /-- Evaluate an expression. `none` propagates: any unevaluable subterm makes the whole
     expression unevaluable, which the contract reads as "not satisfied". `and`/`or` are

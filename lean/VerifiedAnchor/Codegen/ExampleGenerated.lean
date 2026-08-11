@@ -552,11 +552,12 @@ example : evalExpr exprStruct exprCtx
 example : evalExpr exprStruct exprCtx
     (.cmp .eq (.key 0) (.lit (.nat 1))) = some false := by decide
 
-/-! ### Signed ordering, and the `nat`/`int` refusal.
+/-! ### Signed ordering, and the `nat`/`int` cross-pairing.
 
-    `evalCmp` has TWO ordering families — `nat`/`nat` and `int`/`int` — and the signed one needs
-    its own coverage: a `.int` comparison routes through different arms and through `readVal`'s
-    sign-reconstruction (`n - 2^64`), so the unsigned examples above say nothing about it. -/
+    Signed comparison needs its own coverage: a `.int` comparison routes through `readVal`'s
+    sign-reconstruction (`n - 2^64`), so the unsigned examples above say nothing about it. The
+    cross-pairing block further down then covers `nat` against `int`, which `evalCmp` answers
+    numerically rather than refusing — see there for why the earlier refusal was wrong. -/
 
 private def signedTy : Ty := .struct [("delta", .i64)]
 
@@ -591,24 +592,73 @@ example : evalExpr signedStruct signedCtx
 example : evalExpr signedStruct signedCtx
     (.cmp .gt (.lit (.int 1)) (.lit (.int (-1)))) = some true := by decide
 
-/-- THE REFUSAL, pinned as a regression test rather than left to inspection: ordering a `nat`
-    against an `int` is `none` in BOTH argument orders. This is the pairing a future maintainer
-    is most likely to "fix" by inserting a coercion — don't. `-1 : i64` and `18446744073709551615
-    : u64` have identical bytes, so any coercion silently picks a sign convention on the
-    developer's behalf, and picking wrong turns a rejecting constraint into an accepting one.
-    Refusing to compare is the only answer that cannot be wrong. -/
-example : evalExpr signedStruct signedCtx
-    (.cmp .lt (.field 0 ["delta"]) (.lit (.nat 0))) = none := by decide
-example : evalExpr signedStruct signedCtx
-    (.cmp .gt (.lit (.nat 1)) (.field 0 ["delta"])) = none := by decide
+/-! ### The `nat`/`int` CROSS-PAIRING, and why `evalCmp` compares it numerically.
 
-/-- `eq`/`ne` stay TOTAL across the same cross-pair: `nat 1` and `int 1` are different `Value`s,
-    so they compare unequal rather than failing. Contrast with the orderings directly above —
-    this is the deliberate seam between "meaningless to order" and "answerable to compare". -/
+    This block used to pin the opposite behaviour — a flat REFUSAL to compare a `nat` against an
+    `int`, justified by the fact that `-1 : i64` and `18446744073709551615 : u64` have identical
+    bytes, so "any coercion silently picks a sign convention".
+
+    **That justification confused decode time with comparison time.** `readVal` has already
+    consulted the declared `Ty` and picked the sign; `evalCmp` never sees bytes, only two
+    distinct mathematical integers. Comparing them in unbounded `Int` (via `Value.toInt?`) is
+    exact and picks nothing.
+
+    Refusing was also not the safe default it looked like, because `eq`/`ne` were TOTAL and
+    therefore did not refuse — they answered from CONSTRUCTOR equality:
+
+    * `delta == 0` on an `i64` field was `some false` for every `delta`, including `0` — a
+      brick, which at least dies in the first integration test;
+    * `delta != 0` was `some true` for every `delta`, including `0` — a TAUTOLOGY. The developer
+      wrote a non-zero guard and the model silently disabled it. That one passes every
+      happy-path test and surfaces only as an exploit, which is what settled the question. -/
+
+/-- Mixed ORDERING, both argument orders, now answered numerically. `delta = -1`. -/
+example : evalExpr signedStruct signedCtx
+    (.cmp .lt (.field 0 ["delta"]) (.lit (.nat 0))) = some true := by decide
+example : evalExpr signedStruct signedCtx
+    (.cmp .gt (.lit (.nat 1)) (.field 0 ["delta"])) = some true := by decide
+/-- …and it really is the VALUE being compared, not the constructor: the false direction too. -/
+example : evalExpr signedStruct signedCtx
+    (.cmp .gt (.field 0 ["delta"]) (.lit (.nat 0))) = some false := by decide
+
+/-- Mixed `eq`/`ne`: `nat 1` and `int 1` denote the SAME number, so they now compare equal. -/
 example : evalExpr exprStruct exprCtx
-    (.cmp .eq (.lit (.nat 1)) (.lit (.int 1))) = some false := by decide
+    (.cmp .eq (.lit (.nat 1)) (.lit (.int 1))) = some true := by decide
 example : evalExpr exprStruct exprCtx
-    (.cmp .ne (.lit (.nat 1)) (.lit (.int 1))) = some true := by decide
+    (.cmp .ne (.lit (.nat 1)) (.lit (.int 1))) = some false := by decide
+
+/-- THE TWO SHAPES THAT WERE BROKEN, pinned on the real signed fixture (`delta = -1`). -/
+example : evalExpr signedStruct signedCtx
+    (.cmp .eq (.field 0 ["delta"]) (.lit (.nat 0))) = some false := by decide
+example : evalExpr signedStruct signedCtx
+    (.cmp .ne (.field 0 ["delta"]) (.lit (.nat 0))) = some true := by decide
+
+/-- THE TAUTOLOGY, killed: on a ZERO `delta`, `delta != 0` is now `some false` (REJECT). Under
+    constructor equality it was `some true` — accept — for every `delta` whatsoever. -/
+private def zeroDeltaCtx : Ctx :=
+  Ctx.ofAccounts [{ exprVaultAcct with data := ⟨Array.replicate 16 (0 : UInt8)⟩ }]
+example : evalOperand signedStruct zeroDeltaCtx (.field 0 ["delta"]) = some (.int 0) := by decide
+example : evalExpr signedStruct zeroDeltaCtx
+    (.cmp .ne (.field 0 ["delta"]) (.lit (.nat 0))) = some false := by decide
+example : evalExpr signedStruct zeroDeltaCtx
+    (.cmp .eq (.field 0 ["delta"]) (.lit (.nat 0))) = some true := by decide
+
+/-- THE BOUNDARY the Rust mirror has to work for: a `nat` beyond `Int64`/`i128` range still
+    compares correctly against a negative `int`. Lean's `Int` is unbounded, so this is free
+    here; `expr.rs` needs an explicit `i128::MAX` guard to match, and this example is the
+    specification that guard is written against. -/
+example : evalCmp .gt (.nat 170141183460469231731687303715884105728) (.int (-1)) = some true := by
+  decide
+example : evalCmp .lt (.int (-1)) (.nat 170141183460469231731687303715884105728) = some true := by
+  decide
+
+/-- NON-numeric pairings are UNCHANGED by the widening: orderings still refuse, `eq`/`ne` are
+    still total. `Value.toInt?` is `none` for `key`/`bool`/`bytes`, so those fall to the old
+    arms verbatim. -/
+example : evalCmp .lt (.key Pubkey.zero) (.nat 1) = none := by decide
+example : evalCmp .eq (.key Pubkey.zero) (.nat 1) = some false := by decide
+example : evalCmp .ne (.bool true) (.nat 1) = some true := by decide
+example : evalCmp .ge (.bool true) (.bool false) = none := by decide
 
 /-- Metadata operands: `lamports` crosses `UInt64.toNat`, `dataLen` reads `ByteArray.size`. -/
 example : evalExpr exprStruct exprCtx

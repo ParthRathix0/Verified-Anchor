@@ -1581,3 +1581,150 @@ fn constraint_violation_renders_method_calls() {
         Err(VAError::ConstraintViolated { field: "a", expr: "a.key() != b.key()" })
     );
 }
+
+// ── M10 Task 12, fix round 1: `nat`/`int` comparisons ─────────────────────────────────────
+//
+// `evalCmp` used to refuse to ORDER a `nat` against an `int` while `eq`/`ne` stayed total and
+// answered from constructor equality. That combination was worse than a refusal:
+//
+//   * `delta == 0` on an `i64` field was `false` for every `delta`  — a brick;
+//   * `delta != 0` was `true`  for every `delta`, zero included     — a TAUTOLOGY, i.e. a guard
+//     the developer wrote and the framework silently disabled. It passes every happy-path test
+//     and surfaces only as an exploit.
+//
+// Both Lean and the codegen now compare numerically. These fixtures pin all four shapes.
+
+#[derive(
+    verified_anchor::borsh::BorshSerialize,
+    verified_anchor::borsh::BorshDeserialize,
+    verified_anchor::AccountData,
+)]
+#[borsh(crate = "::verified_anchor::borsh")]
+struct SignedVault {
+    delta: i64,
+    amount: u64,
+}
+
+fn signed_vault_data(delta: i64, amount: u64) -> Vec<u8> {
+    let mut d = <SignedVault as verified_anchor::AccountData>::DISCRIMINATOR.to_vec();
+    d.extend_from_slice(&delta.to_le_bytes());
+    d.extend_from_slice(&amount.to_le_bytes());
+    d
+}
+
+fn signed_vault(delta: i64, amount: u64) -> Acct {
+    let mut a = acct_with_data(Pubkey::new_unique(), signed_vault_data(delta, amount));
+    a.owner = crate::ID;
+    a
+}
+
+// `delta != 0` — the tautology. Must now REJECT when `delta == 0`.
+#[derive(VerifiedAccounts)]
+struct SignedNeZero<'info> {
+    #[account(constraint = vault.delta != 0)]
+    vault: verified_anchor::Account<'info, SignedVault>,
+}
+
+#[test]
+fn signed_ne_unsigned_literal_is_not_a_tautology() {
+    let mut zero = signed_vault(0, 0);
+    assert_eq!(
+        SignedNeZero::validate(&[zero.info()], &[], &any_pid()),
+        Err(VAError::ConstraintViolated { field: "vault", expr: "vault.delta != 0" }),
+        "`delta != 0` MUST reject a zero delta. Constructor equality made this ACCEPT for every \
+         delta — a security check silently disabled."
+    );
+    // …and still accepts a genuinely non-zero delta, in both signs.
+    let mut neg = signed_vault(-1, 0);
+    assert_eq!(SignedNeZero::validate(&[neg.info()], &[], &any_pid()), Ok(()));
+    let mut pos = signed_vault(7, 0);
+    assert_eq!(SignedNeZero::validate(&[pos.info()], &[], &any_pid()), Ok(()));
+}
+
+// `delta == 0` — the mirror-image brick. Must now ACCEPT when `delta == 0`.
+#[derive(VerifiedAccounts)]
+struct SignedEqZero<'info> {
+    #[account(constraint = vault.delta == 0)]
+    vault: verified_anchor::Account<'info, SignedVault>,
+}
+
+#[test]
+fn signed_eq_unsigned_literal_is_not_a_brick() {
+    let mut zero = signed_vault(0, 0);
+    assert_eq!(SignedEqZero::validate(&[zero.info()], &[], &any_pid()), Ok(()));
+    let mut neg = signed_vault(-1, 0);
+    assert!(SignedEqZero::validate(&[neg.info()], &[], &any_pid()).is_err());
+}
+
+// `delta < 0` — mixed ORDERING, which used to be unevaluable and therefore always rejected.
+#[derive(VerifiedAccounts)]
+struct SignedLtZero<'info> {
+    #[account(constraint = vault.delta < 0)]
+    vault: verified_anchor::Account<'info, SignedVault>,
+}
+
+#[test]
+fn signed_ordering_against_an_unsigned_literal_evaluates() {
+    let mut neg = signed_vault(-1, 0);
+    assert_eq!(SignedLtZero::validate(&[neg.info()], &[], &any_pid()), Ok(()));
+    let mut zero = signed_vault(0, 0);
+    assert!(SignedLtZero::validate(&[zero.info()], &[], &any_pid()).is_err());
+    let mut pos = signed_vault(5, 0);
+    assert!(SignedLtZero::validate(&[pos.info()], &[], &any_pid()).is_err());
+}
+
+// FIELD vs FIELD across signedness — the case no macro-side literal-type inference could have
+// fixed, since neither side is a literal.
+#[derive(VerifiedAccounts)]
+struct SignedMixedFields<'info> {
+    #[account(constraint = vault.delta < vault.amount)]
+    vault: verified_anchor::Account<'info, SignedVault>,
+}
+
+#[test]
+fn mixed_signedness_field_comparison_evaluates() {
+    let mut a = signed_vault(-1, 3); // -1 < 3
+    assert_eq!(SignedMixedFields::validate(&[a.info()], &[], &any_pid()), Ok(()));
+    let mut b = signed_vault(5, 3); // 5 < 3 is false
+    assert!(SignedMixedFields::validate(&[b.info()], &[], &any_pid()).is_err());
+    // THE BOUNDARY: a u64 whose value exceeds i64 range is still ordered correctly against a
+    // negative i64. (`u128`/`i128` in the generated code, but the same widening question.)
+    let mut c = signed_vault(-1, u64::MAX);
+    assert_eq!(SignedMixedFields::validate(&[c.info()], &[], &any_pid()), Ok(()));
+}
+
+// A `u128` field beyond `i128::MAX` — the one place the generated Rust needs a guard Lean does
+// not, because `Int` is unbounded there but `u128`/`i128` do not share a range here.
+#[derive(
+    verified_anchor::borsh::BorshSerialize,
+    verified_anchor::borsh::BorshDeserialize,
+    verified_anchor::AccountData,
+)]
+#[borsh(crate = "::verified_anchor::borsh")]
+struct WideVault {
+    big: u128,
+}
+
+#[derive(VerifiedAccounts)]
+struct WideGtNeg<'info> {
+    #[account(constraint = vault.big > -1)]
+    vault: verified_anchor::Account<'info, WideVault>,
+}
+
+#[test]
+fn unsigned_beyond_i128_max_compares_greater_than_a_negative() {
+    let mut d = <WideVault as verified_anchor::AccountData>::DISCRIMINATOR.to_vec();
+    // i128::MAX + 1: casting this to i128 would wrap to i128::MIN and invert the comparison.
+    d.extend_from_slice(&(i128::MAX as u128 + 1).to_le_bytes());
+    let mut a = acct_with_data(Pubkey::new_unique(), d);
+    a.owner = crate::ID;
+    assert_eq!(WideGtNeg::validate(&[a.info()], &[], &any_pid()), Ok(()));
+}
+
+/// The non-numeric pairings are UNCHANGED by the widening: `key < nat` is still unevaluable, so
+/// the strictness fixtures above keep testing what they were written to test.
+#[test]
+fn non_numeric_ordering_still_rejects() {
+    let mut u = acct(true, false);
+    assert!(StrictOr::validate(&[u.info()], &[], &any_pid()).is_err());
+}
