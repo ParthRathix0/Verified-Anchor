@@ -5,6 +5,7 @@ import VerifiedAnchor.Solana.Rent
 import VerifiedAnchor.Solana.Discriminator
 import VerifiedAnchor.Solana.Layout
 import VerifiedAnchor.Solana.Borsh.Ty
+import VerifiedAnchor.Solana.Borsh.Locate
 import VerifiedAnchor.Constraints.Ast
 import VerifiedAnchor.Constraints.Context
 import VerifiedAnchor.Contract.Satisfies
