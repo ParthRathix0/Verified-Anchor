@@ -62,6 +62,9 @@ def genConstraint (s : AccountsStruct) (c : Ctx) (idx : Nat) (f : AccountField) 
   | .hasOne field    => genHasOne s c idx f field
   | .seeds ss b program => genSeeds s c idx ss b program
   | .zero            => (Ctx.atField s c idx).allB (fun a => decide (isZeroDisc a))
+  -- `allB` sends `none` to `false`, mirroring `satisfies`' `satisfiesSome`: an expression that
+  -- cannot be evaluated is not satisfied. Fail closed on both sides of the bridge.
+  | .expr e          => (evalExpr s c e).allB (fun b => b)
   | _                => false
 
 def genFieldValidate (s : AccountsStruct) (c : Ctx) (idx : Nat) (f : AccountField) : Bool :=

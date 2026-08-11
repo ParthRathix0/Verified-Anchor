@@ -8,6 +8,7 @@ import VerifiedAnchor.Solana.Borsh.Ty
 import VerifiedAnchor.Solana.Borsh.Locate
 import VerifiedAnchor.Constraints.Ast
 import VerifiedAnchor.Constraints.Context
+import VerifiedAnchor.Constraints.Expr
 import VerifiedAnchor.Contract.Satisfies
 import VerifiedAnchor.Contract.Validates
 import VerifiedAnchor.Decision.Check

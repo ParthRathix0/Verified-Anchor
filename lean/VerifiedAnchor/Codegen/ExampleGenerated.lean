@@ -465,4 +465,215 @@ example : argStruct.argBytes argCtx "label" = some (⟨#[104, 105]⟩ : ByteArra
 
 example : argStruct.argBytes argCtx "missing" = none := by decide
 
+/-! ## M10: the `constraint = <expr>` sublanguage. -/
+
+private def exprVaultTy : Ty := .struct [("bump", .u8), ("amount", .u64)]
+
+/-- 8 disc + bump 3 + amount 1000 (u64 LE). -/
+private def exprVaultData : ByteArray :=
+  ⟨(Array.replicate 8 (0 : UInt8)) ++ #[(3 : UInt8)] ++ #[232, 3, 0, 0, 0, 0, 0, 0]⟩
+
+private def exprStruct : AccountsStruct :=
+  { programId := Pubkey.zero
+  , fields :=
+    [ { name := "vault"
+      , ty := AccountType.account "Vault" exprVaultTy Pubkey.zero
+      , constraints := [] }
+    , { name := "user", ty := AccountType.uncheckedAccount, constraints := [] } ] }
+
+private def exprVaultAcct : AccountInfo :=
+  { key := Pubkey.zero, lamports := 500, data := exprVaultData, owner := Pubkey.zero
+  , rentEpoch := 0, isSigner := false, isWritable := false, executable := false }
+
+private def exprUserAcct : AccountInfo :=
+  { key := Pubkey.zero, lamports := 10, data := ByteArray.empty, owner := Pubkey.zero
+  , rentEpoch := 0, isSigner := true, isWritable := false, executable := false }
+
+private def exprCtx : Ctx := Ctx.ofAccounts [exprVaultAcct, exprUserAcct]
+
+-- amount (1000) >= 1000
+#guard evalExpr exprStruct exprCtx
+        (.cmp .ge (.field 0 ["amount"]) (.lit (.nat 1000))) == some true
+-- amount (1000) > 1000 is false
+#guard evalExpr exprStruct exprCtx
+        (.cmp .gt (.field 0 ["amount"]) (.lit (.nat 1000))) == some false
+-- a missing field fails CLOSED (none, not false)
+#guard evalExpr exprStruct exprCtx
+        (.cmp .ge (.field 0 ["nope"]) (.lit (.nat 0))) == none
+-- comparing a key against a number fails closed
+#guard evalExpr exprStruct exprCtx
+        (.cmp .lt (.key 0) (.lit (.nat 1))) == none
+-- account metadata operands
+#guard evalExpr exprStruct exprCtx (.truthy (.isSigner 1)) == some true
+#guard evalExpr exprStruct exprCtx (.truthy (.isSigner 0)) == some false
+#guard evalExpr exprStruct exprCtx
+        (.cmp .eq (.key 0) (.key 1)) == some true
+-- boolean structure
+#guard evalExpr exprStruct exprCtx
+        (.and (.truthy (.isSigner 1))
+              (.cmp .ge (.field 0 ["amount"]) (.lit (.nat 1)))) == some true
+#guard evalExpr exprStruct exprCtx
+        (.not (.truthy (.isSigner 1))) == some false
+
+-- and the constraint arm agrees with the contract
+#guard genConstraint exprStruct exprCtx 0 exprStruct.fields[0]!
+        (Constraint.expr (.cmp .ge (.field 0 ["amount"]) (.lit (.nat 1000)))) == true
+#guard genConstraint exprStruct exprCtx 0 exprStruct.fields[0]!
+        (Constraint.expr (.cmp .gt (.field 0 ["amount"]) (.lit (.nat 1000)))) == false
+#guard genConstraint exprStruct exprCtx 0 exprStruct.fields[0]!
+        (Constraint.expr (.cmp .ge (.field 0 ["nope"]) (.lit (.nat 0)))) == false
+
+/- The `#guard`s above are elaborator-level only. `evalExpr` is what Task 11's soundness lemma
+   and Task 12's emitted specs both reduce through, so it gets the same KERNEL-level regression
+   treatment as `locate`/`readVal`/`argBytes`: every example below is `by decide`, which fails
+   the build if anyone reintroduces well-founded or `partial` recursion anywhere on the
+   `evalOperand` → `locateField'` → `locate` → `encodedWidth` → `readVal` path. -/
+
+/-- TRUE case: the located `u64` at offset 9 decodes to 1000 and clears the bound. -/
+example : evalExpr exprStruct exprCtx
+    (.cmp .ge (.field 0 ["amount"]) (.lit (.nat 1000))) = some true := by decide
+
+/-- FALSE case: evaluable, and the answer is genuinely `some false` — distinct from `none`. -/
+example : evalExpr exprStruct exprCtx
+    (.cmp .gt (.field 0 ["amount"]) (.lit (.nat 1000))) = some false := by decide
+
+/-- NONE case: an unknown field name is unevaluable, so the whole expression is `none`. -/
+example : evalExpr exprStruct exprCtx
+    (.cmp .ge (.field 0 ["nope"]) (.lit (.nat 0))) = none := by decide
+
+/-- THE TYPE-CONFUSION GUARANTEE: ordering a `key` against a `nat` is `none`, NOT `some false`.
+    Both reject, but only `none` says "this comparison is meaningless" — the distinction Task 12
+    relies on when it decides whether a Rust expression is compilable at all. -/
+example : evalExpr exprStruct exprCtx
+    (.cmp .lt (.key 0) (.lit (.nat 1))) = none := by decide
+
+/-- `eq`/`ne`, by contrast, are TOTAL over `Value`: mismatched constructors compare `false`
+    rather than failing, because "is this the same value" is always a meaningful question. -/
+example : evalExpr exprStruct exprCtx
+    (.cmp .eq (.key 0) (.lit (.nat 1))) = some false := by decide
+
+/-- Metadata operands: `lamports` crosses `UInt64.toNat`, `dataLen` reads `ByteArray.size`. -/
+example : evalExpr exprStruct exprCtx
+    (.cmp .ge (.lamports 0) (.lit (.nat 500))) = some true := by decide
+example : evalExpr exprStruct exprCtx
+    (.cmp .eq (.dataLen 0) (.lit (.nat 17))) = some true := by decide
+example : evalExpr exprStruct exprCtx (.truthy (.isSigner 1)) = some true := by decide
+example : evalExpr exprStruct exprCtx (.truthy (.isSigner 0)) = some false := by decide
+
+/-- `truthy` of a non-`bool` operand is unevaluable, not false. -/
+example : evalExpr exprStruct exprCtx (.truthy (.lamports 0)) = none := by decide
+
+/-- An out-of-range account index fails closed at `Ctx.atField`. -/
+example : evalExpr exprStruct exprCtx (.truthy (.isSigner 7)) = none := by decide
+
+/-- Boolean structure reduces, including `or`/`not`. -/
+example : evalExpr exprStruct exprCtx
+    (.and (.truthy (.isSigner 1))
+          (.cmp .ge (.field 0 ["amount"]) (.lit (.nat 1)))) = some true := by decide
+example : evalExpr exprStruct exprCtx
+    (.or (.truthy (.isSigner 0)) (.truthy (.isSigner 1))) = some true := by decide
+example : evalExpr exprStruct exprCtx (.not (.truthy (.isSigner 1))) = some false := by decide
+
+/-- STRICTNESS, pinned deliberately: `and` does NOT short-circuit. A `false` left operand does
+    not rescue an unevaluable right one — the result is `none`, not `some false`. Both mean
+    "reject", so this is not a safety difference; it is pinned so Task 11's proof never has to
+    reason about evaluation order, and so a bug on the right-hand side is reported rather than
+    masked. The same holds for `or` with a `true` left operand. -/
+example : evalExpr exprStruct exprCtx
+    (.and (.truthy (.isSigner 0)) (.cmp .ge (.field 0 ["nope"]) (.lit (.nat 0)))) = none := by
+  decide
+example : evalExpr exprStruct exprCtx
+    (.or (.truthy (.isSigner 1)) (.cmp .ge (.field 0 ["nope"]) (.lit (.nat 0)))) = none := by
+  decide
+
+/-- The `.pubkey` decode — the arm that once jammed the kernel via `ByteArray.toList` — reduces
+    through `evalOperand` too: the `authority` field at offset 9 equals account 1's key. -/
+example : evalExpr hasOneStruct hasOneCtx
+    (.cmp .eq (.field 0 ["authority"]) (.key 1)) = some true := by decide
+example : evalExpr hasOneStruct hasOneWrongCtx
+    (.cmp .eq (.field 0 ["authority"]) (.key 1)) = some false := by decide
+
+/-! ### `locateField'` really walks a PATH, not just a name. -/
+
+private def nestedTy : Ty :=
+  .struct [("bump", .u8), ("inner", .struct [("a", .u32), ("b", .u64)])]
+
+/-- 8 disc + bump 3 + inner.a = 7 (u32 LE) + inner.b = 42 (u64 LE). `inner.b` sits at 13. -/
+private def nestedData : ByteArray :=
+  ⟨(Array.replicate 8 (0 : UInt8)) ++ #[(3 : UInt8)]
+    ++ #[(7 : UInt8), 0, 0, 0] ++ #[(42 : UInt8), 0, 0, 0, 0, 0, 0, 0]⟩
+
+private def nestedStruct : AccountsStruct :=
+  { programId := Pubkey.zero
+  , fields :=
+    [ { name := "vault"
+      , ty := AccountType.account "Nested" nestedTy Pubkey.zero
+      , constraints := [] } ] }
+
+private def nestedCtx : Ctx :=
+  Ctx.ofAccounts [{ exprVaultAcct with data := nestedData }]
+
+example :
+    (nestedStruct.fields[0]!.ty.locateField' ["inner", "b"] nestedData) = some (13, Ty.u64) := by
+  decide
+
+example : evalExpr nestedStruct nestedCtx
+    (.cmp .eq (.field 0 ["inner", "b"]) (.lit (.nat 42))) = some true := by decide
+
+/-- A path through a scalar is not a path: `bump` has no `.x`, so it fails closed. -/
+example : evalExpr nestedStruct nestedCtx
+    (.cmp .eq (.field 0 ["bump", "x"]) (.lit (.nat 3))) = none := by decide
+
+/-- The single-name `locateField` is definitionally the one-element path. -/
+example : nestedStruct.fields[0]!.ty.locateField "bump" nestedData
+    = nestedStruct.fields[0]!.ty.locateField' ["bump"] nestedData := rfl
+
+/-! ### `instrArg` operands resolve through the same Borsh walk as seeds. -/
+
+example : evalExpr argStruct argCtx
+    (.cmp .eq (.instrArg "amount") (.lit (.nat 1))) = some true := by decide
+
+/-- An aggregate-typed argument is not a scalar `Value`: `readVal .string` is `none`, so a
+    `constraint = label == ...` fails closed rather than comparing framing bytes. -/
+example : evalExpr argStruct argCtx
+    (.cmp .eq (.instrArg "label") (.lit (.nat 2))) = none := by decide
+
+example : evalExpr argStruct argCtx
+    (.cmp .eq (.instrArg "missing") (.lit (.nat 0))) = none := by decide
+
+/-! ### The constraint arm: `genConstraint` and `satisfies` agree, and both fail closed. -/
+
+example : genConstraint exprStruct exprCtx 0 exprStruct.fields[0]!
+    (Constraint.expr (.cmp .ge (.field 0 ["amount"]) (.lit (.nat 1000)))) = true := by decide
+example : genConstraint exprStruct exprCtx 0 exprStruct.fields[0]!
+    (Constraint.expr (.cmp .gt (.field 0 ["amount"]) (.lit (.nat 1000)))) = false := by decide
+
+/-- BOTH kinds of rejection collapse to `false` operationally: `some false` and `none` alike. -/
+example : genConstraint exprStruct exprCtx 0 exprStruct.fields[0]!
+    (Constraint.expr (.cmp .ge (.field 0 ["nope"]) (.lit (.nat 0)))) = false := by decide
+example : genConstraint exprStruct exprCtx 0 exprStruct.fields[0]!
+    (Constraint.expr (.cmp .lt (.key 0) (.lit (.nat 1)))) = false := by decide
+
+/-- The MODEL side reduces too, so Task 11 will not be bridging a stuck term to a stuck term. -/
+example : satisfies exprStruct exprCtx 0 exprStruct.fields[0]!
+    (Constraint.expr (.cmp .ge (.field 0 ["amount"]) (.lit (.nat 1000)))) := by decide
+example : ¬ satisfies exprStruct exprCtx 0 exprStruct.fields[0]!
+    (Constraint.expr (.cmp .gt (.field 0 ["amount"]) (.lit (.nat 1000)))) := by decide
+/-- Fail-closed on the model side: an unevaluable expression is UNSATISFIED, not satisfied. -/
+example : ¬ satisfies exprStruct exprCtx 0 exprStruct.fields[0]!
+    (Constraint.expr (.cmp .ge (.field 0 ["nope"]) (.lit (.nat 0)))) := by decide
+
+/-- End to end: an `expr` constraint attached to a field flows through `genValidate`. -/
+private def exprStructWithConstraint : AccountsStruct :=
+  { exprStruct with
+    fields :=
+      [ { name := "vault"
+        , ty := AccountType.uncheckedAccount
+        , constraints := [Constraint.expr (.cmp .ge (.lamports 0) (.lit (.nat 500)))] }
+      , { name := "user", ty := AccountType.uncheckedAccount, constraints := [] } ] }
+
+example : genValidate exprStructWithConstraint exprCtx = true := by decide
+example : genValidate exprStructWithConstraint
+    (Ctx.ofAccounts [{ exprVaultAcct with lamports := 499 }, exprUserAcct]) = false := by decide
+
 end VerifiedAnchor.Codegen.Examples
