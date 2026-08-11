@@ -249,3 +249,22 @@ fn lean_spec_emits_numeric_instr_arg_seeds() {
     assert!(s.contains("instrArgs := [(\"amount\", Ty.u64)]"), "spec was: {s}");
     assert!(s.contains("SeedSpec.argField \"amount\""), "spec was: {s}");
 }
+
+/// The bare `.as_ref()` spellings emit the SAME two constructors as the explicit ones — the
+/// peeling and the argument-vs-field resolution happen entirely in the macro, and Lean sees only
+/// `SeedSpec.argField` (an instruction argument) or `SeedSpec.fieldKey` (an account).
+#[derive(VerifiedAccounts)]
+#[instruction(authority: solana_program::pubkey::Pubkey)]
+struct AsRefSeeds<'info> {
+    #[account(seeds = [b"vault", authority.as_ref(), user.key().as_ref()], bump)]
+    pda: UncheckedAccount<'info>,
+    user: UncheckedAccount<'info>,
+}
+
+#[test]
+fn lean_spec_emits_as_ref_seed_spellings() {
+    let s = AsRefSeeds::lean_spec();
+    assert!(s.contains("instrArgs := [(\"authority\", Ty.pubkey)]"), "spec was: {s}");
+    assert!(s.contains("SeedSpec.argField \"authority\""), "spec was: {s}");
+    assert!(s.contains("SeedSpec.fieldKey \"user\""), "spec was: {s}");
+}

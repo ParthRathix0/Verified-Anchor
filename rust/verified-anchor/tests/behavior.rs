@@ -1216,3 +1216,129 @@ fn numeric_arg_seed_overrun_fails_closed() {
         Err(VAError::WrongPda { field: "vault" })
     );
 }
+
+// ── M10 Task 9: the remaining Anchor seed spellings ───────────────────────────────────────
+//
+// `&x` / `.as_ref()` / `.as_slice()` are slice-coercion noise around a seed source: a seed list
+// is `&[&[u8]]`, and `Pubkey`, `[u8; 8]` and `Vec<u8>` do not coerce to `&[u8]` there. They are
+// peeled, then the bare name is resolved — INSTRUCTION ARGUMENTS FIRST, then account fields.
+
+#[derive(VerifiedAccounts)]
+struct KeyAsRefSeed<'info> {
+    #[account(seeds = [b"vault", user.key().as_ref()], bump)]
+    pda: UncheckedAccount<'info>,
+    user: UncheckedAccount<'info>,
+}
+
+#[derive(VerifiedAccounts)]
+#[instruction(authority: Pubkey)]
+struct PubkeyArgSeed<'info> {
+    #[account(seeds = [b"vault", authority.as_ref()], bump)]
+    pda: UncheckedAccount<'info>,
+}
+
+#[derive(VerifiedAccounts)]
+#[instruction(blob: Vec<u8>)]
+struct VecArgRefSeed<'info> {
+    #[account(seeds = [b"vault", &blob], bump)]
+    pda: UncheckedAccount<'info>,
+}
+
+#[derive(VerifiedAccounts)]
+#[instruction(blob: Vec<u8>)]
+struct VecArgSliceSeed<'info> {
+    #[account(seeds = [b"vault", blob.as_slice()], bump)]
+    pda: UncheckedAccount<'info>,
+}
+
+/// `user.key().as_ref()` — the ubiquitous Anchor account-key seed. Expected address built
+/// straight from the account's key bytes.
+#[test]
+fn account_key_as_ref_seed_derives_the_anchor_address() {
+    let pid = any_pid();
+    let user_key = Pubkey::new_unique();
+    let (expected, _) = Pubkey::find_program_address(&[b"vault", user_key.as_ref()], &pid);
+    let mut p = acct_with_data(expected, vec![]);
+    let mut u = acct_with_data(user_key, vec![]);
+    let accts = [p.info(), u.info()];
+    assert_eq!(KeyAsRefSeed::validate(&accts, &[], &pid), Ok(()));
+}
+
+#[test]
+fn account_key_as_ref_seed_rejects_a_different_key() {
+    let pid = any_pid();
+    let (expected, _) = Pubkey::find_program_address(&[b"vault", Pubkey::new_unique().as_ref()], &pid);
+    let mut p = acct_with_data(expected, vec![]);
+    let mut u = acct_with_data(Pubkey::new_unique(), vec![]);   // a DIFFERENT user account
+    let accts = [p.info(), u.info()];
+    assert_eq!(
+        KeyAsRefSeed::validate(&accts, &[], &pid),
+        Err(VAError::WrongPda { field: "pda" })
+    );
+}
+
+/// A `Pubkey` INSTRUCTION ARGUMENT via `.as_ref()`. `argBytes`' fixed-size arm returns the whole
+/// 32-byte encoding, which is exactly `Pubkey::as_ref()`.
+#[test]
+fn pubkey_arg_seed_derives_the_anchor_address() {
+    let pid = any_pid();
+    let authority = Pubkey::new_unique();
+    let (expected, _) = Pubkey::find_program_address(&[b"vault", authority.as_ref()], &pid);
+    let mut p = acct_with_data(expected, vec![]);
+    let accts = [p.info()];
+    assert_eq!(PubkeyArgSeed::validate(&accts, authority.as_ref(), &pid), Ok(()));
+}
+
+#[test]
+fn pubkey_arg_seed_rejects_a_different_authority() {
+    let pid = any_pid();
+    let (expected, _) = Pubkey::find_program_address(&[b"vault", Pubkey::new_unique().as_ref()], &pid);
+    let mut p = acct_with_data(expected, vec![]);
+    let accts = [p.info()];
+    assert_eq!(
+        PubkeyArgSeed::validate(&accts, Pubkey::new_unique().as_ref(), &pid),
+        Err(VAError::WrongPda { field: "pda" })
+    );
+    // ...and a truncated Pubkey argument fails closed rather than panicking.
+    assert_eq!(
+        PubkeyArgSeed::validate(&accts, &[7u8; 31], &pid),
+        Err(VAError::WrongPda { field: "pda" })
+    );
+}
+
+/// `&blob` and `blob.as_slice()` are the same seed: the `Vec` payload, length prefix stripped.
+#[test]
+fn vec_arg_reference_and_slice_spellings_agree() {
+    let pid = any_pid();
+    let (expected, _) = Pubkey::find_program_address(&[b"vault", &[9u8, 8, 7]], &pid);
+    let mut p = acct_with_data(expected, vec![]);
+    let accts = [p.info()];
+    let data = [3u8, 0, 0, 0, 9, 8, 7];
+    assert_eq!(VecArgRefSeed::validate(&accts, &data, &pid), Ok(()));
+    assert_eq!(VecArgSliceSeed::validate(&accts, &data, &pid), Ok(()));
+    // Negative: a different payload is a different PDA.
+    assert_eq!(
+        VecArgRefSeed::validate(&accts, &[3u8, 0, 0, 0, 9, 8, 6], &pid),
+        Err(VAError::WrongPda { field: "pda" })
+    );
+}
+
+/// Literal seeds take the same peeling: `b"vault".as_ref()`, `&b"vault"` and `"vault".as_bytes()`
+/// are all the bare `b"vault"` seed. Anchor programs use these interchangeably.
+#[derive(VerifiedAccounts)]
+struct LiteralSeedSpellings<'info> {
+    #[account(seeds = [b"vault".as_ref(), &b"x", "tail".as_bytes()], bump)]
+    pda: UncheckedAccount<'info>,
+}
+
+#[test]
+fn literal_seed_spellings_all_derive_the_same_address() {
+    let pid = any_pid();
+    let (expected, _) = Pubkey::find_program_address(&[b"vault", b"x", b"tail"], &pid);
+    let mut p = acct_with_data(expected, vec![]);
+    let accts = [p.info()];
+    assert_eq!(LiteralSeedSpellings::validate(&accts, &[], &pid), Ok(()));
+    // Negative: a different literal ordering is a different PDA.
+    let (other, _) = Pubkey::find_program_address(&[b"tail", b"x", b"vault"], &pid);
+    assert_ne!(expected, other);
+}

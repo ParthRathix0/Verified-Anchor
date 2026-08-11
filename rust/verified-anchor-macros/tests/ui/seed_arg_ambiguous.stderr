@@ -1,0 +1,5 @@
+error: seed `authority.as_ref()` on field `pda` is ambiguous: `authority` is both a declared #[instruction(...)] argument and an account field of this struct. Rename one of them — guessing would derive a different address than the one you meant
+  --> tests/ui/seed_arg_ambiguous.rs:15:34
+   |
+15 |     #[account(seeds = [b"vault", authority.as_ref()], bump)]
+   |                                  ^^^^^^^^^

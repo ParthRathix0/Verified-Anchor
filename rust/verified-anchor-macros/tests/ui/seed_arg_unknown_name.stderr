@@ -1,0 +1,5 @@
+error: seed `autority.as_ref()` on field `pda` names neither a declared #[instruction(...)] argument (declared and mappable: [authority]) nor an account field of this struct ([pda])
+  --> tests/ui/seed_arg_unknown_name.rs:13:34
+   |
+13 |     #[account(seeds = [b"vault", autority.as_ref()], bump)]
+   |                                  ^^^^^^^^

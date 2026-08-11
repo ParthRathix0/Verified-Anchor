@@ -31,6 +31,11 @@ enum SeedElem {
     /// carried along ONLY so the derive can check it against the argument's declared type; both
     /// forms resolve to the same bytes and the same Lean `SeedSpec.argField`.
     ArgField(syn::Ident, ArgSeedForm),
+    /// A bare name reached by peeling `&` / `.as_ref()` / `.as_slice()` — e.g. `authority.as_ref()`
+    /// or `&blob`. Whether it means an instruction argument or an account field is not decidable
+    /// from syntax, so `derive_verified_accounts` rewrites it into `ArgField`/`FieldKey` before
+    /// any codegen runs. It never survives to a `quote!`.
+    Unresolved(syn::Ident),
 }
 
 /// How a `#[instruction(...)]` argument was spelled in a `seeds = [...]` list.
@@ -40,6 +45,9 @@ enum ArgSeedForm {
     AsBytes,
     /// `amount.to_le_bytes()` (optionally `.as_ref()`) — Anchor's spelling for numeric arguments.
     ToLeBytes,
+    /// `authority.as_ref()` / `&blob` — Anchor's spelling for `Pubkey` and `Vec` arguments,
+    /// which are already byte-shaped and need no conversion call.
+    Bare,
 }
 
 impl ArgSeedForm {
@@ -47,6 +55,7 @@ impl ArgSeedForm {
         match self {
             ArgSeedForm::AsBytes => "as_bytes()",
             ArgSeedForm::ToLeBytes => "to_le_bytes()",
+            ArgSeedForm::Bare => "as_ref()",
         }
     }
 }
@@ -355,26 +364,44 @@ impl Parse for Constraint {
     }
 }
 
-/// Peel the wrappers Anchor seed lists put around an instruction argument and return the
-/// argument name plus the surface form used.
+/// Peel the wrappers Anchor seed lists put around a seed source, down to the name and the
+/// surface form used.
 ///
-/// `&`-refs and a trailing `.as_ref()` are peeled because a seed list is `&[&[u8]]`: real Anchor
-/// source writes `amount.to_le_bytes().as_ref()` or `&amount.to_le_bytes()` since a bare
-/// `[u8; 8]` does not coerce to `&[u8]` there. They carry no meaning for us — the declared
-/// argument type is what determines the bytes.
-fn arg_seed_of(e: &Expr) -> Option<(syn::Ident, ArgSeedForm)> {
+/// `&`-refs and trailing `.as_ref()`/`.as_slice()` are peeled because a seed list is `&[&[u8]]`:
+/// real Anchor source writes `user.key().as_ref()`, `amount.to_le_bytes().as_ref()`,
+/// `&amount.to_le_bytes()` and `&blob`, because the bare values (`Pubkey`, `[u8; 8]`, `Vec<u8>`)
+/// do not coerce to `&[u8]` in that position. That wrapping carries no meaning for us — the
+/// account, or the argument's declared type, is what determines the bytes.
+fn peel_seed(e: &Expr) -> Option<SeedElem> {
     match e {
-        Expr::Reference(r) => arg_seed_of(&r.expr),
+        Expr::Reference(r) => peel_seed(&r.expr),
+        // Reached only by peeling (a NAKED path is not accepted as a seed): `&blob`,
+        // `blob.as_slice()`, `authority.as_ref()`. Which binding it names is resolved later.
+        Expr::Path(p) => p.path.get_ident().map(|id| SeedElem::Unresolved(id.clone())),
+        // The peeling applies to LITERAL seeds too: `b"vault".as_ref()` and `&b"vault"` are the
+        // same seed as the bare `b"vault"` that `parse_seed_elem` matches first.
+        Expr::Lit(syn::ExprLit { lit: syn::Lit::ByteStr(b), .. }) => Some(SeedElem::Literal(b.clone())),
         Expr::MethodCall(mc) if mc.args.is_empty() => {
-            let form = match mc.method.to_string().as_str() {
-                "as_bytes" => ArgSeedForm::AsBytes,
-                "to_le_bytes" => ArgSeedForm::ToLeBytes,
-                // Slice-coercion noise, not a seed source: keep peeling.
-                "as_ref" | "as_slice" => return arg_seed_of(&mc.receiver),
-                _ => return None,
+            let recv_ident = || match mc.receiver.as_ref() {
+                Expr::Path(p) => p.path.get_ident().cloned(),
+                _ => None,
             };
-            match mc.receiver.as_ref() {
-                Expr::Path(p) => p.path.get_ident().map(|id| (id.clone(), form)),
+            match mc.method.to_string().as_str() {
+                // `.key()` is unambiguous: only an account has one. No instruction-argument type
+                // verified-anchor can map exposes `.key()`, so this never needs resolution.
+                "key" => recv_ident().map(SeedElem::FieldKey),
+                // `.as_bytes()`/`.to_le_bytes()` are equally unambiguous the other way: no
+                // account wrapper exposes either.
+                "as_bytes" => match mc.receiver.as_ref() {
+                    // `"vault".as_bytes()` — the str-literal spelling of a literal seed. Anchor
+                    // programs use it interchangeably with `b"vault"`; same bytes, so same seed.
+                    Expr::Lit(syn::ExprLit { lit: syn::Lit::Str(sl), .. }) =>
+                        Some(SeedElem::Literal(syn::LitByteStr::new(sl.value().as_bytes(), sl.span()))),
+                    _ => recv_ident().map(|id| SeedElem::ArgField(id, ArgSeedForm::AsBytes)),
+                },
+                "to_le_bytes" => recv_ident().map(|id| SeedElem::ArgField(id, ArgSeedForm::ToLeBytes)),
+                // Slice-coercion noise, not a seed source: keep peeling.
+                "as_ref" | "as_slice" => peel_seed(&mc.receiver),
                 _ => None,
             }
         }
@@ -402,15 +429,7 @@ fn big_or_native_endian_seed(e: &Expr) -> Option<String> {
 fn parse_seed_elem(e: Expr) -> syn::Result<SeedElem> {
     match e {
         Expr::Lit(syn::ExprLit { lit: syn::Lit::ByteStr(b), .. }) => Ok(SeedElem::Literal(b)),
-        Expr::MethodCall(mc) if mc.method == "key" && mc.args.is_empty() => {
-            if let Expr::Path(p) = mc.receiver.as_ref() {
-                if let Some(id) = p.path.get_ident() {
-                    return Ok(SeedElem::FieldKey(id.clone()));
-                }
-            }
-            Err(syn::Error::new_spanned(mc.receiver, "seed `.key()` must be on a field name"))
-        }
-        // `name.as_bytes()` / `amount.to_le_bytes()` — a named `#[instruction(...)]` argument.
+        // `user.key()` / `user.key().as_ref()` / `name.as_bytes()` / `amount.to_le_bytes()`.
         // These are the forms real Anchor source writes, and the whole point of M10 Task 9: an
         // unmodified Anchor `#[derive(Accounts)]` struct must compile under
         // `#[derive(VerifiedAccounts)]`.
@@ -426,11 +445,12 @@ fn parse_seed_elem(e: Expr) -> syn::Result<SeedElem> {
                      — is LITTLE-endian, so this would silently derive a different address than \
                      the same program under Anchor. Use `to_le_bytes()`.")));
             }
-            match arg_seed_of(&e) {
-                Some((id, form)) => Ok(SeedElem::ArgField(id, form)),
+            match peel_seed(&e) {
+                Some(se) => Ok(se),
                 None => Err(syn::Error::new_spanned(&e,
                     "unsupported seed (expected b\"..\", field.key(), name.as_bytes(), \
-                     amount.to_le_bytes(), or arg(off, len))")),
+                     amount.to_le_bytes(), a Pubkey/Vec argument via `.as_ref()`, \
+                     or arg(off, len))")),
             }
         }
         Expr::Call(call) => {
@@ -477,7 +497,9 @@ enum ArgTyKind {
     Prefixed,
     /// Fixed-width integers — Anchor writes `.to_le_bytes()`.
     Numeric,
-    /// Everything else we can map (`bool`, `Pubkey`, `Option<_>`): no seed spelling supported yet.
+    /// `Pubkey` — already byte-shaped; Anchor writes `.as_ref()`.
+    Key,
+    /// Everything else we can map (`bool`, `Option<_>`): no seed spelling supported yet.
     Other,
 }
 
@@ -496,6 +518,7 @@ fn classify_arg_ty(ty: &syn::Type) -> ArgTyKind {
         "String" | "Vec" => ArgTyKind::Prefixed,
         "u8" | "u16" | "u32" | "u64" | "u128"
         | "i8" | "i16" | "i32" | "i64" | "i128" => ArgTyKind::Numeric,
+        "Pubkey" => ArgTyKind::Key,
         _ => ArgTyKind::Other,
     }
 }
@@ -649,6 +672,7 @@ fn lean_constraint(c: &Constraint) -> String {
                 SeedElem::FieldKey(id) => format!("SeedSpec.fieldKey \"{}\"", id),
                 SeedElem::InstrArg(off, len) => format!("SeedSpec.instrArg {} {}", off, len),
                 SeedElem::ArgField(id, _) => format!("SeedSpec.argField \"{}\"", id),
+                SeedElem::Unresolved(id) => unreachable!("unresolved seed `{id}` reached codegen"),
             }).collect();
             format!("Constraint.seeds [{}] @@BUMP@@ @@PROG@@", seeds.join(", "))
         }
@@ -1062,6 +1086,7 @@ fn validate_body(specs: &[FieldSpec], instr_args: &[InstrArg]) -> TokenStream2 {
                     quote! { &instr_data[(#off).min(instr_data.len())..(#end).min(instr_data.len())] }
                 }
                 SeedElem::ArgField(id, _) => arg_field_seed_expr(id, fname),
+                SeedElem::Unresolved(id) => unreachable!("unresolved seed `{id}` reached codegen"),
             }).collect();
             // Stored (non-canonical) bump opt-in: `bump = arg(off)`. Read the bump byte from
             // instr_data at `off`, derive the PDA with THAT specific bump via
@@ -1301,6 +1326,7 @@ fn lifecycle_body(specs: &[FieldSpec]) -> TokenStream2 {
                     }
                     SeedElem::InstrArg(_, _) => panic!(
                         "init_if_needed on `{}` uses an `arg(..)` seed, which is unsupported (execute_lifecycle has no instruction data to derive it); use literal or field-key seeds", fname),
+                    SeedElem::Unresolved(id) => unreachable!("unresolved seed `{id}` reached codegen"),
                     SeedElem::ArgField(_, _) => panic!(
                         "init_if_needed on `{}` uses a `name.as_bytes()` instruction-argument seed, which is unsupported (execute_lifecycle has no instruction data to derive it); use literal or field-key seeds", fname),
                 }).collect());
@@ -1394,11 +1420,61 @@ pub fn derive_verified_accounts(input: TokenStream) -> TokenStream {
         Ok(a) => a,
         Err(e) => return e.to_compile_error().into(),
     };
-    let specs = match collect_fields(&input) {
+    let mut specs = match collect_fields(&input) {
         Ok(s) => s,
         Err(e) => return e.to_compile_error().into(),
     };
     let name = &input.ident;
+
+    // ── Resolve bare seed names ───────────────────────────────────────────────────────────
+    //
+    // `authority.as_ref()` and `&blob` peel to a bare NAME, and syntax alone cannot say whether
+    // that name is a `#[instruction(...)]` argument (a `Pubkey`/`Vec` argument, already
+    // byte-shaped) or an account field (meaning its key bytes). Both are real Anchor spellings.
+    //
+    // THE RULE: consult the declared `#[instruction(...)]` list FIRST, then fall back to the
+    // struct's account fields. The argument list is the more specific binding at this position,
+    // and a fixed order makes the behaviour predictable rather than dependent on declaration
+    // order. Spellings that ARE decidable from syntax never come through here: `.key()` can only
+    // be an account, `.as_bytes()`/`.to_le_bytes()` can only be an argument.
+    //
+    // A name that is BOTH is a compile error, never a guess — silently picking the wrong seed
+    // source derives a wrong address, which is the exact failure this whole feature guards
+    // against.
+    {
+        let field_names: Vec<String> = specs.iter().map(|s| s.name.clone()).collect();
+        for spec in &mut specs {
+            let field = spec.name.clone();
+            for c in &mut spec.constraints {
+                let Constraint::Seeds(elems) = c else { continue };
+                for e in elems {
+                    let SeedElem::Unresolved(id) = e else { continue };
+                    let n = id.to_string();
+                    let is_arg = instr_args.iter().any(|a| a.name == n);
+                    let is_field = field_names.contains(&n);
+                    *e = match (is_arg, is_field) {
+                        (true, true) => return syn::Error::new_spanned(&*id, format!(
+                            "seed `{id}.as_ref()` on field `{field}` is ambiguous: `{id}` is both \
+                             a declared #[instruction(...)] argument and an account field of this \
+                             struct. Rename one of them — guessing would derive a different \
+                             address than the one you meant"))
+                            .to_compile_error().into(),
+                        (true, false) => SeedElem::ArgField(id.clone(), ArgSeedForm::Bare),
+                        (false, true) => SeedElem::FieldKey(id.clone()),
+                        (false, false) => {
+                            let args: Vec<&str> = instr_args.iter().map(|a| a.name.as_str()).collect();
+                            return syn::Error::new_spanned(&*id, format!(
+                                "seed `{id}.as_ref()` on field `{field}` names neither a declared \
+                                 #[instruction(...)] argument (declared and mappable: [{}]) nor an \
+                                 account field of this struct ([{}])",
+                                args.join(", "), field_names.join(", ")))
+                                .to_compile_error().into();
+                        }
+                    };
+                }
+            }
+        }
+    }
 
     // Guard: every `name.as_bytes()` seed must name a DECLARED, MAPPABLE `#[instruction(..)]`
     // argument. Without this the seed would silently resolve to `None` at runtime and reject
@@ -1429,15 +1505,19 @@ pub fn derive_verified_accounts(input: TokenStream) -> TokenStream {
                 let ok = match (form, arg.kind) {
                     (ArgSeedForm::AsBytes, ArgTyKind::Prefixed) => true,
                     (ArgSeedForm::ToLeBytes, ArgTyKind::Numeric) => true,
+                    // `Pubkey` and `Vec`/`String` are already byte-shaped, so Anchor reaches them
+                    // with a plain `&`/`.as_ref()` rather than a conversion call.
+                    (ArgSeedForm::Bare, ArgTyKind::Key | ArgTyKind::Prefixed) => true,
                     _ => false,
                 };
                 if !ok {
                     let expected = match arg.kind {
                         ArgTyKind::Prefixed => "`as_bytes()` (String/Vec are length-prefixed)",
                         ArgTyKind::Numeric => "`to_le_bytes()` (Borsh integers are little-endian)",
+                        ArgTyKind::Key => "`as_ref()` (a Pubkey is already byte-shaped)",
                         ArgTyKind::Other =>
-                            "no seed spelling yet — only String/Vec (`as_bytes()`) and integers \
-                             (`to_le_bytes()`) can be used as seeds",
+                            "no seed spelling yet — only String/Vec (`as_bytes()` or `as_ref()`), \
+                             integers (`to_le_bytes()`) and Pubkey (`as_ref()`) can be seeds",
                     };
                     return syn::Error::new_spanned(id, format!(
                         "seed `{id}.{}` on field `{}` does not match the declared type of \
@@ -1525,6 +1605,7 @@ pub fn derive_verified_accounts(input: TokenStream) -> TokenStream {
             // `Result<_, VAError>`, so the fail-closed `?`/`return` inside this expression
             // type-checks here exactly as it does in `validate`.
             SeedElem::ArgField(id, _) => arg_field_seed_expr(id, bumps_fname),
+            SeedElem::Unresolved(id) => unreachable!("unresolved seed `{id}` reached codegen"),
         }).collect();
         let derive_pid: TokenStream2 = match spec.constraints.iter().find_map(|c| match c {
             Constraint::SeedsProgram(e) => Some(e),
