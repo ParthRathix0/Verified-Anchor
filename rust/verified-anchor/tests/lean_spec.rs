@@ -161,3 +161,34 @@ fn lean_spec_emits_init_if_needed_constraint() {
     let s = InitIfNeededSpec::lean_spec();
     assert!(s.contains("Constraint.initIfNeeded \"payer\" 64 Pubkey.zero"), "Constraint.initIfNeeded missing: {s}");
 }
+
+// ── M10 Task 7: the layout is spliced at runtime ──────────────────────────────────────────
+//
+// `lean_spec()` is no longer a baked constant: it is a `format!` whose holes are filled from
+// `<T as AccountData>::LAYOUT_LEAN`. `AccountsStruct` literals are brace-heavy, so this exact-
+// equality assertion is the guard that every LITERAL brace stayed escaped (`{{`/`}}`) and only
+// the intended holes became holes. An escaping slip shows up here as mangled record syntax.
+
+#[derive(borsh::BorshSerialize, borsh::BorshDeserialize, verified_anchor_macros::AccountData)]
+struct OffsetVault {
+    bump: u8,
+    authority: solana_program::pubkey::Pubkey,
+}
+
+#[derive(VerifiedAccounts)]
+struct TypedHasOne<'info> {
+    #[account(has_one = authority)]
+    vault: verified_anchor::Account<'info, OffsetVault>,
+    authority: UncheckedAccount<'info>,
+}
+
+#[test]
+fn lean_spec_splices_the_real_layout() {
+    // owner/discriminator are NOT listed here: they are the wrapper-IMPLIED constraints Lean
+    // derives from `AccountType.account` itself (`impliedConstraints`), not spec entries.
+    let expected = "\
+{ programId := Pubkey.zero, fields :=
+  [ { name := \"vault\", ty := AccountType.account \"OffsetVault\" (Ty.struct [(\"bump\", Ty.u8), (\"authority\", Ty.pubkey)]) Pubkey.zero, constraints := [Constraint.hasOne \"authority\"] }
+  , { name := \"authority\", ty := AccountType.uncheckedAccount, constraints := [] } ] }";
+    assert_eq!(TypedHasOne::lean_spec(), expected);
+}

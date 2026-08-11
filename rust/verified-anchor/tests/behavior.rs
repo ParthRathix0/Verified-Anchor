@@ -97,10 +97,18 @@ fn rejects_wrong_owner() {
     assert_eq!(OwnedVault::validate(&accts, &[], &any_pid()), Err(VAError::WrongOwner { field: "vault" }));
 }
 
+/// `has_one` needs a typed `Account<'info, T>`: the target's Borsh offset comes from
+/// `T::LAYOUT`, and an untyped wrapper has no layout to walk (M10 Task 7). This fixture used
+/// to be an `UncheckedAccount` relying on the hardcoded offset-8 read.
+#[verified_anchor::account]
+struct OwnerVault {
+    authority: Pubkey,
+}
+
 #[derive(VerifiedAccounts)]
 struct CheckOwner<'info> {
     #[account(has_one = authority)]
-    vault: UncheckedAccount<'info>,
+    vault: verified_anchor::Account<'info, OwnerVault>,
     authority: UncheckedAccount<'info>,
 }
 
@@ -108,12 +116,19 @@ fn acct_with_data(key: Pubkey, data: Vec<u8>) -> Acct {
     Acct { key, owner: Pubkey::new_unique(), lamports: 1, data, is_signer: false, is_writable: false }
 }
 
+/// Real Anchor wire bytes for an `OwnerVault`: 8-byte discriminator then the authority key.
+fn owner_vault_data(authority: Pubkey) -> Vec<u8> {
+    let mut d = <OwnerVault as verified_anchor::AccountData>::DISCRIMINATOR.to_vec();
+    d.extend_from_slice(authority.as_ref());
+    d
+}
+
 #[test]
 fn has_one_accepts_match() {
     let auth_key = Pubkey::new_unique();
-    let mut data = vec![0u8; 8];                 // 8-byte discriminator
-    data.extend_from_slice(auth_key.as_ref());   // authority Pubkey at offset 8
-    let mut vault = acct_with_data(Pubkey::new_unique(), data);
+    let mut vault = acct_with_data(Pubkey::new_unique(), owner_vault_data(auth_key));
+    // `Account<'info, T>` implies `owner = crate::ID`; without it validate stops before has_one.
+    vault.owner = crate::ID;
     let mut authority = acct_with_data(auth_key, vec![]);
     let accts = [vault.info(), authority.info()];
     assert_eq!(CheckOwner::validate(&accts, &[], &any_pid()), Ok(()));
@@ -121,9 +136,9 @@ fn has_one_accepts_match() {
 
 #[test]
 fn has_one_rejects_mismatch() {
-    let mut data = vec![0u8; 8];
-    data.extend_from_slice(Pubkey::new_unique().as_ref());   // wrong stored authority
-    let mut vault = acct_with_data(Pubkey::new_unique(), data);
+    // wrong stored authority
+    let mut vault = acct_with_data(Pubkey::new_unique(), owner_vault_data(Pubkey::new_unique()));
+    vault.owner = crate::ID;
     let mut authority = acct_with_data(Pubkey::new_unique(), vec![]);
     let accts = [vault.info(), authority.info()];
     assert_eq!(CheckOwner::validate(&accts, &[], &any_pid()), Err(VAError::WrongHasOne { field: "vault", target: "authority" }));
@@ -788,4 +803,69 @@ fn account_data_derive_emits_real_layout() {
         <LayoutProbe as verified_anchor::AccountData>::LAYOUT_LEAN,
         "(Ty.struct [(\"bump\", Ty.u8), (\"authority\", Ty.pubkey)])"
     );
+}
+
+// ---- M10 Task 7: `has_one` reads the NAMED field, not byte 8 ----
+//
+// REGRESSION for the v0.3.0 defect: the generated check hardcoded `&data[8..40]`, so
+// `has_one = authority` compared the FIRST field of the account struct whatever field was
+// named. Here `authority` is the SECOND field, so it lives at offset 9 (8 discriminator + 1
+// byte of `bump`); a hardcoded-8 read splices one byte of `bump` onto 31 bytes of the key.
+
+#[derive(
+    verified_anchor::borsh::BorshSerialize,
+    verified_anchor::borsh::BorshDeserialize,
+    verified_anchor::AccountData,
+)]
+#[borsh(crate = "::verified_anchor::borsh")]
+struct OffsetVault {
+    bump: u8,
+    authority: Pubkey,
+}
+
+#[derive(VerifiedAccounts)]
+struct CheckOffsetHasOne<'info> {
+    #[account(has_one = authority)]
+    vault: verified_anchor::Account<'info, OffsetVault>,
+    authority: UncheckedAccount<'info>,
+}
+
+fn offset_vault_data(bump: u8, authority: Pubkey) -> Vec<u8> {
+    let mut d = <OffsetVault as verified_anchor::AccountData>::DISCRIMINATOR.to_vec();
+    d.push(bump);
+    d.extend_from_slice(authority.as_ref());
+    d
+}
+
+#[test]
+fn has_one_accepts_target_at_nonzero_offset() {
+    let auth = Pubkey::new_unique();
+    let mut v = acct_with_data(Pubkey::new_unique(), offset_vault_data(254, auth));
+    // `Account<'info, T>` implies `owner = crate::ID`, so the fixture must be program-owned
+    // for the has_one check to even be reached.
+    v.owner = crate::ID;
+    let mut a = acct_with_data(auth, vec![]);
+    let accts = [v.info(), a.info()];
+    assert_eq!(CheckOffsetHasOne::validate(&accts, &[], &any_pid()), Ok(()));
+}
+
+#[test]
+fn has_one_rejects_mismatch_at_nonzero_offset() {
+    let auth = Pubkey::new_unique();
+    let mut v = acct_with_data(Pubkey::new_unique(), offset_vault_data(254, auth));
+    v.owner = crate::ID;
+    let mut a = acct_with_data(Pubkey::new_unique(), vec![]);   // different key
+    let accts = [v.info(), a.info()];
+    assert_eq!(
+        CheckOffsetHasOne::validate(&accts, &[], &any_pid()),
+        Err(VAError::WrongHasOne { field: "vault", target: "authority" })
+    );
+}
+
+#[test]
+fn lean_spec_carries_the_real_layout() {
+    let s = CheckOffsetHasOne::lean_spec();
+    assert!(s.contains("(\"bump\", Ty.u8)"), "spec was: {s}");
+    assert!(s.contains("(\"authority\", Ty.pubkey)"), "spec was: {s}");
+    assert!(!s.contains("(\"authority\", 8)"), "spec still hardcodes offset 8: {s}");
 }

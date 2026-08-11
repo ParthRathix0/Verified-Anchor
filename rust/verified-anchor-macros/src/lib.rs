@@ -442,8 +442,18 @@ fn lean_constraint(c: &Constraint) -> String {
     }
 }
 
-fn lean_spec_string(specs: &[FieldSpec]) -> String {
+/// Build the `AccountsStruct` Lean literal for `specs`.
+///
+/// Returns a `format!` TEMPLATE plus one argument expression per hole, rather than a finished
+/// string: an `Account<'info, T>` field's Borsh layout is only knowable in the USER's crate
+/// (via `<T as AccountData>::LAYOUT_LEAN`), not here at macro-expansion time. Holes are marked
+/// with the `@@ARG@@` sentinel while the literal is assembled and only turned into `{}` at the
+/// very end, AFTER every literal brace has been escaped — `AccountsStruct` literals are
+/// brace-heavy, so escaping first and substituting second is what keeps `format!` from
+/// mis-reading `{ name := ... }` as a hole.
+fn lean_spec_string(specs: &[FieldSpec]) -> (String, Vec<TokenStream2>) {
     let mut fields = Vec::new();
+    let mut args: Vec<TokenStream2> = Vec::new();
     for spec in specs {
         let cs: Vec<String> = spec.constraints.iter()
             .map(lean_constraint)
@@ -487,14 +497,16 @@ fn lean_spec_string(specs: &[FieldSpec]) -> String {
         }
         let ty = match &spec.kind {
             WrapperKind::Account(t) => {
-                let layout = spec.constraints.iter().find_map(|c| {
-                    if let Constraint::HasOne(target) = c { Some(target.to_string()) } else { None }
-                });
-                let lay = match layout {
-                    Some(target) => format!("[(\"{}\", 8)]", target),
-                    None => "[]".to_string(),
-                };
-                format!("AccountType.account \"{}\" {} Pubkey.zero", t, lay)
+                // Both holes are filled at RUNTIME from the inner type: the type name (so the
+                // Lean discriminator matches) and its `LAYOUT_LEAN`, so the emitted literal
+                // carries the struct's real field offsets rather than the pre-M10
+                // `[("<has_one target>", 8)]`, which pinned every target to the first field.
+                let tstr = t.to_string();
+                args.push(quote! { #tstr });
+                args.push(quote! { <#t as ::verified_anchor::AccountData>::LAYOUT_LEAN });
+                // LAYOUT_LEAN is already parenthesised, so it drops straight into the
+                // `layout : Ty` position without adding parens here.
+                "AccountType.account \"@@ARG@@\" @@ARG@@ Pubkey.zero".to_string()
             }
             WrapperKind::Signer => "AccountType.signer".to_string(),
             WrapperKind::SystemAccount => "AccountType.systemAccount".to_string(),
@@ -553,7 +565,12 @@ fn lean_spec_string(specs: &[FieldSpec]) -> String {
         lines.push_str(" ]");
         lines
     };
-    format!("{{ programId := Pubkey.zero, fields :={} }}", body)
+    let raw = format!("{{ programId := Pubkey.zero, fields :={} }}", body);
+    // Escape LITERAL braces first (the record syntax `{ name := .. }` is not a format hole),
+    // then turn the sentinels into holes. Doing it in this order is load-bearing: escaping
+    // after substitution would double up the `{}` we just introduced.
+    let tpl = raw.replace('{', "{{").replace('}', "}}").replace("@@ARG@@", "{}");
+    (tpl, args)
 }
 
 fn validate_body(specs: &[FieldSpec]) -> TokenStream2 {
@@ -599,12 +616,33 @@ fn validate_body(specs: &[FieldSpec]) -> TokenStream2 {
                     let tidx = *index_of.get(&tname)
                         .unwrap_or_else(|| panic!("has_one target `{tname}` is not a field of this struct"));
                     let fname = name;
+                    // Only `Account<'info, T>` carries a layout; anything else has no modelled
+                    // fields and must fail closed rather than silently reading offset 8 (the
+                    // pre-M10 behaviour, which compared the struct's FIRST field whatever field
+                    // the developer named). `has_one` on an untyped wrapper is not valid Anchor
+                    // either, and Lean's `AccountType.locateField` returns `none` for non-account
+                    // wrappers, so the model cannot express it.
+                    let inner = match &spec.kind {
+                        WrapperKind::Account(t) => t.clone(),
+                        // Unreachable: `derive_verified_accounts` rejects this up front. Kept
+                        // so the arm fails closed if that guard is ever relaxed.
+                        _ => return syn::Error::new(
+                            target.span(),
+                            "verified-anchor: `has_one` requires a typed `Account<'info, T>` field so the \
+                             target's Borsh offset is known",
+                        ).to_compile_error(),
+                    };
                     quote! {
                         {
                             let data = accounts[#i].try_borrow_data()
                                 .map_err(|_| ::verified_anchor::VAError::WrongHasOne { field: #fname, target: #tname })?;
-                            if data.len() < 8 + 32 || &data[8..8 + 32] != accounts[#tidx].key.as_ref() {
-                                return Err(::verified_anchor::VAError::WrongHasOne { field: #fname, target: #tname });
+                            let ty = <#inner as ::verified_anchor::AccountData>::LAYOUT;
+                            // Walk the real Borsh layout from offset 8 (past the discriminator).
+                            let found = ::verified_anchor::layout::locate(&ty, &[#tname], &data, 8)
+                                .and_then(|(off, fty)| ::verified_anchor::layout::read_val(&fty, &data, off));
+                            match found {
+                                Some(::verified_anchor::layout::Value::Key(k)) if k == *accounts[#tidx].key => {}
+                                _ => return Err(::verified_anchor::VAError::WrongHasOne { field: #fname, target: #tname }),
                             }
                         }
                     }
@@ -1061,10 +1099,22 @@ pub fn derive_verified_accounts(input: TokenStream) -> TokenStream {
                 format!("field `{}` uses `init_if_needed` but is not a typed `Account<'info, T>`; the wrapper's owner+discriminator checks are the reinit guard", spec.name))
                 .to_compile_error().into();
         }
+        // Guard: `has_one` requires a typed `Account<'info, T>` — the target field's Borsh
+        // offset comes from `T::LAYOUT`, and an untyped wrapper has none. Raised HERE rather
+        // than only inside `validate_body` so the user gets one clean error instead of a
+        // cascade from the missing `Validate::validate`. (`has_one` on an `UncheckedAccount`
+        // is not valid stock Anchor either, and Lean's `AccountType.locateField` returns
+        // `none` for non-account wrappers, so the model cannot express it.)
+        if spec.constraints.iter().any(|c| matches!(c, Constraint::HasOne(_)))
+            && !matches!(spec.kind, WrapperKind::Account(_)) {
+            return syn::Error::new_spanned(name,
+                format!("field `{}` uses `has_one` but is not a typed `Account<'info, T>`; the target's Borsh offset comes from `T::LAYOUT`", spec.name))
+                .to_compile_error().into();
+        }
     }
 
     let body = validate_body(&specs);
-    let lean = lean_spec_string(&specs);
+    let (lean_tpl, lean_args) = lean_spec_string(&specs);
     let lifecycle = lifecycle_body(&specs);
     let has_lifecycle = specs.iter().any(|s| s.constraints.iter().any(|c|
         matches!(c, Constraint::InitMarker | Constraint::Close(_)
@@ -1177,10 +1227,24 @@ pub fn derive_verified_accounts(input: TokenStream) -> TokenStream {
 
     let expanded = quote! {
         #validate_impl
+        // See the note in `account_data_derive`: `target_os = "solana"` is not a known
+        // check-cfg value, so the derive must silence the warning on its users' behalf.
+        // `target_os = "solana"` is not in rustc's built-in check-cfg list, so the `#[cfg]`
+        // below would otherwise raise an `unexpected_cfgs` warning in every user crate — one
+        // the user cannot silence, since it originates in this expansion. (Verified: the same
+        // attribute on the `inventory::submit!` item below has no effect, because attributes
+        // do not propagate into a macro-invocation item; that pre-existing warning stands.)
+        #[allow(unexpected_cfgs)]
         impl #lean_spec_impl_target {
-            /// The Milestone-1 `AccountsStruct` literal for this struct (Lean source).
+            /// The `AccountsStruct` literal for this struct (Lean source), built at CALL time
+            /// so typed fields can splice in their real Borsh layout.
+            ///
+            /// Host-only, like the `inventory` registration below: the spliced
+            /// `AccountData::LAYOUT_LEAN` is itself host-only, and there is no reason to pay
+            /// for the Lean source string inside the on-chain `.so`.
+            #[cfg(not(target_os = "solana"))]
             pub fn lean_spec() -> ::std::string::String {
-                #lean.to_string()
+                ::std::format!(#lean_tpl #(, #lean_args)*)
             }
             #lifecycle
         }

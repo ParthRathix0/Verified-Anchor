@@ -47,6 +47,11 @@ pub fn derive(input: TokenStream) -> TokenStream {
     let lean_lit = format!("(Ty.struct [{}])", lean_entries.join(", "));
 
     quote! {
+        // `target_os = "solana"` is not in rustc's built-in check-cfg list, so the host build
+        // of any crate using this derive would otherwise get an `unexpected_cfgs` warning it
+        // cannot silence. A derive must not spam its users' build logs (and trybuild fixtures
+        // capture those warnings into the expected stderr).
+        #[allow(unexpected_cfgs)]
         impl ::verified_anchor::AccountData for #name {
             const DISCRIMINATOR: [u8; 8] = [#(#bs),*];
             const LAYOUT: ::verified_anchor::layout::Ty =
