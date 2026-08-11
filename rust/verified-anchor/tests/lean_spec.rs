@@ -175,13 +175,32 @@ struct OffsetVault {
     authority: solana_program::pubkey::Pubkey,
 }
 
+/// A SECOND account type with a DIFFERENT layout, so the tripwire below can catch a
+/// cross-field splice. With only one `Account` field, every hole belongs to the same type and
+/// a mis-binding of hole to argument is invisible.
+#[derive(borsh::BorshSerialize, borsh::BorshDeserialize, verified_anchor_macros::AccountData)]
+struct LedgerEntry {
+    owner: solana_program::pubkey::Pubkey,
+    total: u64,
+}
+
 #[derive(VerifiedAccounts)]
 struct TypedHasOne<'info> {
     #[account(has_one = authority)]
     vault: verified_anchor::Account<'info, OffsetVault>,
+    ledger: verified_anchor::Account<'info, LedgerEntry>,
     authority: UncheckedAccount<'info>,
 }
 
+/// TRIPWIRE. Keep this EXACT-EQUALITY, and keep TWO `Account` fields of DIFFERENT types.
+///
+/// It guards two independent things:
+///   1. brace escaping — an `AccountsStruct` literal is brace-heavy, so a slip in the
+///      escape-then-substitute order shows up here as mangled record syntax;
+///   2. hole↔argument binding — each type name and each spliced `LAYOUT_LEAN` must land under
+///      ITS OWN field. `OffsetVault`/`LedgerEntry` have different layouts on purpose, so a
+///      cross-field splice (one type's layout under another type's name) changes this string.
+///      A one-`Account` version of this test could not catch (2) at all.
 #[test]
 fn lean_spec_splices_the_real_layout() {
     // owner/discriminator are NOT listed here: they are the wrapper-IMPLIED constraints Lean
@@ -189,6 +208,28 @@ fn lean_spec_splices_the_real_layout() {
     let expected = "\
 { programId := Pubkey.zero, fields :=
   [ { name := \"vault\", ty := AccountType.account \"OffsetVault\" (Ty.struct [(\"bump\", Ty.u8), (\"authority\", Ty.pubkey)]) Pubkey.zero, constraints := [Constraint.hasOne \"authority\"] }
+  , { name := \"ledger\", ty := AccountType.account \"LedgerEntry\" (Ty.struct [(\"owner\", Ty.pubkey), (\"total\", Ty.u64)]) Pubkey.zero, constraints := [] }
   , { name := \"authority\", ty := AccountType.uncheckedAccount, constraints := [] } ] }";
     assert_eq!(TypedHasOne::lean_spec(), expected);
+}
+
+// ── M10 Task 9: `#[instruction(...)]` args reach the Lean literal ─────────────────────────
+
+// NOTE the attribute ORDER: `#[derive(..)]` first, `#[instruction(..)]` second. `instruction`
+// is a DERIVE HELPER (exactly as in Anchor, whose derive is
+// `#[proc_macro_derive(Accounts, attributes(account, instruction))]`), and rustc rejects a
+// helper written before the derive that introduces it (`legacy_derive_helpers`, deny-by-default).
+// Canonical Anchor source is therefore already in this order.
+#[derive(VerifiedAccounts)]
+#[instruction(name: String)]
+struct SeedFromArg<'info> {
+    #[account(seeds = [b"vault", name.as_bytes()], bump)]
+    pda: UncheckedAccount<'info>,
+}
+
+#[test]
+fn lean_spec_emits_instr_args_and_arg_field_seeds() {
+    let s = SeedFromArg::lean_spec();
+    assert!(s.contains("instrArgs := [(\"name\", Ty.string)]"), "spec was: {s}");
+    assert!(s.contains("SeedSpec.argField \"name\""), "spec was: {s}");
 }

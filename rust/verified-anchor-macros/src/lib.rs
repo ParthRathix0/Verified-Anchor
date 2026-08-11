@@ -24,7 +24,11 @@ use syn::{parse_macro_input, punctuated::Punctuated, Data, DeriveInput, Expr, Fi
 enum SeedElem {
     Literal(syn::LitByteStr),   // b"vault"
     FieldKey(syn::Ident),       // field.key()
-    InstrArg(usize, usize),     // arg(off, len)
+    /// `arg(off, len)` — DEPRECATED raw slice of `instr_data`. Kept working (removing it would
+    /// break existing verified-anchor users), but no real Anchor program writes it.
+    InstrArg(usize, usize),
+    /// `name.as_bytes()` — a named `#[instruction(...)]` argument, the form real Anchor uses.
+    ArgField(syn::Ident),
 }
 
 /// Recognised field-type wrapper categories.
@@ -342,6 +346,18 @@ fn parse_seed_elem(e: Expr) -> syn::Result<SeedElem> {
             }
             Err(syn::Error::new_spanned(mc.receiver, "seed `.key()` must be on a field name"))
         }
+        // `name.as_bytes()` — a named `#[instruction(...)]` argument. This is the form real
+        // Anchor source writes, and the whole point of M10 Task 9: an unmodified Anchor
+        // `#[derive(Accounts)]` struct must compile under `#[derive(VerifiedAccounts)]`.
+        Expr::MethodCall(mc) if mc.method == "as_bytes" && mc.args.is_empty() => {
+            if let Expr::Path(p) = mc.receiver.as_ref() {
+                if let Some(id) = p.path.get_ident() {
+                    return Ok(SeedElem::ArgField(id.clone()));
+                }
+            }
+            Err(syn::Error::new_spanned(mc.receiver,
+                "seed `.as_bytes()` must be on an #[instruction(...)] argument name"))
+        }
         Expr::Call(call) => {
             let is_arg = matches!(call.func.as_ref(),
                 Expr::Path(p) if p.path.is_ident("arg"));
@@ -354,7 +370,7 @@ fn parse_seed_elem(e: Expr) -> syn::Result<SeedElem> {
             Ok(SeedElem::InstrArg(off, len))
         }
         other => Err(syn::Error::new_spanned(other,
-            "unsupported seed (expected b\"..\", field.key(), or arg(off, len))")),
+            "unsupported seed (expected b\"..\", field.key(), name.as_bytes(), or arg(off, len))")),
     }
 }
 
@@ -363,6 +379,116 @@ fn lit_usize(e: Option<&Expr>) -> syn::Result<usize> {
         Some(Expr::Lit(syn::ExprLit { lit: syn::Lit::Int(i), .. })) => i.base10_parse(),
         _ => Err(syn::Error::new(proc_macro2::Span::call_site(),
             "expected an integer literal (seeds `arg` needs two: arg(off, len); bump `arg` needs one: arg(off))")),
+    }
+}
+
+/// One declared `#[instruction(...)]` argument.
+struct InstrArg {
+    name: String,
+    /// Runtime `Ty` expression (the `verified_anchor::layout::Ty` this argument decodes as).
+    rt: TokenStream2,
+    /// The same descriptor as Lean `Ty` source, for the emitted `instrArgs` list.
+    lean: String,
+}
+
+/// Parse `#[instruction(amount: u64, name: String)]` off the derive input.
+///
+/// An argument whose type is not mappable STOPS the list: every argument after it sits at an
+/// offset we cannot compute (Borsh is positional and variable-width), so silently keeping it
+/// would hand later arguments a wrong offset. This is the same cutoff rule the account-layout
+/// derive uses; seeds/constraints naming a dropped argument become a compile error in
+/// `derive_verified_accounts` rather than a runtime brick.
+fn parse_instruction_args(input: &DeriveInput) -> syn::Result<Vec<InstrArg>> {
+    let attr = match input.attrs.iter().find(|a| a.path().is_ident("instruction")) {
+        Some(a) => a,
+        None => return Ok(Vec::new()),
+    };
+    let parser = Punctuated::<syn::PatType, Token![,]>::parse_terminated;
+    let parsed = attr.parse_args_with(parser)?;
+    let mut out = Vec::new();
+    for pt in parsed {
+        let name = match pt.pat.as_ref() {
+            syn::Pat::Ident(i) => i.ident.to_string(),
+            other => return Err(syn::Error::new_spanned(other, "expected an argument name")),
+        };
+        match crate::ty_map::map_ty(&pt.ty) {
+            Some((rt, lean)) => out.push(InstrArg { name, rt, lean }),
+            None => break,
+        }
+    }
+    Ok(out)
+}
+
+/// Does any field resolve a `name.as_bytes()` seed? Gates emission of the `INSTR_ARGS` const.
+fn uses_arg_field(specs: &[FieldSpec]) -> bool {
+    specs.iter().any(|s| s.constraints.iter().any(|c| matches!(c,
+        Constraint::Seeds(elems) if elems.iter().any(|e| matches!(e, SeedElem::ArgField(_))))))
+}
+
+/// The `INSTR_ARGS` Borsh field list, emitted as a local `const` in any generated function that
+/// resolves a `name.as_bytes()` seed. Mirrors Lean's `Ty.struct s.instrArgs`, which `argBytes`
+/// walks with `locate`.
+fn instr_args_const(instr_args: &[InstrArg]) -> TokenStream2 {
+    let names = instr_args.iter().map(|a| a.name.as_str());
+    let tys = instr_args.iter().map(|a| &a.rt);
+    quote! {
+        const INSTR_ARGS: &[(&str, ::verified_anchor::layout::Ty)] = &[#((#names, #tys)),*];
+    }
+}
+
+/// Runtime bytes of the named `#[instruction(...)]` argument `arg`, as a seed uses them.
+///
+/// THIS MUST MIRROR Lean `AccountsStruct.argBytes` (Constraints/Context.lean) ARM FOR ARM —
+/// a divergence here makes verified-anchor derive a DIFFERENT PDA than real Anchor, which our
+/// own tests cannot catch (they would agree with our own model) and which surfaces only as a
+/// production address mismatch. The two arms are:
+///   * `string`/`vec` — read the 4-byte LE length prefix and return the PAYLOAD ONLY. Anchor's
+///     `name.as_bytes()` yields the string's bytes, NOT the Borsh framing, so the length prefix
+///     is stripped. Bounds-checked as Lean's `off + 4 + n ≤ size`.
+///   * everything else — return the whole encoding, width from `encodedWidth`, bounds-checked
+///     as Lean's `off + w ≤ size`.
+/// Both arms fail closed; here "closed" is `WrongPda` on `field`, matching Lean's `none`
+/// (an unresolvable seed cannot produce a matching PDA).
+///
+/// `instr_data` is the argument buffer with any instruction discriminator ALREADY STRIPPED by
+/// the caller — exactly what Anchor hands `try_accounts` — so decoding starts at offset 0.
+fn arg_field_seed_expr(arg: &syn::Ident, fname: &str) -> TokenStream2 {
+    let n = arg.to_string();
+    quote! {
+        {
+            let __ty = ::verified_anchor::layout::Ty::Struct(INSTR_ARGS);
+            match ::verified_anchor::layout::locate(&__ty, &[#n], instr_data, 0) {
+                ::core::option::Option::Some((__off, ::verified_anchor::layout::Ty::String))
+                | ::core::option::Option::Some((__off, ::verified_anchor::layout::Ty::Vec(_))) => {
+                    let __len = u32::from_le_bytes(
+                        instr_data.get(__off..__off.wrapping_add(4))
+                            .and_then(|s| <[u8; 4]>::try_from(s).ok())
+                            .ok_or(::verified_anchor::VAError::WrongPda { field: #fname })?
+                    ) as usize;
+                    let __start = __off.wrapping_add(4);
+                    let __end = match __start.checked_add(__len) {
+                        ::core::option::Option::Some(e) => e,
+                        ::core::option::Option::None =>
+                            return Err(::verified_anchor::VAError::WrongPda { field: #fname }),
+                    };
+                    instr_data.get(__start..__end)
+                        .ok_or(::verified_anchor::VAError::WrongPda { field: #fname })?
+                }
+                ::core::option::Option::Some((__off, __fty)) => {
+                    let __w = ::verified_anchor::layout::encoded_width(&__fty, instr_data, __off)
+                        .ok_or(::verified_anchor::VAError::WrongPda { field: #fname })?;
+                    let __end = match __off.checked_add(__w) {
+                        ::core::option::Option::Some(e) => e,
+                        ::core::option::Option::None =>
+                            return Err(::verified_anchor::VAError::WrongPda { field: #fname }),
+                    };
+                    instr_data.get(__off..__end)
+                        .ok_or(::verified_anchor::VAError::WrongPda { field: #fname })?
+                }
+                ::core::option::Option::None =>
+                    return Err(::verified_anchor::VAError::WrongPda { field: #fname }),
+            }
+        }
     }
 }
 
@@ -413,6 +539,7 @@ fn lean_constraint(c: &Constraint) -> String {
                 }
                 SeedElem::FieldKey(id) => format!("SeedSpec.fieldKey \"{}\"", id),
                 SeedElem::InstrArg(off, len) => format!("SeedSpec.instrArg {} {}", off, len),
+                SeedElem::ArgField(id) => format!("SeedSpec.argField \"{}\"", id),
             }).collect();
             format!("Constraint.seeds [{}] @@BUMP@@ @@PROG@@", seeds.join(", "))
         }
@@ -447,11 +574,17 @@ fn lean_constraint(c: &Constraint) -> String {
 /// Returns a `format!` TEMPLATE plus one argument expression per hole, rather than a finished
 /// string: an `Account<'info, T>` field's Borsh layout is only knowable in the USER's crate
 /// (via `<T as AccountData>::LAYOUT_LEAN`), not here at macro-expansion time. Holes are marked
-/// with the `@@ARG@@` sentinel while the literal is assembled and only turned into `{}` at the
-/// very end, AFTER every literal brace has been escaped — `AccountsStruct` literals are
-/// brace-heavy, so escaping first and substituting second is what keeps `format!` from
-/// mis-reading `{ name := ... }` as a hole.
-fn lean_spec_string(specs: &[FieldSpec]) -> (String, Vec<TokenStream2>) {
+/// with an INDEXED `@@ARGn@@` sentinel while the literal is assembled and only turned into the
+/// POSITIONAL hole `{n}` at the very end, AFTER every literal brace has been escaped —
+/// `AccountsStruct` literals are brace-heavy, so escaping first and substituting second is what
+/// keeps `format!` from mis-reading `{ name := ... }` as a hole.
+///
+/// The index is load-bearing, not decoration: with bare `{}` holes each sentinel bound to a
+/// pushed argument purely by WALK ORDER, so any future edit that reordered field emission would
+/// silently splice one type's layout under another type's name — a wrong Lean spec that still
+/// compiles. `@@ARGn@@` ties each hole to the argument it was created with, so the binding
+/// survives reordering. `tests/lean_spec.rs::lean_spec_splices_the_real_layout` is the tripwire.
+fn lean_spec_string(specs: &[FieldSpec], instr_args: &[InstrArg]) -> (String, Vec<TokenStream2>) {
     let mut fields = Vec::new();
     let mut args: Vec<TokenStream2> = Vec::new();
     for spec in specs {
@@ -502,11 +635,13 @@ fn lean_spec_string(specs: &[FieldSpec]) -> (String, Vec<TokenStream2>) {
                 // carries the struct's real field offsets rather than the pre-M10
                 // `[("<has_one target>", 8)]`, which pinned every target to the first field.
                 let tstr = t.to_string();
+                let name_hole = args.len();
                 args.push(quote! { #tstr });
+                let layout_hole = args.len();
                 args.push(quote! { <#t as ::verified_anchor::AccountData>::LAYOUT_LEAN });
                 // LAYOUT_LEAN is already parenthesised, so it drops straight into the
                 // `layout : Ty` position without adding parens here.
-                "AccountType.account \"@@ARG@@\" @@ARG@@ Pubkey.zero".to_string()
+                format!("AccountType.account \"@@ARG{name_hole}@@\" @@ARG{layout_hole}@@ Pubkey.zero")
             }
             WrapperKind::Signer => "AccountType.signer".to_string(),
             WrapperKind::SystemAccount => "AccountType.systemAccount".to_string(),
@@ -565,15 +700,32 @@ fn lean_spec_string(specs: &[FieldSpec]) -> (String, Vec<TokenStream2>) {
         lines.push_str(" ]");
         lines
     };
-    let raw = format!("{{ programId := Pubkey.zero, fields :={} }}", body);
+    // `instrArgs` is emitted ONLY when non-empty, so every pre-M10 spec is byte-identical to
+    // before and keeps relying on the Lean field default `[]` (same rule as `allowDuplicate`).
+    let instr_args_str = if instr_args.is_empty() {
+        String::new()
+    } else {
+        format!(
+            ", instrArgs := [{}]",
+            instr_args.iter()
+                .map(|a| format!("(\"{}\", {})", a.name, a.lean))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    };
+    let raw = format!("{{ programId := Pubkey.zero{}, fields :={} }}", instr_args_str, body);
     // Escape LITERAL braces first (the record syntax `{ name := .. }` is not a format hole),
     // then turn the sentinels into holes. Doing it in this order is load-bearing: escaping
-    // after substitution would double up the `{}` we just introduced.
-    let tpl = raw.replace('{', "{{").replace('}', "}}").replace("@@ARG@@", "{}");
+    // after substitution would double up the `{}` we just introduced. The `@@` delimiters make
+    // the per-index replacements unambiguous (`@@ARG1@@` cannot match inside `@@ARG11@@`).
+    let mut tpl = raw.replace('{', "{{").replace('}', "}}");
+    for i in 0..args.len() {
+        tpl = tpl.replace(&format!("@@ARG{i}@@"), &format!("{{{i}}}"));
+    }
     (tpl, args)
 }
 
-fn validate_body(specs: &[FieldSpec]) -> TokenStream2 {
+fn validate_body(specs: &[FieldSpec], instr_args: &[InstrArg]) -> TokenStream2 {
     let n = specs.len();
     // Build a name→index map so has_one can look up the target field's position.
     let index_of: std::collections::HashMap<String, usize> =
@@ -800,6 +952,7 @@ fn validate_body(specs: &[FieldSpec]) -> TokenStream2 {
                     // Lean model's `ByteArray.extract off (off+len)` (which clamps both bounds).
                     quote! { &instr_data[(#off).min(instr_data.len())..(#end).min(instr_data.len())] }
                 }
+                SeedElem::ArgField(id) => arg_field_seed_expr(id, fname),
             }).collect();
             // Stored (non-canonical) bump opt-in: `bump = arg(off)`. Read the bump byte from
             // instr_data at `off`, derive the PDA with THAT specific bump via
@@ -889,12 +1042,21 @@ fn validate_body(specs: &[FieldSpec]) -> TokenStream2 {
         }
     }
 
+    // Emitted only when a `name.as_bytes()` seed actually needs it: an unused local `const`
+    // would raise `dead_code` in every user crate that has no such seed.
+    let instr_args_decl = if uses_arg_field(specs) {
+        instr_args_const(instr_args)
+    } else {
+        quote! {}
+    };
+
     quote! {
         fn validate(
             accounts: &[::verified_anchor::solana_program::account_info::AccountInfo],
             instr_data: &[u8],
             program_id: &::verified_anchor::solana_program::pubkey::Pubkey,
         ) -> ::core::result::Result<(), ::verified_anchor::VAError> {
+            #instr_args_decl
             let _ = (instr_data, program_id);
             if accounts.len() < #n {
                 return Err(::verified_anchor::VAError::NotEnoughAccounts { expected: #n, got: accounts.len() });
@@ -1030,6 +1192,8 @@ fn lifecycle_body(specs: &[FieldSpec]) -> TokenStream2 {
                     }
                     SeedElem::InstrArg(_, _) => panic!(
                         "init_if_needed on `{}` uses an `arg(..)` seed, which is unsupported (execute_lifecycle has no instruction data to derive it); use literal or field-key seeds", fname),
+                    SeedElem::ArgField(_) => panic!(
+                        "init_if_needed on `{}` uses a `name.as_bytes()` instruction-argument seed, which is unsupported (execute_lifecycle has no instruction data to derive it); use literal or field-key seeds", fname),
                 }).collect());
             let init_create = match &seeds_for_signed {
                 Some(seed_exprs) => quote! {
@@ -1111,14 +1275,46 @@ fn lifecycle_body(specs: &[FieldSpec]) -> TokenStream2 {
     }
 }
 
-#[proc_macro_derive(VerifiedAccounts, attributes(account))]
+// `instruction` is registered as an INERT helper attribute: `#[instruction(name: String)]` is
+// real Anchor source that sits on the struct, and without this rustc rejects it outright
+// ("cannot find attribute `instruction` in this scope") before the derive ever runs.
+#[proc_macro_derive(VerifiedAccounts, attributes(account, instruction))]
 pub fn derive_verified_accounts(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
+    let instr_args = match parse_instruction_args(&input) {
+        Ok(a) => a,
+        Err(e) => return e.to_compile_error().into(),
+    };
     let specs = match collect_fields(&input) {
         Ok(s) => s,
         Err(e) => return e.to_compile_error().into(),
     };
     let name = &input.ident;
+
+    // Guard: every `name.as_bytes()` seed must name a DECLARED, MAPPABLE `#[instruction(..)]`
+    // argument. Without this the seed would silently resolve to `None` at runtime and reject
+    // every account — a brick, not a bug report. Same precedent as the unlocatable `has_one`
+    // target being a build error. Note an argument dropped by the unmappable-type cutoff lands
+    // here too, which is correct: its offset is genuinely uncomputable.
+    for spec in &specs {
+        for c in &spec.constraints {
+            let Constraint::Seeds(elems) = c else { continue };
+            for e in elems {
+                let SeedElem::ArgField(id) = e else { continue };
+                if !instr_args.iter().any(|a| a.name == id.to_string()) {
+                    let declared: Vec<&str> = instr_args.iter().map(|a| a.name.as_str()).collect();
+                    return syn::Error::new_spanned(id, format!(
+                        "seed `{id}.as_bytes()` on field `{}` does not name a declared \
+                         #[instruction(...)] argument (declared and mappable: [{}]); add it to \
+                         `#[instruction(...)]`, or — if its type is unsupported — note that every \
+                         argument after the first unmappable one is dropped, because its Borsh \
+                         offset cannot be computed",
+                        spec.name, declared.join(", ")))
+                        .to_compile_error().into();
+                }
+            }
+        }
+    }
 
     // Guard: `realloc` requires `mut` — realloc mutates the account data in place.
     // Guard: `init_if_needed` requires a typed `Account<'info, T>` — the wrapper's
@@ -1151,8 +1347,8 @@ pub fn derive_verified_accounts(input: TokenStream) -> TokenStream {
         }
     }
 
-    let body = validate_body(&specs);
-    let (lean_tpl, lean_args) = lean_spec_string(&specs);
+    let body = validate_body(&specs, &instr_args);
+    let (lean_tpl, lean_args) = lean_spec_string(&specs, &instr_args);
     let lifecycle = lifecycle_body(&specs);
     let has_lifecycle = specs.iter().any(|s| s.constraints.iter().any(|c|
         matches!(c, Constraint::InitMarker | Constraint::Close(_)
@@ -1178,6 +1374,7 @@ pub fn derive_verified_accounts(input: TokenStream) -> TokenStream {
     // is derived against the SAME foreign program id used by `validate`.
     let bumps_fields: Vec<(syn::Ident, Vec<TokenStream2>, TokenStream2)> = seeded.iter().map(|(_, spec, elems)| {
         let fname = syn::Ident::new(&spec.name, name.span());
+        let bumps_fname: &str = &spec.name;
         let seed_exprs: Vec<TokenStream2> = elems.iter().map(|se| match se {
             SeedElem::Literal(b) => quote! { &#b[..] },
             SeedElem::FieldKey(id) => {
@@ -1190,6 +1387,11 @@ pub fn derive_verified_accounts(input: TokenStream) -> TokenStream {
                 // Clamp to length (matches the validate-side seed slice and the Lean model).
                 quote! { &instr_data[(#off).min(instr_data.len())..(#end).min(instr_data.len())] }
             }
+            // Same `argBytes` mirror as `validate`. Unreachable in practice (validate already
+            // rejected a seed it could not resolve) but still TOTAL: `try_accounts` returns
+            // `Result<_, VAError>`, so the fail-closed `?`/`return` inside this expression
+            // type-checks here exactly as it does in `validate`.
+            SeedElem::ArgField(id) => arg_field_seed_expr(id, bumps_fname),
         }).collect();
         let derive_pid: TokenStream2 = match spec.constraints.iter().find_map(|c| match c {
             Constraint::SeedsProgram(e) => Some(e),
@@ -1263,6 +1465,13 @@ pub fn derive_verified_accounts(input: TokenStream) -> TokenStream {
     let accounts_impl_target = if has_info { quote! { #name<'info> } } else { quote! { #name } };
     let lean_spec_impl_target = if has_info { quote! { #name<'_> } } else { quote! { #name } };
 
+    // The Bumps init inside `try_accounts` re-derives seeds, so it needs the same const.
+    let try_accounts_instr_args = if uses_arg_field(&specs) {
+        instr_args_const(&instr_args)
+    } else {
+        quote! {}
+    };
+
     let expanded = quote! {
         #validate_impl
         // See the note in `account_data_derive`: `target_os = "solana"` is not a known
@@ -1294,6 +1503,7 @@ pub fn derive_verified_accounts(input: TokenStream) -> TokenStream {
                 accounts: &'info [::verified_anchor::solana_program::account_info::AccountInfo<'info>],
                 instr_data: &[u8],
             ) -> ::core::result::Result<(Self, Self::Bumps), ::verified_anchor::VAError> {
+                #try_accounts_instr_args
                 <Self as ::verified_anchor::Validate>::validate(accounts, instr_data, program_id)?;
                 let __self = Self { #(#field_inits),* };
                 let __bumps = #bumps_struct_init;

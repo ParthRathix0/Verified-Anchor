@@ -919,3 +919,193 @@ fn has_one_rejects_mismatch_past_a_variable_width_field() {
         Err(VAError::WrongHasOne { field: "vault", target: "authority" })
     );
 }
+
+// ── M10 Task 9: `#[instruction(...)]` args and Anchor-shaped `name.as_bytes()` seeds ──────
+//
+// This is the drop-in target: the struct below is REAL, UNMODIFIED Anchor source. Before
+// M10 the same PDA required `seeds = [b"vault", arg(4, 5)]` — bespoke syntax no Anchor
+// program contains, and one that hardcodes the argument's length.
+
+// NOTE the attribute ORDER: `#[derive(..)]` first, `#[instruction(..)]` second. `instruction`
+// is a DERIVE HELPER (exactly as in Anchor, whose derive is
+// `#[proc_macro_derive(Accounts, attributes(account, instruction))]`), and rustc rejects a
+// helper written before the derive that introduces it (`legacy_derive_helpers`, deny-by-default).
+// Canonical Anchor source is therefore already in this order.
+#[derive(VerifiedAccounts)]
+#[instruction(name: String)]
+struct SeedFromArg<'info> {
+    #[account(seeds = [b"vault", name.as_bytes()], bump)]
+    pda: UncheckedAccount<'info>,
+}
+
+/// Borsh-encode a single `String` argument the way a client would: 4-byte LE length prefix
+/// then the payload. `instr_data` is the argument buffer with any discriminator ALREADY
+/// stripped by the caller (what Anchor hands `try_accounts`), so decoding starts at 0.
+fn borsh_string_arg(s: &str) -> Vec<u8> {
+    let mut v = (s.len() as u32).to_le_bytes().to_vec();
+    v.extend_from_slice(s.as_bytes());
+    v
+}
+
+#[test]
+fn seeds_resolve_a_named_string_arg() {
+    let pid = any_pid();
+    let (expected, _bump) = Pubkey::find_program_address(&[b"vault", b"alice"], &pid);
+    let mut p = acct_with_data(expected, vec![]);
+    let accts = [p.info()];
+    assert_eq!(SeedFromArg::validate(&accts, &borsh_string_arg("alice"), &pid), Ok(()));
+}
+
+#[test]
+fn seeds_reject_a_wrong_named_string_arg() {
+    let pid = any_pid();
+    let (expected, _bump) = Pubkey::find_program_address(&[b"vault", b"alice"], &pid);
+    let mut p = acct_with_data(expected, vec![]);
+    let accts = [p.info()];
+    assert_eq!(
+        SeedFromArg::validate(&accts, &borsh_string_arg("mallory"), &pid),
+        Err(VAError::WrongPda { field: "pda" })
+    );
+}
+
+// ── M10 Task 9: `argBytes` parity with the Lean model ─────────────────────────────────────
+//
+// `AccountsStruct.argBytes` (lean/VerifiedAnchor/Constraints/Context.lean) is the contract the
+// macro's `name.as_bytes()` codegen mirrors. A divergence here would make verified-anchor
+// derive a DIFFERENT PDA than real Anchor: our own tests would still pass (they would agree
+// with our own model) and the defect would surface only in production, as an address mismatch.
+//
+// LEAN_ARG_FIXTURE is copied verbatim from the Lean regression fixture `argCtx` in
+// `lean/VerifiedAnchor/Codegen/ExampleGenerated.lean`, whose `by decide` proofs pin:
+//     argBytes "amount"  = #[1,0,0,0,0,0,0,0]   -- u64: the WHOLE fixed-size encoding
+//     argBytes "label"   = #[104, 105]          -- string: LENGTH PREFIX STRIPPED
+//     argBytes "missing" = none
+// The tests below assert the PDA our generated code accepts equals the PDA derived from those
+// exact raw byte strings — so they compare SEED BYTES, not merely the accept/reject verdict.
+const LEAN_ARG_FIXTURE: [u8; 14] = [1, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 104, 105];
+
+// `amount.as_bytes()` is not something rustc would accept on a real `u64` — but the seed list
+// is never emitted as Rust, it is parsed as syntax and resolved through the declared `Ty`. It
+// is written this way to exercise `argBytes`' fixed-size arm against the Lean fixture.
+#[derive(VerifiedAccounts)]
+#[instruction(amount: u64, label: String)]
+struct ArgFixedSeed<'info> {
+    #[account(seeds = [b"vault", amount.as_bytes()], bump)]
+    pda: UncheckedAccount<'info>,
+}
+
+#[derive(VerifiedAccounts)]
+#[instruction(amount: u64, label: String)]
+struct ArgStringSeed<'info> {
+    #[account(seeds = [b"vault", label.as_bytes()], bump)]
+    pda: UncheckedAccount<'info>,
+}
+
+#[derive(VerifiedAccounts)]
+#[instruction(blob: Vec<u8>)]
+struct ArgVecSeed<'info> {
+    #[account(seeds = [b"vault", blob.as_bytes()], bump)]
+    pda: UncheckedAccount<'info>,
+}
+
+/// Fixed-size arm: `argBytes` returns the whole 8-byte Borsh encoding, no framing to strip.
+#[test]
+fn arg_bytes_fixed_size_uses_the_whole_encoding() {
+    let pid = any_pid();
+    let (expected, _) = Pubkey::find_program_address(&[b"vault", &[1, 0, 0, 0, 0, 0, 0, 0]], &pid);
+    let mut p = acct_with_data(expected, vec![]);
+    let accts = [p.info()];
+    assert_eq!(ArgFixedSeed::validate(&accts, &LEAN_ARG_FIXTURE, &pid), Ok(()));
+}
+
+/// THE POINT, and the top failure mode of this task. `label` is at offset 8 (after the u64),
+/// its raw Borsh encoding is the 6 bytes `[2,0,0,0,104,105]`, and `argBytes` — like Anchor's
+/// `label.as_bytes()` — yields only the 2 payload bytes `[104,105]`.
+#[test]
+fn arg_bytes_string_strips_the_length_prefix() {
+    let pid = any_pid();
+    let (payload_only, _) = Pubkey::find_program_address(&[b"vault", &[104, 105]], &pid);
+    let mut p = acct_with_data(payload_only, vec![]);
+    let accts = [p.info()];
+    assert_eq!(ArgStringSeed::validate(&accts, &LEAN_ARG_FIXTURE, &pid), Ok(()));
+}
+
+/// The negative half of the parity claim: had we kept the Borsh framing (the natural mistake),
+/// we would derive THIS address instead. It must be rejected, and it must differ from the one
+/// accepted above — otherwise the assertion above proves nothing about prefix stripping.
+#[test]
+fn arg_bytes_string_does_not_include_the_borsh_framing() {
+    let pid = any_pid();
+    let (payload_only, _) = Pubkey::find_program_address(&[b"vault", &[104, 105]], &pid);
+    let (with_framing, _) =
+        Pubkey::find_program_address(&[b"vault", &[2, 0, 0, 0, 104, 105]], &pid);
+    assert_ne!(payload_only, with_framing);
+    let mut p = acct_with_data(with_framing, vec![]);
+    let accts = [p.info()];
+    assert_eq!(
+        ArgStringSeed::validate(&accts, &LEAN_ARG_FIXTURE, &pid),
+        Err(VAError::WrongPda { field: "pda" })
+    );
+}
+
+/// `vec` takes the same length-prefix-stripping arm as `string` in Lean `argBytes`.
+#[test]
+fn arg_bytes_vec_strips_the_length_prefix() {
+    let pid = any_pid();
+    let (expected, _) = Pubkey::find_program_address(&[b"vault", &[9u8, 8, 7]], &pid);
+    let mut p = acct_with_data(expected, vec![]);
+    let accts = [p.info()];
+    let data = [3u8, 0, 0, 0, 9, 8, 7];
+    assert_eq!(ArgVecSeed::validate(&accts, &data, &pid), Ok(()));
+}
+
+/// Fail-closed, both arms: Lean `argBytes` returns `none` when the declared argument overruns
+/// the buffer, and `none` cannot produce a matching PDA. Rust must reject, never panic.
+#[test]
+fn arg_bytes_overrun_fails_closed() {
+    let pid = any_pid();
+    let (expected, _) = Pubkey::find_program_address(&[b"vault", b"alice"], &pid);
+    let mut p = acct_with_data(expected, vec![]);
+    let accts = [p.info()];
+    // Empty buffer: not even the u32 length prefix is present.
+    assert_eq!(
+        SeedFromArg::validate(&accts, &[], &pid),
+        Err(VAError::WrongPda { field: "pda" })
+    );
+    // Length prefix claims 5 payload bytes; only 2 follow.
+    assert_eq!(
+        SeedFromArg::validate(&accts, &[5, 0, 0, 0, 97, 108], &pid),
+        Err(VAError::WrongPda { field: "pda" })
+    );
+    // Truncated fixed-size argument (u64 needs 8 bytes, 3 given).
+    assert_eq!(
+        ArgFixedSeed::validate(&accts, &[1, 0, 0], &pid),
+        Err(VAError::WrongPda { field: "pda" })
+    );
+}
+
+/// A zero-length string yields an EMPTY seed, not a failure — Lean's `off + 4 + 0 ≤ size`
+/// holds, so `argBytes` returns the empty ByteArray.
+#[test]
+fn arg_bytes_empty_string_is_an_empty_seed() {
+    let pid = any_pid();
+    let (expected, _) = Pubkey::find_program_address(&[b"vault", b""], &pid);
+    let mut p = acct_with_data(expected, vec![]);
+    let accts = [p.info()];
+    assert_eq!(SeedFromArg::validate(&accts, &[0, 0, 0, 0], &pid), Ok(()));
+}
+
+/// The `Bumps` struct is built by a SECOND copy of the seed codegen inside `try_accounts`.
+/// It must resolve `name.as_bytes()` the same way `validate` does, or the canonical bump handed
+/// back to the handler would be derived from different seeds than the ones just validated.
+#[test]
+fn bumps_struct_resolves_a_named_arg_seed() {
+    use verified_anchor::Accounts;
+    let pid = any_pid();
+    let (expected, expected_bump) = Pubkey::find_program_address(&[b"vault", b"alice"], &pid);
+    let mut p = acct_with_data(expected, vec![]);
+    let accts = [p.info()];
+    let (_s, bumps) =
+        <SeedFromArg as Accounts>::try_accounts(&pid, &accts, &borsh_string_arg("alice")).unwrap();
+    assert_eq!(bumps.pda, expected_bump);
+}

@@ -1,0 +1,5 @@
+error: seed `name.as_bytes()` on field `pda` does not name a declared #[instruction(...)] argument (declared and mappable: []); add it to `#[instruction(...)]`, or — if its type is unsupported — note that every argument after the first unmappable one is dropped, because its Borsh offset cannot be computed
+  --> tests/ui/seed_arg_undeclared.rs:14:34
+   |
+14 |     #[account(seeds = [b"vault", name.as_bytes()], bump)]
+   |                                  ^^^^
