@@ -70,6 +70,15 @@ theorem genConstraint_seeds_iff (s c idx f ss b program) :
   | stored off =>
       simp only [genConstraint, genSeeds, satisfies, Option.allB_iff, decide_eq_true_iff]
 
+/-- `constraint = <expr>`: both sides are the same `evalExpr` call, differing only in the
+    `allB`/`satisfiesSome` wrapper — the standard bridge. Nothing about the expression's shape
+    matters here: `evalExpr` is evaluated ONCE and both sides read the same `Option Bool`, so
+    the sublanguage can grow without touching this proof. -/
+theorem genConstraint_expr_iff (s c idx f e) :
+    genConstraint s c idx f (Constraint.expr e) = true
+      ↔ satisfies s c idx f (Constraint.expr e) := by
+  simp only [genConstraint, satisfies]; exact Option.allB_iff _ _
+
 /-- Constraint kinds M3's generated validator handles. -/
 def isM3Constraint : Constraint → Bool
   | .signer | .mut | .owner _ | .hasOne _ | .discriminator _ => true
@@ -92,22 +101,27 @@ theorem genConstraint_iff_satisfies_M3 (s c idx f k) (hk : isM3Constraint k = tr
   | discriminator d => exact genConstraint_discriminator_iff s c idx f d
   | _             => simp [isM3Constraint] at hk
 
-/-- Constraint kinds M4's generated validator handles (M3 + seeds + the `Program<P>` /
-    `SystemAccount` base checks `executable` and `address`). -/
-def isM4Constraint : Constraint → Bool
+/-- Constraint kinds M10's generated validator handles: everything M4 handled, plus `.expr`. -/
+def isM10Constraint : Constraint → Bool
   | .signer | .mut | .owner _ | .hasOne _ | .discriminator _ | .seeds _ _ _
-  | .executable | .address _ | .rentExempt | .zero => true
+  | .executable | .address _ | .rentExempt | .zero | .expr _ => true
   | _ => false
 
-/-- The M4 subset: every field's (implied ++ explicit) constraints are M4 validation
-    constraints. Admits typed `.account` (implied owner+discriminator) AND `.seeds`. -/
-def M4Subset (s : AccountsStruct) : Prop :=
-  ∀ f ∈ s.fields, ∀ k ∈ (f.ty.impliedConstraints ++ f.constraints), isM4Constraint k = true
+/-- The M10 subset: every field's (implied ++ explicit) constraints are M10 validation
+    constraints. Covers typed `.account` (implied owner+discriminator), `.seeds`, and the
+    `constraint = <expr>` sublanguage. -/
+def M10Subset (s : AccountsStruct) : Prop :=
+  ∀ f ∈ s.fields, ∀ k ∈ (f.ty.impliedConstraints ++ f.constraints), isM10Constraint k = true
 
-instance (s : AccountsStruct) : Decidable (M4Subset s) := by unfold M4Subset; infer_instance
+instance (s : AccountsStruct) : Decidable (M10Subset s) := by unfold M10Subset; infer_instance
 
-/-- Dispatcher: under M4, the generated check of any constraint agrees with `satisfies`. -/
-theorem genConstraint_iff_satisfies_M4 (s c idx f k) (hk : isM4Constraint k = true) :
+/-- Compatibility alias: obligations emitted by 0.3.x tooling name `M4Subset`, and a published
+    tool may be pointed at this Lean tree. An `abbrev` (not a `def`) keeps `by decide` working
+    on the old name, because it unfolds reducibly to the `M10Subset` instance. -/
+abbrev M4Subset (s : AccountsStruct) : Prop := M10Subset s
+
+/-- Dispatcher: under M10, the generated check of any constraint agrees with `satisfies`. -/
+theorem genConstraint_iff_satisfies_M10 (s c idx f k) (hk : isM10Constraint k = true) :
     genConstraint s c idx f k = true ↔ satisfies s c idx f k := by
   cases k with
   | signer          => exact genConstraint_signer_iff s c idx f
@@ -120,16 +134,17 @@ theorem genConstraint_iff_satisfies_M4 (s c idx f k) (hk : isM4Constraint k = tr
   | address e       => exact genConstraint_address_iff s c idx f e
   | rentExempt      => exact genConstraint_rentExempt_iff s c idx f
   | zero            => exact genConstraint_zero_iff s c idx f
-  | _               => simp [isM4Constraint] at hk
+  | expr e          => exact genConstraint_expr_iff s c idx f e
+  | _               => simp [isM10Constraint] at hk
 
 theorem genFieldValidate_iff (s c idx f)
-    (hcons : ∀ k ∈ (f.ty.impliedConstraints ++ f.constraints), isM4Constraint k = true) :
+    (hcons : ∀ k ∈ (f.ty.impliedConstraints ++ f.constraints), isM10Constraint k = true) :
     genFieldValidate s c idx f = true ↔ fieldValidates s c idx f := by
   unfold genFieldValidate fieldValidates
   rw [List.all_eq_true]
   constructor
-  · intro hall k hk; exact (genConstraint_iff_satisfies_M4 s c idx f k (hcons k hk)).mp (hall k hk)
-  · intro hall k hk; exact (genConstraint_iff_satisfies_M4 s c idx f k (hcons k hk)).mpr (hall k hk)
+  · intro hall k hk; exact (genConstraint_iff_satisfies_M10 s c idx f k (hcons k hk)).mp (hall k hk)
+  · intro hall k hk; exact (genConstraint_iff_satisfies_M10 s c idx f k (hcons k hk)).mpr (hall k hk)
 
 /-! ## Distinct mutable keys (M8.4): the struct-level conjunct
 
@@ -187,10 +202,11 @@ theorem distinctMutKeysB_iff (s : AccountsStruct) (c : Ctx) :
       · exact Or.inl (Or.inl (Or.inl (Or.inr hmp)))
     · exact Or.inl (Or.inl (Or.inl (Or.inl hlt)))
 
-/-- THE M4 THEOREM: the generated validator agrees with the M1 contract for every struct in
-    the M4 subset. Threads three conjuncts: wellformedness (`decide`), the struct-level
-    distinct-mut-key check (`distinctMutKeysB_iff`), and per-field validation (`List.all`). -/
-theorem genValidate_sound (s : AccountsStruct) (c : Ctx) (h : M4Subset s) :
+/-- THE HEADLINE THEOREM: the generated validator agrees with the M1 contract for every
+    struct in the M10 subset. Threads three conjuncts: wellformedness (`decide`), the
+    struct-level distinct-mut-key check (`distinctMutKeysB_iff`), and per-field validation
+    (`List.all`). Growing the subset never reopens this proof — only the dispatcher. -/
+theorem genValidate_sound (s : AccountsStruct) (c : Ctx) (h : M10Subset s) :
     genValidate s c = true ↔ validates s c := by
   unfold genValidate validates
   rw [Bool.and_eq_true, Bool.and_eq_true, decide_eq_true_iff, distinctMutKeysB_iff]
@@ -207,5 +223,13 @@ theorem genValidate_sound (s : AccountsStruct) (c : Ctx) (h : M4Subset s) :
     intro p hp
     have hmemf : p.1 ∈ s.fields := List.fst_mem_of_mem_zipIdx hp
     exact (genFieldValidate_iff s c p.2 p.1 (h p.1 hmemf)).mpr (hall p hp)
+
+/-- The M10 subset covers the expression constraint. -/
+example : isM10Constraint (Constraint.expr (.truthy (.isSigner 0))) = true := by decide
+
+/-- The soundness dispatcher covers it. -/
+example (s c idx f e) :
+    genConstraint s c idx f (Constraint.expr e) = true ↔ satisfies s c idx f (Constraint.expr e) :=
+  genConstraint_expr_iff s c idx f e
 
 end VerifiedAnchor
