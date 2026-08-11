@@ -552,6 +552,64 @@ example : evalExpr exprStruct exprCtx
 example : evalExpr exprStruct exprCtx
     (.cmp .eq (.key 0) (.lit (.nat 1))) = some false := by decide
 
+/-! ### Signed ordering, and the `nat`/`int` refusal.
+
+    `evalCmp` has TWO ordering families — `nat`/`nat` and `int`/`int` — and the signed one needs
+    its own coverage: a `.int` comparison routes through different arms and through `readVal`'s
+    sign-reconstruction (`n - 2^64`), so the unsigned examples above say nothing about it. -/
+
+private def signedTy : Ty := .struct [("delta", .i64)]
+
+/-- 8 disc + `delta = -1` (i64 LE: eight `0xff` bytes). Chosen negative on purpose — a value
+    whose raw bytes read as a huge `nat` if the sign is ever dropped. -/
+private def signedData : ByteArray :=
+  ⟨(Array.replicate 8 (0 : UInt8)) ++ (Array.replicate 8 (0xff : UInt8))⟩
+
+private def signedStruct : AccountsStruct :=
+  { programId := Pubkey.zero
+  , fields :=
+    [ { name := "vault"
+      , ty := AccountType.account "Signed" signedTy Pubkey.zero
+      , constraints := [] } ] }
+
+private def signedCtx : Ctx := Ctx.ofAccounts [{ exprVaultAcct with data := signedData }]
+
+/-- The decode really is signed: `-1`, not `2^64 - 1`. If `readVal`'s `.i64` arm ever lost its
+    sign reconstruction, this is the example that catches it. -/
+example : evalOperand signedStruct signedCtx (.field 0 ["delta"]) = some (.int (-1)) := by decide
+
+/-- `.int`/`.int` ordering, TRUE and FALSE. Both directions of each operator are exercised so a
+    transposed arm in `evalCmp` cannot hide. -/
+example : evalExpr signedStruct signedCtx
+    (.cmp .lt (.field 0 ["delta"]) (.lit (.int 0))) = some true := by decide
+example : evalExpr signedStruct signedCtx
+    (.cmp .ge (.field 0 ["delta"]) (.lit (.int 0))) = some false := by decide
+example : evalExpr signedStruct signedCtx
+    (.cmp .le (.field 0 ["delta"]) (.lit (.int (-1)))) = some true := by decide
+example : evalExpr signedStruct signedCtx
+    (.cmp .gt (.field 0 ["delta"]) (.lit (.int (-1)))) = some false := by decide
+example : evalExpr signedStruct signedCtx
+    (.cmp .gt (.lit (.int 1)) (.lit (.int (-1)))) = some true := by decide
+
+/-- THE REFUSAL, pinned as a regression test rather than left to inspection: ordering a `nat`
+    against an `int` is `none` in BOTH argument orders. This is the pairing a future maintainer
+    is most likely to "fix" by inserting a coercion — don't. `-1 : i64` and `18446744073709551615
+    : u64` have identical bytes, so any coercion silently picks a sign convention on the
+    developer's behalf, and picking wrong turns a rejecting constraint into an accepting one.
+    Refusing to compare is the only answer that cannot be wrong. -/
+example : evalExpr signedStruct signedCtx
+    (.cmp .lt (.field 0 ["delta"]) (.lit (.nat 0))) = none := by decide
+example : evalExpr signedStruct signedCtx
+    (.cmp .gt (.lit (.nat 1)) (.field 0 ["delta"])) = none := by decide
+
+/-- `eq`/`ne` stay TOTAL across the same cross-pair: `nat 1` and `int 1` are different `Value`s,
+    so they compare unequal rather than failing. Contrast with the orderings directly above —
+    this is the deliberate seam between "meaningless to order" and "answerable to compare". -/
+example : evalExpr exprStruct exprCtx
+    (.cmp .eq (.lit (.nat 1)) (.lit (.int 1))) = some false := by decide
+example : evalExpr exprStruct exprCtx
+    (.cmp .ne (.lit (.nat 1)) (.lit (.int 1))) = some true := by decide
+
 /-- Metadata operands: `lamports` crosses `UInt64.toNat`, `dataLen` reads `ByteArray.size`. -/
 example : evalExpr exprStruct exprCtx
     (.cmp .ge (.lamports 0) (.lit (.nat 500))) = some true := by decide
@@ -574,17 +632,43 @@ example : evalExpr exprStruct exprCtx
     (.or (.truthy (.isSigner 0)) (.truthy (.isSigner 1))) = some true := by decide
 example : evalExpr exprStruct exprCtx (.not (.truthy (.isSigner 1))) = some false := by decide
 
-/-- STRICTNESS, pinned deliberately: `and` does NOT short-circuit. A `false` left operand does
-    not rescue an unevaluable right one — the result is `none`, not `some false`. Both mean
-    "reject", so this is not a safety difference; it is pinned so Task 11's proof never has to
-    reason about evaluation order, and so a bug on the right-hand side is reported rather than
-    masked. The same holds for `or` with a `true` left operand. -/
+/-- STRICTNESS, pinned deliberately: neither `and` nor `or` short-circuits. Both operands are
+    evaluated, so an unevaluable side makes the whole expression `none` no matter what the other
+    side says. The two connectives are NOT symmetric in what that buys, and the asymmetry is the
+    point:
+
+    * `and` — `false && <unevaluable>` is `none` here and would be `some false` under
+      short-circuit evaluation. Both REJECT, so for `and` this is genuinely not a safety
+      difference; strictness only buys the proof convenience below.
+
+    * `or` — `true || <unevaluable>` is `none` here (REJECT) but would be `some true` under
+      short-circuit evaluation (ACCEPT). That is the difference between rejecting and accepting
+      an account set, i.e. exactly the milestone's headline guarantee. **The strictness of `or`
+      is load-bearing safety, not a stylistic choice, and must not be "optimized" into a
+      short-circuit.** An unevaluable operand means the expression's meaning is unknown; an
+      unknown must never be resolved in the caller's favour just because a sibling happened to
+      be true.
+
+    Strictness also keeps Task 11's proof free of any reasoning about evaluation order, and
+    surfaces a bug on the right-hand side instead of masking it. Task 12's Rust codegen is
+    written against these semantics: it must not lower `constraint = a || b` to Rust's
+    short-circuiting `||` when `b` can fail to evaluate. -/
 example : evalExpr exprStruct exprCtx
     (.and (.truthy (.isSigner 0)) (.cmp .ge (.field 0 ["nope"]) (.lit (.nat 0)))) = none := by
   decide
+/-- THE SAFETY-CRITICAL ONE: a `true` left operand does NOT rescue an unevaluable right one.
+    `none` (reject), never `some true` (accept). -/
 example : evalExpr exprStruct exprCtx
     (.or (.truthy (.isSigner 1)) (.cmp .ge (.field 0 ["nope"]) (.lit (.nat 0)))) = none := by
   decide
+/-- And the corresponding `satisfies`/`genConstraint` consequence, stated where it bites: an
+    `or` whose right side is unevaluable is UNSATISFIED even though its left side is true. -/
+example : genConstraint exprStruct exprCtx 0 exprStruct.fields[0]!
+    (Constraint.expr (.or (.truthy (.isSigner 1))
+                          (.cmp .ge (.field 0 ["nope"]) (.lit (.nat 0))))) = false := by decide
+example : ¬ satisfies exprStruct exprCtx 0 exprStruct.fields[0]!
+    (Constraint.expr (.or (.truthy (.isSigner 1))
+                          (.cmp .ge (.field 0 ["nope"]) (.lit (.nat 0))))) := by decide
 
 /-- The `.pubkey` decode — the arm that once jammed the kernel via `ByteArray.toList` — reduces
     through `evalOperand` too: the `authority` field at offset 9 equals account 1's key. -/
