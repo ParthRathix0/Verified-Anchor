@@ -9,7 +9,8 @@
 [![Rust](https://img.shields.io/badge/Rust-1.93%2B-orange?logo=rust&logoColor=white)](https://www.rust-lang.org)
 [![Solana](https://img.shields.io/badge/Solana-SBF-9945FF?logo=solana&logoColor=white)](https://solana.com)
 [![Axioms](https://img.shields.io/badge/axioms-%5Bpropext%2C%20Quot.sound%5D-22c55e)](#audit-the-proofs)
-[![License](https://img.shields.io/badge/license-CC--BY--NC--ND--4.0-lightgrey)](LICENSE)
+[![License](https://img.shields.io/badge/license-Apache--2.0-22c55e)](LICENSE)
+[![CI](https://github.com/ParthRathix0/Verified-Anchor/actions/workflows/ci.yml/badge.svg)](https://github.com/ParthRathix0/Verified-Anchor/actions/workflows/ci.yml)
 
 </div>
 
@@ -25,6 +26,7 @@ Verified Anchor closes the gap. Every macro expansion ships with a Lean 4 theore
 
 ## Status
 
+* `v0.4.1` — relicensed to **Apache-2.0**; contribution setup (CLA, contributing guide, security policy) and CI running the full proof gate on every pull request. No API or proof changes.
 * `v0.4.0` — M10 constraint-expression sublanguage: `constraint = <expr>` is compiled into a proven relational sublanguage where possible, with an honest, reported escape hatch for the rest; `#[instruction(...)]` named argument binding; a byte-level Borsh field model (`Ty`/`locate`/`readVal`) that gives `has_one` its real field offset instead of a hardcoded one.
 * `v0.3.0` — M9 lifecycle parity: `realloc` (+`realloc::payer`/`realloc::zero`, top-up-only and surplus-preserving), `zero` reinit guard, `init_if_needed` (drop-in on a typed `Account<'info, T>`).
 * `v0.2.0` — M8 constraint-surface completion: `address`/`executable` explicit annotations, stored/non-canonical bump opt-in, `seeds::program`, automatic distinct-mut-key checking, `rent_exempt = enforce/skip`.
@@ -76,6 +78,7 @@ NOTICE                                Copyright and relicensing notice
 CONTRIBUTING.md                       How to contribute (toolchain, gate, invariants)
 CLA.md                                Contributor License Agreement
 SECURITY.md                           Vulnerability and soundness-gap disclosure
+CODE_OF_CONDUCT.md                    Contributor Covenant 2.1
 ```
 
 ## Documentation
@@ -270,6 +273,15 @@ project invariants a patch must not break — zero `sorry`, headline theorems at
 
 Contributors sign a [CLA](CLA.md) on their first pull request; a bot handles this automatically.
 You keep the copyright in your contribution.
+
+Looking for somewhere to start? The
+[`good first issue`](https://github.com/ParthRathix0/Verified-Anchor/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22)
+label marks issues that are self-contained and do not require knowing the Lean proof layer. Each
+one names the files to touch and the check that must pass.
+
+Every pull request runs the full gate in CI — Lean build, zero `sorry`, the axiom audit, the SBF
+build, the litesvm runtime suites, and the proof obligations. A green check means your change
+preserved every guarantee the project makes.
 
 Security issues and soundness gaps in the proven core follow the private disclosure process in
 [SECURITY.md](SECURITY.md) — please do not open a public issue for those.
