@@ -1,0 +1,59 @@
+name: Bug report
+description: Something behaves incorrectly
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. If the bug is that the **validator accepts something it should
+        reject**, please use the *Soundness gap* template instead — that is handled differently.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: The `verified-anchor` version you are using.
+      placeholder: "0.4.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - verified-anchor-macros (the proc-macros)
+        - verified-anchor (runtime)
+        - cargo-verified-anchor (the check subcommand)
+        - Lean library
+        - Documentation
+        - Not sure
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Minimal reproducing struct
+      description: The smallest `#[derive(VerifiedAccounts)]` struct that shows the problem.
+      render: rust
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happened
+      description: Include the exact error or the observed behaviour.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: textarea
+    id: toolchain
+    attributes:
+      label: Toolchain versions
+      description: "Output of: `rustc -V`, `lake --version`, `solana -V`"
+      render: shell
+    validations:
+      required: true

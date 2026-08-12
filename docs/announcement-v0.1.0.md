@@ -200,6 +200,6 @@ stays Lean-free.
   verified constraint subset (`realloc`, token, zero-copy); `AccountLoader<T>`; `Sysvar<T>`;
   IDE / LSP surfacing of unmet proof obligations.
 
-Source: <https://github.com/ParthRathix0/Verified-Anchor>. Issues and audit attempts are
-welcome; substantive patches require prior agreement under the project licence
-(CC BY-NC-ND 4.0; see the repository README).
+Source: <https://github.com/ParthRathix0/Verified-Anchor>, licensed Apache-2.0. Issues, audit
+attempts, and pull requests are welcome — see `CONTRIBUTING.md` for the build gate and the
+project invariants, and `SECURITY.md` for private disclosure of soundness gaps.

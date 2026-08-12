@@ -117,7 +117,12 @@ fn int_at(ty: &Ty, path: &[&str], data: &[u8]) -> i128 {
 #[test]
 fn fixed_layout_matches_borsh() {
     let auth = Pubkey::new_unique();
-    let s = Fixed { bump: 254, count: 4242, authority: auth, flag: true };
+    let s = Fixed {
+        bump: 254,
+        count: 4242,
+        authority: auth,
+        flag: true,
+    };
     let bytes = borsh::to_vec(&s).unwrap();
 
     assert_eq!(nat_at(&FIXED_TY, &["bump"], &bytes), 254);
@@ -132,10 +137,22 @@ fn fixed_layout_matches_borsh() {
 fn string_prefixed_layout_matches_borsh() {
     let owner = Pubkey::new_unique();
     for label in ["", "a", "a much longer label value"] {
-        let s = WithString { label: label.to_string(), owner, amount: 7 };
+        let s = WithString {
+            label: label.to_string(),
+            owner,
+            amount: 7,
+        };
         let bytes = borsh::to_vec(&s).unwrap();
-        assert_eq!(key_at(&WITH_STRING_TY, &["owner"], &bytes), owner, "label={label:?}");
-        assert_eq!(nat_at(&WITH_STRING_TY, &["amount"], &bytes), 7, "label={label:?}");
+        assert_eq!(
+            key_at(&WITH_STRING_TY, &["owner"], &bytes),
+            owner,
+            "label={label:?}"
+        );
+        assert_eq!(
+            nat_at(&WITH_STRING_TY, &["amount"], &bytes),
+            7,
+            "label={label:?}"
+        );
     }
 }
 
@@ -148,7 +165,11 @@ fn vec_and_option_layout_matches_borsh() {
         (vec![1u32, 2, 3, 4], None),
         (vec![7u32; 20], Some(u64::MAX)),
     ] {
-        let s = WithVecOption { xs: xs.clone(), maybe, tail };
+        let s = WithVecOption {
+            xs: xs.clone(),
+            maybe,
+            tail,
+        };
         let bytes = borsh::to_vec(&s).unwrap();
         assert_eq!(
             key_at(&WITH_VEC_OPTION_TY, &["tail"], &bytes),
@@ -162,18 +183,29 @@ fn vec_and_option_layout_matches_borsh() {
 #[test]
 fn locator_agrees_with_deserialized_value() {
     let owner = Pubkey::new_unique();
-    let s = WithString { label: "vault-one".into(), owner, amount: 123456789 };
+    let s = WithString {
+        label: "vault-one".into(),
+        owner,
+        amount: 123456789,
+    };
     let bytes = borsh::to_vec(&s).unwrap();
     let back = WithString::try_from_slice(&bytes).unwrap();
 
     assert_eq!(key_at(&WITH_STRING_TY, &["owner"], &bytes), back.owner);
-    assert_eq!(nat_at(&WITH_STRING_TY, &["amount"], &bytes), back.amount as u128);
+    assert_eq!(
+        nat_at(&WITH_STRING_TY, &["amount"], &bytes),
+        back.amount as u128
+    );
 }
 
 /// Truncated buffers must fail closed, never panic and never read adjacent memory.
 #[test]
 fn truncated_buffers_fail_closed() {
-    let s = WithString { label: "xy".into(), owner: Pubkey::new_unique(), amount: 1 };
+    let s = WithString {
+        label: "xy".into(),
+        owner: Pubkey::new_unique(),
+        amount: 1,
+    };
     let bytes = borsh::to_vec(&s).unwrap();
     // Anchor the "fail closed" checks below in a decoded-value check too, so this test still
     // depends on `read_uint_le` actually being little-endian (an all-truncation test would
@@ -195,7 +227,10 @@ fn truncated_buffers_fail_closed() {
 #[test]
 fn nested_struct_layout_matches_borsh() {
     let b = Pubkey::new_unique();
-    let s = Outer { inner: Inner { a: 999, b }, extra: 0xDEADBEEF };
+    let s = Outer {
+        inner: Inner { a: 999, b },
+        extra: 0xDEADBEEF,
+    };
     let bytes = borsh::to_vec(&s).unwrap();
 
     assert_eq!(nat_at(&OUTER_TY, &["inner", "a"], &bytes), 999);
@@ -218,7 +253,14 @@ fn signed_integers_match_borsh_encoding() {
         (42, 1234, 123_456, i64::MAX, i128::MAX),
     ];
     for (a, b, c, d, e) in cases {
-        let s = Signed { a, b, c, d, e, tail };
+        let s = Signed {
+            a,
+            b,
+            c,
+            d,
+            e,
+            tail,
+        };
         let bytes = borsh::to_vec(&s).unwrap();
 
         assert_eq!(int_at(&SIGNED_TY, &["a"], &bytes), a as i128, "a={a}");
@@ -260,7 +302,11 @@ fn fixed_arrays_layout_matches_borsh() {
 
     // `borsh::to_vec` is the ground truth for the wire size: no length prefix on either
     // array means the whole struct is exactly 32 + 32 + 32 = 96 bytes.
-    assert_eq!(bytes.len(), 96, "borsh's own encoding grew a prefix this test didn't expect");
+    assert_eq!(
+        bytes.len(),
+        96,
+        "borsh's own encoding grew a prefix this test didn't expect"
+    );
 
     // the field positioned AFTER both arrays must be locatable, and at the byte offset borsh
     // actually placed it at (64), not wherever a length-prefixed assumption would predict.

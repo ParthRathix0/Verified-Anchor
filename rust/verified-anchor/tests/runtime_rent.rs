@@ -29,7 +29,13 @@ fn setup() -> (LiteSVM, Pubkey, Keypair) {
     (svm, program_id, payer)
 }
 
-fn send_tag(svm: &mut LiteSVM, payer: &Keypair, program_id: Pubkey, tag: u8, vault: Pubkey) -> bool {
+fn send_tag(
+    svm: &mut LiteSVM,
+    payer: &Keypair,
+    program_id: Pubkey,
+    tag: u8,
+    vault: Pubkey,
+) -> bool {
     let ix = Instruction {
         program_id,
         data: vec![tag],
@@ -46,13 +52,17 @@ fn enforce_rejects_under_funded() {
     let (mut svm, program_id, payer) = setup();
     let vault = Pubkey::new_unique();
     // 0 lamports, empty data: cannot be rent-exempt.
-    svm.set_account(vault, Account {
-        lamports: 0,
-        data: vec![],
-        owner: program_id,
-        executable: false,
-        rent_epoch: 0,
-    }).unwrap();
+    svm.set_account(
+        vault,
+        Account {
+            lamports: 0,
+            data: vec![],
+            owner: program_id,
+            executable: false,
+            rent_epoch: 0,
+        },
+    )
+    .unwrap();
     assert!(
         !send_tag(&mut svm, &payer, program_id, 5, vault),
         "rent_exempt = enforce must reject an under-funded account on-chain"
@@ -66,13 +76,17 @@ fn enforce_accepts_rent_exempt_account() {
     let (mut svm, program_id, payer) = setup();
     let vault = Pubkey::new_unique();
     // 2_000_000 lamports, empty data: well above any rent-exemption threshold.
-    svm.set_account(vault, Account {
-        lamports: 2_000_000,
-        data: vec![],
-        owner: program_id,
-        executable: false,
-        rent_epoch: 0,
-    }).unwrap();
+    svm.set_account(
+        vault,
+        Account {
+            lamports: 2_000_000,
+            data: vec![],
+            owner: program_id,
+            executable: false,
+            rent_epoch: 0,
+        },
+    )
+    .unwrap();
     assert!(
         send_tag(&mut svm, &payer, program_id, 5, vault),
         "rent_exempt = enforce must accept a sufficiently-funded account on-chain"
@@ -85,13 +99,17 @@ fn skip_allows_under_funded() {
     let (mut svm, program_id, payer) = setup();
     let vault = Pubkey::new_unique();
     // Same 0-lamport account that enforce would reject — skip must allow it.
-    svm.set_account(vault, Account {
-        lamports: 0,
-        data: vec![],
-        owner: program_id,
-        executable: false,
-        rent_epoch: 0,
-    }).unwrap();
+    svm.set_account(
+        vault,
+        Account {
+            lamports: 0,
+            data: vec![],
+            owner: program_id,
+            executable: false,
+            rent_epoch: 0,
+        },
+    )
+    .unwrap();
     assert!(
         send_tag(&mut svm, &payer, program_id, 6, vault),
         "rent_exempt = skip must accept any account regardless of lamports"

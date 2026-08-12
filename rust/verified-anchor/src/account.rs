@@ -19,10 +19,14 @@ pub struct Account<'info, T: AccountData> {
 
 impl<'info, T: AccountData> Deref for Account<'info, T> {
     type Target = T;
-    fn deref(&self) -> &T { &self.data }
+    fn deref(&self) -> &T {
+        &self.data
+    }
 }
 impl<'info, T: AccountData> DerefMut for Account<'info, T> {
-    fn deref_mut(&mut self) -> &mut T { &mut self.data }
+    fn deref_mut(&mut self) -> &mut T {
+        &mut self.data
+    }
 }
 
 /// `Signer<'info>` — auto-implies `is_signer == true`.
@@ -38,7 +42,10 @@ pub struct Program<'info, P: ProgramId> {
 impl<'info, P: ProgramId> Program<'info, P> {
     /// Constructed by the macro after the wrapper checks pass.
     pub fn new(info: &'info AccountInfo<'info>) -> Self {
-        Self { info, _phantom: PhantomData }
+        Self {
+            info,
+            _phantom: PhantomData,
+        }
     }
 }
 
@@ -69,19 +76,27 @@ pub struct UncheckedAccount<'info> {
 
 impl<'info> Deref for Signer<'info> {
     type Target = AccountInfo<'info>;
-    fn deref(&self) -> &AccountInfo<'info> { self.info }
+    fn deref(&self) -> &AccountInfo<'info> {
+        self.info
+    }
 }
 impl<'info> Deref for SystemAccount<'info> {
     type Target = AccountInfo<'info>;
-    fn deref(&self) -> &AccountInfo<'info> { self.info }
+    fn deref(&self) -> &AccountInfo<'info> {
+        self.info
+    }
 }
 impl<'info> Deref for UncheckedAccount<'info> {
     type Target = AccountInfo<'info>;
-    fn deref(&self) -> &AccountInfo<'info> { self.info }
+    fn deref(&self) -> &AccountInfo<'info> {
+        self.info
+    }
 }
 impl<'info, P: ProgramId> Deref for Program<'info, P> {
     type Target = AccountInfo<'info>;
-    fn deref(&self) -> &AccountInfo<'info> { self.info }
+    fn deref(&self) -> &AccountInfo<'info> {
+        self.info
+    }
 }
 
 /// `a.key()` — Anchor's `Key` trait, the single most common spelling in real constraints
@@ -92,20 +107,32 @@ pub trait Key {
 }
 
 impl Key for AccountInfo<'_> {
-    fn key(&self) -> Pubkey { *self.key }
+    fn key(&self) -> Pubkey {
+        *self.key
+    }
 }
 impl<T: AccountData> Key for Account<'_, T> {
-    fn key(&self) -> Pubkey { *self.info.key }
+    fn key(&self) -> Pubkey {
+        *self.info.key
+    }
 }
 impl Key for Signer<'_> {
-    fn key(&self) -> Pubkey { *self.info.key }
+    fn key(&self) -> Pubkey {
+        *self.info.key
+    }
 }
 impl Key for SystemAccount<'_> {
-    fn key(&self) -> Pubkey { *self.info.key }
+    fn key(&self) -> Pubkey {
+        *self.info.key
+    }
 }
 impl Key for UncheckedAccount<'_> {
-    fn key(&self) -> Pubkey { *self.info.key }
+    fn key(&self) -> Pubkey {
+        *self.info.key
+    }
 }
 impl<P: ProgramId> Key for Program<'_, P> {
-    fn key(&self) -> Pubkey { *self.info.key }
+    fn key(&self) -> Pubkey {
+        *self.info.key
+    }
 }

@@ -12,13 +12,21 @@ const REPO_URL: &str = "https://github.com/ParthRathix0/Verified-Anchor.git";
 /// 4. **auto-fetch**: a shallow `git clone` of this crate's version tag into a cache dir, so a
 ///    `cargo install`-ed tool needs no manual clone and no `--lean-dir`.
 pub fn locate_lean_dir(explicit: Option<&Path>) -> Result<PathBuf, String> {
-    if let Some(p) = explicit { return Ok(p.to_path_buf()); }
-    if let Ok(p) = std::env::var("VERIFIED_ANCHOR_LEAN_DIR") { return Ok(PathBuf::from(p)); }
+    if let Some(p) = explicit {
+        return Ok(p.to_path_buf());
+    }
+    if let Ok(p) = std::env::var("VERIFIED_ANCHOR_LEAN_DIR") {
+        return Ok(PathBuf::from(p));
+    }
     let mut dir = std::env::current_dir().map_err(|e| e.to_string())?;
     loop {
         let cand = dir.join("lean");
-        if cand.join("lakefile.toml").exists() { return Ok(cand); }
-        if !dir.pop() { break; }
+        if cand.join("lakefile.toml").exists() {
+            return Ok(cand);
+        }
+        if !dir.pop() {
+            break;
+        }
     }
     fetch_pinned_lean()
 }
@@ -27,9 +35,15 @@ pub fn locate_lean_dir(explicit: Option<&Path>) -> Result<PathBuf, String> {
 /// `$VERIFIED_ANCHOR_CACHE`, else `$XDG_CACHE_HOME/verified-anchor`, else
 /// `$HOME/.cache/verified-anchor`, else a temp dir.
 fn cache_base() -> PathBuf {
-    if let Ok(p) = std::env::var("VERIFIED_ANCHOR_CACHE") { return PathBuf::from(p); }
-    if let Ok(p) = std::env::var("XDG_CACHE_HOME") { return PathBuf::from(p).join("verified-anchor"); }
-    if let Ok(home) = std::env::var("HOME") { return PathBuf::from(home).join(".cache").join("verified-anchor"); }
+    if let Ok(p) = std::env::var("VERIFIED_ANCHOR_CACHE") {
+        return PathBuf::from(p);
+    }
+    if let Ok(p) = std::env::var("XDG_CACHE_HOME") {
+        return PathBuf::from(p).join("verified-anchor");
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        return PathBuf::from(home).join(".cache").join("verified-anchor");
+    }
     std::env::temp_dir().join("verified-anchor")
 }
 
@@ -57,27 +71,43 @@ fn fetch_pinned_lean() -> Result<PathBuf, String> {
             "could not fetch the Lean proof library (tag {tag}):\n{}\n\
              Fixes: ensure git + network are available, or pass `--lean-dir <path>`, or set \
              VERIFIED_ANCHOR_LEAN_DIR to a local checkout of the `lean/` directory.",
-            String::from_utf8_lossy(&out.stderr)));
+            String::from_utf8_lossy(&out.stderr)
+        ));
     }
     if !lean_dir.join("lakefile.toml").exists() {
-        return Err(format!("fetched {tag} but {lean_dir:?} has no lakefile.toml"));
+        return Err(format!(
+            "fetched {tag} but {lean_dir:?} has no lakefile.toml"
+        ));
     }
     Ok(lean_dir)
 }
 
 /// `lake build` (cached) then `lake env lean <check_file>`. Returns the lean output on failure.
 pub fn discharge(lean_dir: &Path, check_file: &Path) -> Result<(), String> {
-    let build = Command::new("lake").arg("build").current_dir(lean_dir).output()
+    let build = Command::new("lake")
+        .arg("build")
+        .current_dir(lean_dir)
+        .output()
         .map_err(|e| format!("running `lake build` (is elan/lake on PATH?): {e}"))?;
     if !build.status.success() {
-        return Err(format!("lake build failed:\n{}", String::from_utf8_lossy(&build.stderr)));
+        return Err(format!(
+            "lake build failed:\n{}",
+            String::from_utf8_lossy(&build.stderr)
+        ));
     }
-    let chk = Command::new("lake").arg("env").arg("lean").arg(check_file)
-        .current_dir(lean_dir).output()
+    let chk = Command::new("lake")
+        .arg("env")
+        .arg("lean")
+        .arg(check_file)
+        .current_dir(lean_dir)
+        .output()
         .map_err(|e| format!("running `lake env lean`: {e}"))?;
     if !chk.status.success() {
-        return Err(format!("proof obligations NOT discharged:\n{}{}",
-            String::from_utf8_lossy(&chk.stdout), String::from_utf8_lossy(&chk.stderr)));
+        return Err(format!(
+            "proof obligations NOT discharged:\n{}{}",
+            String::from_utf8_lossy(&chk.stdout),
+            String::from_utf8_lossy(&chk.stderr)
+        ));
     }
     Ok(())
 }
@@ -94,7 +124,11 @@ mod tests {
         p
     }
     fn lake_available() -> bool {
-        Command::new("lake").arg("--version").output().map(|o| o.status.success()).unwrap_or(false)
+        Command::new("lake")
+            .arg("--version")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
     }
 
     /// The load-bearing property: `discharge` must FAIL when an obligation is false, otherwise
@@ -102,7 +136,10 @@ mod tests {
     /// an `init` constraint is false (`init` is not an M4 constraint), so `by decide` errors.
     #[test]
     fn discharge_rejects_a_false_obligation() {
-        if !lake_available() { eprintln!("SKIP: lake not on PATH"); return; }
+        if !lake_available() {
+            eprintln!("SKIP: lake not on PATH");
+            return;
+        }
         let bad = "import VerifiedAnchor\nopen VerifiedAnchor\n\n\
 example : M4Subset ({ programId := Pubkey.zero, fields := \
 [ { name := \"x\", ty := AccountType.uncheckedAccount, \
@@ -110,7 +147,10 @@ constraints := [Constraint.init \"p\" 0 Pubkey.zero] } ] }) := by decide\n";
         let f = std::env::temp_dir().join("va-false-obligation-check.lean");
         std::fs::write(&f, bad).unwrap();
         let r = discharge(&repo_lean_dir(), &f);
-        assert!(r.is_err(), "discharge accepted a FALSE obligation — the checker is vacuous");
+        assert!(
+            r.is_err(),
+            "discharge accepted a FALSE obligation — the checker is vacuous"
+        );
     }
 
     /// A populated cache is reused without invoking git/network (the common path after the

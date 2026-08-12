@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security or exploitable soundness issue
+    url: https://github.com/ParthRathix0/Verified-Anchor/security/advisories/new
+    about: Report privately. Do not open a public issue for an exploitable finding.
+  - name: Documentation
+    url: https://github.com/ParthRathix0/Verified-Anchor#documentation
+    about: Trust boundary, migration guide, constraint parity matrix and case studies.
+  - name: Contributing guide
+    url: https://github.com/ParthRathix0/Verified-Anchor/blob/master/CONTRIBUTING.md
+    about: Toolchain setup, the mandatory build gate, and the project invariants.

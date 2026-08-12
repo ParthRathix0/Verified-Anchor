@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 use solana_program::{
-    account_info::AccountInfo, entrypoint, entrypoint::ProgramResult,
-    program_error::ProgramError, pubkey::Pubkey,
+    account_info::AccountInfo, entrypoint, entrypoint::ProgramResult, program_error::ProgramError,
+    pubkey::Pubkey,
 };
 use verified_anchor::{Accounts, Key, Validate, VerifiedAccounts};
 
@@ -186,17 +186,23 @@ entrypoint!(process);
 // `try_accounts` (tag 13) needs `accounts: &'a [AccountInfo<'a>]` — `AccountInfo` is invariant
 // over its lifetime, so the elided-lifetime signature every other arm was fine with does not
 // unify. Name the lifetime explicitly instead of relaxing the trait.
-pub fn process<'a>(program_id: &Pubkey, accounts: &'a [AccountInfo<'a>], data: &[u8]) -> ProgramResult {
+pub fn process<'a>(
+    program_id: &Pubkey,
+    accounts: &'a [AccountInfo<'a>],
+    data: &[u8],
+) -> ProgramResult {
     match data.first() {
         Some(0) => {
-            InitOne::validate(accounts, &[], program_id).map_err(|_| ProgramError::InvalidArgument)?;
+            InitOne::validate(accounts, &[], program_id)
+                .map_err(|_| ProgramError::InvalidArgument)?;
             // rent-exempt-ish lamports for 8 bytes; the test funds the payer generously
             InitOne::execute_lifecycle(accounts, program_id, 1_000_000)
                 .map_err(|_| ProgramError::InvalidArgument)?;
             Ok(())
         }
         Some(1) => {
-            CloseOne::validate(accounts, &[], program_id).map_err(|_| ProgramError::InvalidArgument)?;
+            CloseOne::validate(accounts, &[], program_id)
+                .map_err(|_| ProgramError::InvalidArgument)?;
             CloseOne::execute_lifecycle(accounts, program_id, 0)
                 .map_err(|_| ProgramError::InvalidArgument)?;
             Ok(())
@@ -275,16 +281,17 @@ pub fn process<'a>(program_id: &Pubkey, accounts: &'a [AccountInfo<'a>], data: &
                 .map_err(|_| ProgramError::InvalidArgument)?;
             // Observable effect: echo the `amount` that passed the constraint into `out`, read
             // by walking the SAME length-prefixed layout the proven check just located.
-            let vault_data =
-                accounts[0].try_borrow_data().map_err(|_| ProgramError::InvalidAccountData)?;
+            let vault_data = accounts[0]
+                .try_borrow_data()
+                .map_err(|_| ProgramError::InvalidAccountData)?;
             let label_len = u32::from_le_bytes(vault_data[8..12].try_into().unwrap()) as usize;
             let amount_off = 12 + label_len;
-            let amount = u64::from_le_bytes(
-                vault_data[amount_off..amount_off + 8].try_into().unwrap(),
-            );
+            let amount =
+                u64::from_le_bytes(vault_data[amount_off..amount_off + 8].try_into().unwrap());
             drop(vault_data);
-            let mut out_data =
-                accounts[1].try_borrow_mut_data().map_err(|_| ProgramError::InvalidAccountData)?;
+            let mut out_data = accounts[1]
+                .try_borrow_mut_data()
+                .map_err(|_| ProgramError::InvalidAccountData)?;
             out_data[..8].copy_from_slice(&amount.to_le_bytes());
             Ok(())
         }
@@ -295,8 +302,9 @@ pub fn process<'a>(program_id: &Pubkey, accounts: &'a [AccountInfo<'a>], data: &
             CheckNamedSeed::validate(accounts, &data[1..], program_id)
                 .map_err(|_| ProgramError::InvalidArgument)?;
             // Observable effect: echo the accepted PDA's key into `out`.
-            let mut out_data =
-                accounts[1].try_borrow_mut_data().map_err(|_| ProgramError::InvalidAccountData)?;
+            let mut out_data = accounts[1]
+                .try_borrow_mut_data()
+                .map_err(|_| ProgramError::InvalidAccountData)?;
             out_data[..32].copy_from_slice(&accounts[0].key.to_bytes());
             Ok(())
         }
@@ -307,8 +315,9 @@ pub fn process<'a>(program_id: &Pubkey, accounts: &'a [AccountInfo<'a>], data: &
             CheckEscapeHatchOnChain::try_accounts(program_id, accounts, &data[1..])
                 .map_err(|_| ProgramError::InvalidArgument)?;
             // Observable effect: flip a byte in `out` once the hatch has run and accepted.
-            let mut out_data =
-                accounts[1].try_borrow_mut_data().map_err(|_| ProgramError::InvalidAccountData)?;
+            let mut out_data = accounts[1]
+                .try_borrow_mut_data()
+                .map_err(|_| ProgramError::InvalidAccountData)?;
             out_data[0] = 1;
             Ok(())
         }

@@ -21,6 +21,12 @@ impl<'a, 'b, 'c, 'info, T: Accounts<'info>> Context<'a, 'b, 'c, 'info, T> {
         remaining_accounts: &'c [AccountInfo<'info>],
         bumps: T::Bumps,
     ) -> Self {
-        Self { accounts, program_id, remaining_accounts, bumps, _phantom: PhantomData }
+        Self {
+            accounts,
+            program_id,
+            remaining_accounts,
+            bumps,
+            _phantom: PhantomData,
+        }
     }
 }

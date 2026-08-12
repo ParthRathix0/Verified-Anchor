@@ -1,8 +1,8 @@
 use sha2::{Digest, Sha256};
 use solana_program::account_info::AccountInfo;
 use solana_program::pubkey::Pubkey;
-use verified_anchor::{Validate, VAError, VerifiedAccounts};
 use verified_anchor::{Signer, UncheckedAccount};
+use verified_anchor::{VAError, Validate, VerifiedAccounts};
 // Needed for `a.key() == crate::ID`-style hatch checks below: that idiom is OUTSIDE the
 // sublanguage (the RHS is a module-qualified path, not a single operand `compile_expr` can
 // resolve), so it runs as verbatim Rust in `try_accounts`, and verbatim Rust needs the `Key`
@@ -23,17 +23,41 @@ struct Transfer<'info> {
     authority: Signer<'info>,
 }
 
-struct Acct { key: Pubkey, owner: Pubkey, lamports: u64, data: Vec<u8>, is_signer: bool, is_writable: bool }
+struct Acct {
+    key: Pubkey,
+    owner: Pubkey,
+    lamports: u64,
+    data: Vec<u8>,
+    is_signer: bool,
+    is_writable: bool,
+}
 impl Acct {
     fn info(&mut self) -> AccountInfo {
-        AccountInfo::new(&self.key, self.is_signer, self.is_writable,
-            &mut self.lamports, &mut self.data, &self.owner, false, 0)
+        AccountInfo::new(
+            &self.key,
+            self.is_signer,
+            self.is_writable,
+            &mut self.lamports,
+            &mut self.data,
+            &self.owner,
+            false,
+            0,
+        )
     }
 }
 fn acct(is_signer: bool, is_writable: bool) -> Acct {
-    Acct { key: Pubkey::new_unique(), owner: Pubkey::new_unique(), lamports: 1, data: vec![], is_signer, is_writable }
+    Acct {
+        key: Pubkey::new_unique(),
+        owner: Pubkey::new_unique(),
+        lamports: 1,
+        data: vec![],
+        is_signer,
+        is_writable,
+    }
 }
-fn any_pid() -> Pubkey { Pubkey::new_unique() }
+fn any_pid() -> Pubkey {
+    Pubkey::new_unique()
+}
 
 #[test]
 fn accepts_valid() {
@@ -47,20 +71,32 @@ fn rejects_non_writable_vault() {
     let mut v = acct(false, false);
     let mut a = acct(true, false);
     let accts = [v.info(), a.info()];
-    assert_eq!(Transfer::validate(&accts, &[], &any_pid()), Err(VAError::NotWritable { field: "vault" }));
+    assert_eq!(
+        Transfer::validate(&accts, &[], &any_pid()),
+        Err(VAError::NotWritable { field: "vault" })
+    );
 }
 #[test]
 fn rejects_non_signer_authority() {
     let mut v = acct(false, true);
     let mut a = acct(false, false);
     let accts = [v.info(), a.info()];
-    assert_eq!(Transfer::validate(&accts, &[], &any_pid()), Err(VAError::MissingSigner { field: "authority" }));
+    assert_eq!(
+        Transfer::validate(&accts, &[], &any_pid()),
+        Err(VAError::MissingSigner { field: "authority" })
+    );
 }
 #[test]
 fn rejects_too_few_accounts() {
     let mut v = acct(false, true);
     let accts = [v.info()];
-    assert_eq!(Transfer::validate(&accts, &[], &any_pid()), Err(VAError::NotEnoughAccounts { expected: 2, got: 1 }));
+    assert_eq!(
+        Transfer::validate(&accts, &[], &any_pid()),
+        Err(VAError::NotEnoughAccounts {
+            expected: 2,
+            got: 1
+        })
+    );
 }
 // The generated Rust accepts SURPLUS accounts: only the declared prefix `0..n` is checked, so
 // the guard is `accounts.len() < n`. That is required for drop-in parity — Anchor passes the
@@ -74,10 +110,10 @@ fn rejects_too_few_accounts() {
 // unconstrained under the exact-count contract too.
 #[test]
 fn accepts_surplus_accounts() {
-    let mut v = acct(false, true);   // vault: writable
-    let mut a = acct(true, false);   // authority: signer
+    let mut v = acct(false, true); // vault: writable
+    let mut a = acct(true, false); // authority: signer
     let mut extra = acct(false, false);
-    let accts = [v.info(), a.info(), extra.info()];   // 3 accounts, struct declares 2
+    let accts = [v.info(), a.info(), extra.info()]; // 3 accounts, struct declares 2
     assert_eq!(Transfer::validate(&accts, &[], &any_pid()), Ok(()));
 }
 
@@ -92,7 +128,14 @@ struct OwnedVault<'info> {
 }
 
 fn acct_owned(owner: Pubkey) -> Acct {
-    Acct { key: Pubkey::new_unique(), owner, lamports: 1, data: vec![], is_signer: false, is_writable: false }
+    Acct {
+        key: Pubkey::new_unique(),
+        owner,
+        lamports: 1,
+        data: vec![],
+        is_signer: false,
+        is_writable: false,
+    }
 }
 
 #[test]
@@ -104,9 +147,12 @@ fn accepts_matching_owner() {
 
 #[test]
 fn rejects_wrong_owner() {
-    let mut v = acct_owned(Pubkey::new_from_array([9u8; 32]));   // not PROG_OWNER
+    let mut v = acct_owned(Pubkey::new_from_array([9u8; 32])); // not PROG_OWNER
     let accts = [v.info()];
-    assert_eq!(OwnedVault::validate(&accts, &[], &any_pid()), Err(VAError::WrongOwner { field: "vault" }));
+    assert_eq!(
+        OwnedVault::validate(&accts, &[], &any_pid()),
+        Err(VAError::WrongOwner { field: "vault" })
+    );
 }
 
 /// `has_one` needs a typed `Account<'info, T>`: the target's Borsh offset comes from
@@ -125,7 +171,14 @@ struct CheckOwner<'info> {
 }
 
 fn acct_with_data(key: Pubkey, data: Vec<u8>) -> Acct {
-    Acct { key, owner: Pubkey::new_unique(), lamports: 1, data, is_signer: false, is_writable: false }
+    Acct {
+        key,
+        owner: Pubkey::new_unique(),
+        lamports: 1,
+        data,
+        is_signer: false,
+        is_writable: false,
+    }
 }
 
 /// Real Anchor wire bytes for an `OwnerVault`: 8-byte discriminator then the authority key.
@@ -153,7 +206,13 @@ fn has_one_rejects_mismatch() {
     vault.owner = crate::ID;
     let mut authority = acct_with_data(Pubkey::new_unique(), vec![]);
     let accts = [vault.info(), authority.info()];
-    assert_eq!(CheckOwner::validate(&accts, &[], &any_pid()), Err(VAError::WrongHasOne { field: "vault", target: "authority" }));
+    assert_eq!(
+        CheckOwner::validate(&accts, &[], &any_pid()),
+        Err(VAError::WrongHasOne {
+            field: "vault",
+            target: "authority"
+        })
+    );
 }
 
 #[derive(VerifiedAccounts)]
@@ -167,7 +226,14 @@ fn seeds_accepts_canonical_pda() {
     let program_id = Pubkey::new_unique();
     let arg = [1u8, 2, 3, 4];
     let (pda, _bump) = Pubkey::find_program_address(&[b"vault", &arg], &program_id);
-    let mut a = Acct { key: pda, owner: Pubkey::new_unique(), lamports: 1, data: vec![], is_signer: false, is_writable: false };
+    let mut a = Acct {
+        key: pda,
+        owner: Pubkey::new_unique(),
+        lamports: 1,
+        data: vec![],
+        is_signer: false,
+        is_writable: false,
+    };
     let accts = [a.info()];
     assert_eq!(PdaAccount::validate(&accts, &arg, &program_id), Ok(()));
 }
@@ -176,9 +242,19 @@ fn seeds_accepts_canonical_pda() {
 fn seeds_rejects_wrong_pda() {
     let program_id = Pubkey::new_unique();
     let arg = [1u8, 2, 3, 4];
-    let mut a = Acct { key: Pubkey::new_unique(), owner: Pubkey::new_unique(), lamports: 1, data: vec![], is_signer: false, is_writable: false };
+    let mut a = Acct {
+        key: Pubkey::new_unique(),
+        owner: Pubkey::new_unique(),
+        lamports: 1,
+        data: vec![],
+        is_signer: false,
+        is_writable: false,
+    };
     let accts = [a.info()];
-    assert_eq!(PdaAccount::validate(&accts, &arg, &program_id), Err(VAError::WrongPda { field: "pda" }));
+    assert_eq!(
+        PdaAccount::validate(&accts, &arg, &program_id),
+        Err(VAError::WrongPda { field: "pda" })
+    );
 }
 
 #[derive(VerifiedAccounts)]
@@ -192,7 +268,14 @@ fn seeds_declared_bump_rejects_non_canonical() {
     let program_id = Pubkey::new_unique();
     let (pda, bump) = Pubkey::find_program_address(&[b"vault"], &program_id);
     // declared bump is 0; this fails unless the canonical bump happens to be 0.
-    let mut a = Acct { key: pda, owner: Pubkey::new_unique(), lamports: 1, data: vec![], is_signer: false, is_writable: false };
+    let mut a = Acct {
+        key: pda,
+        owner: Pubkey::new_unique(),
+        lamports: 1,
+        data: vec![],
+        is_signer: false,
+        is_writable: false,
+    };
     let accts = [a.info()];
     let res = PdaDeclaredBump::validate(&accts, &[], &program_id);
     if bump == 0 {
@@ -231,21 +314,47 @@ fn seeds_stored_bump_accepts_matching_pda() {
     // The stored bump MUST be strictly below the canonical bump, and the derived address
     // MUST differ from the canonical PDA — this proves we are exercising a genuinely
     // non-canonical PDA, not just re-testing what a canonical validator would also accept.
-    assert!(bump < canon_bump, "stored bump {bump} must be below canonical bump {canon_bump}");
-    assert_ne!(pda, canon_key, "non-canonical PDA must differ from canonical PDA");
+    assert!(
+        bump < canon_bump,
+        "stored bump {bump} must be below canonical bump {canon_bump}"
+    );
+    assert_ne!(
+        pda, canon_key,
+        "non-canonical PDA must differ from canonical PDA"
+    );
     // instr data byte 0 is the stored bump.
-    let mut a = Acct { key: pda, owner: Pubkey::new_unique(), lamports: 1, data: vec![], is_signer: false, is_writable: false };
+    let mut a = Acct {
+        key: pda,
+        owner: Pubkey::new_unique(),
+        lamports: 1,
+        data: vec![],
+        is_signer: false,
+        is_writable: false,
+    };
     let accts = [a.info()];
-    assert_eq!(PdaStoredBump::validate(&accts, &[bump], &program_id), Ok(()));
+    assert_eq!(
+        PdaStoredBump::validate(&accts, &[bump], &program_id),
+        Ok(())
+    );
 }
 
 #[test]
 fn seeds_stored_bump_rejects_wrong_pda() {
     let program_id = Pubkey::new_unique();
     let (bump, _pda) = non_canonical_stored_bump(&program_id);
-    let mut a = Acct { key: Pubkey::new_unique(), owner: Pubkey::new_unique(), lamports: 1, data: vec![], is_signer: false, is_writable: false };
+    let mut a = Acct {
+        key: Pubkey::new_unique(),
+        owner: Pubkey::new_unique(),
+        lamports: 1,
+        data: vec![],
+        is_signer: false,
+        is_writable: false,
+    };
     let accts = [a.info()];
-    assert_eq!(PdaStoredBump::validate(&accts, &[bump], &program_id), Err(VAError::WrongPda { field: "pda" }));
+    assert_eq!(
+        PdaStoredBump::validate(&accts, &[bump], &program_id),
+        Err(VAError::WrongPda { field: "pda" })
+    );
 }
 
 #[test]
@@ -253,9 +362,19 @@ fn seeds_stored_bump_rejects_short_instr_data() {
     let program_id = Pubkey::new_unique();
     let (_bump, pda) = non_canonical_stored_bump(&program_id);
     // empty instr data => no byte at offset 0 => clean reject (mirrors the Lean none-safe spec).
-    let mut a = Acct { key: pda, owner: Pubkey::new_unique(), lamports: 1, data: vec![], is_signer: false, is_writable: false };
+    let mut a = Acct {
+        key: pda,
+        owner: Pubkey::new_unique(),
+        lamports: 1,
+        data: vec![],
+        is_signer: false,
+        is_writable: false,
+    };
     let accts = [a.info()];
-    assert_eq!(PdaStoredBump::validate(&accts, &[], &program_id), Err(VAError::WrongPda { field: "pda" }));
+    assert_eq!(
+        PdaStoredBump::validate(&accts, &[], &program_id),
+        Err(VAError::WrongPda { field: "pda" })
+    );
 }
 
 const FOREIGN_PROGRAM: Pubkey = Pubkey::new_from_array([9u8; 32]);
@@ -273,9 +392,19 @@ fn seeds_program_accepts_foreign_derived_pda() {
     // The struct is invoked under THIS program id, but the PDA is derived against FOREIGN_PROGRAM.
     let program_id = Pubkey::new_unique();
     let (foreign_pda, _b) = Pubkey::find_program_address(&[b"vault"], &FOREIGN_PROGRAM);
-    let mut a = Acct { key: foreign_pda, owner: Pubkey::new_unique(), lamports: 1, data: vec![], is_signer: false, is_writable: false };
+    let mut a = Acct {
+        key: foreign_pda,
+        owner: Pubkey::new_unique(),
+        lamports: 1,
+        data: vec![],
+        is_signer: false,
+        is_writable: false,
+    };
     let accts = [a.info()];
-    assert_eq!(PdaForeignProgram::validate(&accts, &[], &program_id), Ok(()));
+    assert_eq!(
+        PdaForeignProgram::validate(&accts, &[], &program_id),
+        Ok(())
+    );
 }
 
 #[test]
@@ -285,10 +414,23 @@ fn seeds_program_rejects_own_program_pda() {
     let program_id = Pubkey::new_unique();
     let (own_pda, _b) = Pubkey::find_program_address(&[b"vault"], &program_id);
     let (foreign_pda, _fb) = Pubkey::find_program_address(&[b"vault"], &FOREIGN_PROGRAM);
-    assert_ne!(own_pda, foreign_pda, "own-program PDA must differ from the foreign-program PDA");
-    let mut a = Acct { key: own_pda, owner: Pubkey::new_unique(), lamports: 1, data: vec![], is_signer: false, is_writable: false };
+    assert_ne!(
+        own_pda, foreign_pda,
+        "own-program PDA must differ from the foreign-program PDA"
+    );
+    let mut a = Acct {
+        key: own_pda,
+        owner: Pubkey::new_unique(),
+        lamports: 1,
+        data: vec![],
+        is_signer: false,
+        is_writable: false,
+    };
     let accts = [a.info()];
-    assert_eq!(PdaForeignProgram::validate(&accts, &[], &program_id), Err(VAError::WrongPda { field: "pda" }));
+    assert_eq!(
+        PdaForeignProgram::validate(&accts, &[], &program_id),
+        Err(VAError::WrongPda { field: "pda" })
+    );
 }
 
 fn disc(name: &str) -> [u8; 8] {
@@ -309,28 +451,50 @@ struct DiscOnly<'info> {
 
 #[test]
 fn discriminator_accepts_matching_prefix() {
-    let mut v = Acct { key: Pubkey::new_unique(), owner: Pubkey::new_unique(), lamports: 1,
-                       data: disc("Vault").to_vec(), is_signer: false, is_writable: false };
+    let mut v = Acct {
+        key: Pubkey::new_unique(),
+        owner: Pubkey::new_unique(),
+        lamports: 1,
+        data: disc("Vault").to_vec(),
+        is_signer: false,
+        is_writable: false,
+    };
     let accts = [v.info()];
     assert_eq!(DiscOnly::validate(&accts, &[], &any_pid()), Ok(()));
 }
 
 #[test]
 fn discriminator_rejects_wrong_prefix() {
-    let mut v = Acct { key: Pubkey::new_unique(), owner: Pubkey::new_unique(), lamports: 1,
-                       data: vec![0u8; 8], is_signer: false, is_writable: false };  // wrong disc (all zeros)
+    let mut v = Acct {
+        key: Pubkey::new_unique(),
+        owner: Pubkey::new_unique(),
+        lamports: 1,
+        data: vec![0u8; 8],
+        is_signer: false,
+        is_writable: false,
+    }; // wrong disc (all zeros)
     let accts = [v.info()];
-    assert_eq!(DiscOnly::validate(&accts, &[], &any_pid()),
-               Err(VAError::WrongDiscriminator { field: "vault" }));
+    assert_eq!(
+        DiscOnly::validate(&accts, &[], &any_pid()),
+        Err(VAError::WrongDiscriminator { field: "vault" })
+    );
 }
 
 #[test]
 fn discriminator_rejects_short_data() {
-    let mut v = Acct { key: Pubkey::new_unique(), owner: Pubkey::new_unique(), lamports: 1,
-                       data: vec![0u8; 4], is_signer: false, is_writable: false };  // too short
+    let mut v = Acct {
+        key: Pubkey::new_unique(),
+        owner: Pubkey::new_unique(),
+        lamports: 1,
+        data: vec![0u8; 4],
+        is_signer: false,
+        is_writable: false,
+    }; // too short
     let accts = [v.info()];
-    assert_eq!(DiscOnly::validate(&accts, &[], &any_pid()),
-               Err(VAError::WrongDiscriminator { field: "vault" }));
+    assert_eq!(
+        DiscOnly::validate(&accts, &[], &any_pid()),
+        Err(VAError::WrongDiscriminator { field: "vault" })
+    );
 }
 
 #[derive(borsh::BorshSerialize, borsh::BorshDeserialize, verified_anchor_macros::AccountData)]
@@ -342,8 +506,14 @@ struct Vault2 {
 #[test]
 fn account_data_derive_computes_anchor_discriminator() {
     let expected = disc("Vault2"); // disc() from the M6 helper already in behavior.rs
-    assert_eq!(<Vault2 as verified_anchor::AccountData>::DISCRIMINATOR, expected);
-    let v = Vault2 { authority: solana_program::pubkey::Pubkey::new_from_array([7u8; 32]), amount: 42 };
+    assert_eq!(
+        <Vault2 as verified_anchor::AccountData>::DISCRIMINATOR,
+        expected
+    );
+    let v = Vault2 {
+        authority: solana_program::pubkey::Pubkey::new_from_array([7u8; 32]),
+        amount: 42,
+    };
     let bytes = borsh::to_vec(&v).unwrap();
     let v2: Vault2 = borsh::from_slice(&bytes).unwrap();
     assert_eq!(v2.amount, 42);
@@ -372,7 +542,7 @@ fn try_accounts_deserializes_typed_data() {
     data.extend(borsh::to_vec(&v).unwrap());
     let mut a = Acct {
         key: Pubkey::new_unique(),
-        owner: crate::ID,   // satisfies Account<T>'s implied owner=crate::ID
+        owner: crate::ID, // satisfies Account<T>'s implied owner=crate::ID
         lamports: 1,
         data,
         is_signer: false,
@@ -382,7 +552,10 @@ fn try_accounts_deserializes_typed_data() {
     let result = <VaultDataStruct as Accounts>::try_accounts(&crate::ID, &accts, &[]);
     let (parsed, _bumps) = result.expect("try_accounts should succeed with valid disc + payload");
     assert_eq!(parsed.vault.data.amount, 999);
-    assert_eq!(parsed.vault.data.authority, Pubkey::new_from_array([7u8; 32]));
+    assert_eq!(
+        parsed.vault.data.authority,
+        Pubkey::new_from_array([7u8; 32])
+    );
 }
 
 #[test]
@@ -428,7 +601,7 @@ fn system_account_accepts_system_owner() {
 fn system_account_rejects_non_system_owner() {
     let mut a = Acct {
         key: Pubkey::new_unique(),
-        owner: Pubkey::new_unique(),   // not system program
+        owner: Pubkey::new_unique(), // not system program
         lamports: 1,
         data: vec![],
         is_signer: false,
@@ -448,11 +621,20 @@ struct ProgField<'info> {
 
 #[test]
 fn program_accepts_executable_with_correct_key() {
-    let key = solana_program::system_program::ID;   // matches System::ID
+    let key = solana_program::system_program::ID; // matches System::ID
     let owner = Pubkey::new_unique();
     let mut lamports = 1u64;
     let mut data: Vec<u8> = vec![];
-    let info = AccountInfo::new(&key, false, false, &mut lamports, &mut data, &owner, true, 0);
+    let info = AccountInfo::new(
+        &key,
+        false,
+        false,
+        &mut lamports,
+        &mut data,
+        &owner,
+        true,
+        0,
+    );
     let accts = [info];
     assert_eq!(ProgField::validate(&accts, &[], &any_pid()), Ok(()));
 }
@@ -464,7 +646,16 @@ fn program_rejects_non_executable() {
     let mut lamports = 1u64;
     let mut data: Vec<u8> = vec![];
     // executable = false
-    let info = AccountInfo::new(&key, false, false, &mut lamports, &mut data, &owner, false, 0);
+    let info = AccountInfo::new(
+        &key,
+        false,
+        false,
+        &mut lamports,
+        &mut data,
+        &owner,
+        false,
+        0,
+    );
     let accts = [info];
     assert_eq!(
         ProgField::validate(&accts, &[], &any_pid()),
@@ -474,11 +665,20 @@ fn program_rejects_non_executable() {
 
 #[test]
 fn program_rejects_wrong_key() {
-    let wrong_key = Pubkey::new_unique();   // not system_program::ID
+    let wrong_key = Pubkey::new_unique(); // not system_program::ID
     let owner = Pubkey::new_unique();
     let mut lamports = 1u64;
     let mut data: Vec<u8> = vec![];
-    let info = AccountInfo::new(&wrong_key, false, false, &mut lamports, &mut data, &owner, true, 0);
+    let info = AccountInfo::new(
+        &wrong_key,
+        false,
+        false,
+        &mut lamports,
+        &mut data,
+        &owner,
+        true,
+        0,
+    );
     let accts = [info];
     assert_eq!(
         ProgField::validate(&accts, &[], &any_pid()),
@@ -498,7 +698,14 @@ fn bumps_struct_carries_canonical_bump() {
     let program_id = Pubkey::new_unique();
     let arg = [1u8, 2, 3, 4];
     let (pda, expected_bump) = Pubkey::find_program_address(&[b"vault", &arg], &program_id);
-    let mut a = Acct { key: pda, owner: Pubkey::new_unique(), lamports: 1, data: vec![], is_signer: false, is_writable: false };
+    let mut a = Acct {
+        key: pda,
+        owner: Pubkey::new_unique(),
+        lamports: 1,
+        data: vec![],
+        is_signer: false,
+        is_writable: false,
+    };
     let accts = [a.info()];
     let (_struct, bumps) = <WithPda as Accounts>::try_accounts(&program_id, &accts, &arg).unwrap();
     assert_eq!(bumps.pda, expected_bump);
@@ -538,7 +745,10 @@ fn execute_lifecycle_rejects_short_accounts() {
     // return NotEnoughAccounts (mirroring the Lean none-safety), not panic on an OOB index.
     assert_eq!(
         LifecycleGuard::execute_lifecycle(&[], &any_pid(), 0),
-        Err(VAError::NotEnoughAccounts { expected: 2, got: 0 })
+        Err(VAError::NotEnoughAccounts {
+            expected: 2,
+            got: 0
+        })
     );
 }
 
@@ -556,16 +766,36 @@ struct WithAddr<'info> {
 
 // Note: AccountInfo::new last-but-one bool is `executable`.
 fn make_info_exec(a: &mut Acct, executable: bool) -> AccountInfo {
-    AccountInfo::new(&a.key, a.is_signer, a.is_writable,
-        &mut a.lamports, &mut a.data, &a.owner, executable, 0)
+    AccountInfo::new(
+        &a.key,
+        a.is_signer,
+        a.is_writable,
+        &mut a.lamports,
+        &mut a.data,
+        &a.owner,
+        executable,
+        0,
+    )
 }
 
 #[test]
 fn address_and_executable_accept_valid() {
-    let mut cfg = Acct { key: EXPECTED_ID, owner: Pubkey::new_unique(), lamports: 1,
-                         data: vec![], is_signer: false, is_writable: false };
-    let mut prog = Acct { key: Pubkey::new_unique(), owner: Pubkey::new_unique(), lamports: 1,
-                          data: vec![], is_signer: false, is_writable: false };
+    let mut cfg = Acct {
+        key: EXPECTED_ID,
+        owner: Pubkey::new_unique(),
+        lamports: 1,
+        data: vec![],
+        is_signer: false,
+        is_writable: false,
+    };
+    let mut prog = Acct {
+        key: Pubkey::new_unique(),
+        owner: Pubkey::new_unique(),
+        lamports: 1,
+        data: vec![],
+        is_signer: false,
+        is_writable: false,
+    };
     let cfg_info = make_info_exec(&mut cfg, false);
     let prog_info = make_info_exec(&mut prog, true);
     let accts = [cfg_info, prog_info];
@@ -574,39 +804,73 @@ fn address_and_executable_accept_valid() {
 
 #[test]
 fn address_rejects_wrong_key() {
-    let wrong_key = Pubkey::new_unique();  // not EXPECTED_ID
-    let mut cfg = Acct { key: wrong_key, owner: Pubkey::new_unique(), lamports: 1,
-                         data: vec![], is_signer: false, is_writable: false };
-    let mut prog = Acct { key: Pubkey::new_unique(), owner: Pubkey::new_unique(), lamports: 1,
-                          data: vec![], is_signer: false, is_writable: false };
+    let wrong_key = Pubkey::new_unique(); // not EXPECTED_ID
+    let mut cfg = Acct {
+        key: wrong_key,
+        owner: Pubkey::new_unique(),
+        lamports: 1,
+        data: vec![],
+        is_signer: false,
+        is_writable: false,
+    };
+    let mut prog = Acct {
+        key: Pubkey::new_unique(),
+        owner: Pubkey::new_unique(),
+        lamports: 1,
+        data: vec![],
+        is_signer: false,
+        is_writable: false,
+    };
     let cfg_info = make_info_exec(&mut cfg, false);
     let prog_info = make_info_exec(&mut prog, true);
     let accts = [cfg_info, prog_info];
-    assert_eq!(WithAddr::validate(&accts, &[], &any_pid()),
-               Err(VAError::WrongAddress { field: "cfg" }));
+    assert_eq!(
+        WithAddr::validate(&accts, &[], &any_pid()),
+        Err(VAError::WrongAddress { field: "cfg" })
+    );
 }
 
 #[test]
 fn executable_rejects_non_executable() {
-    let mut cfg = Acct { key: EXPECTED_ID, owner: Pubkey::new_unique(), lamports: 1,
-                         data: vec![], is_signer: false, is_writable: false };
-    let mut prog = Acct { key: Pubkey::new_unique(), owner: Pubkey::new_unique(), lamports: 1,
-                          data: vec![], is_signer: false, is_writable: false };
+    let mut cfg = Acct {
+        key: EXPECTED_ID,
+        owner: Pubkey::new_unique(),
+        lamports: 1,
+        data: vec![],
+        is_signer: false,
+        is_writable: false,
+    };
+    let mut prog = Acct {
+        key: Pubkey::new_unique(),
+        owner: Pubkey::new_unique(),
+        lamports: 1,
+        data: vec![],
+        is_signer: false,
+        is_writable: false,
+    };
     let cfg_info = make_info_exec(&mut cfg, false);
-    let prog_info = make_info_exec(&mut prog, false);  // not executable
+    let prog_info = make_info_exec(&mut prog, false); // not executable
     let accts = [cfg_info, prog_info];
-    assert_eq!(WithAddr::validate(&accts, &[], &any_pid()),
-               Err(VAError::NotExecutable { field: "prog" }));
+    assert_eq!(
+        WithAddr::validate(&accts, &[], &any_pid()),
+        Err(VAError::NotExecutable { field: "prog" })
+    );
 }
 
 #[verified_anchor::account]
-pub struct VaultAttr { pub authority: solana_program::pubkey::Pubkey, pub amount: u64 }
+pub struct VaultAttr {
+    pub authority: solana_program::pubkey::Pubkey,
+    pub amount: u64,
+}
 
 #[test]
 fn account_attribute_implies_borsh_and_discriminator() {
     let d = <VaultAttr as verified_anchor::AccountData>::DISCRIMINATOR;
     assert_eq!(d, disc("VaultAttr"));
-    let v = VaultAttr { authority: solana_program::pubkey::Pubkey::new_from_array([7u8; 32]), amount: 42 };
+    let v = VaultAttr {
+        authority: solana_program::pubkey::Pubkey::new_from_array([7u8; 32]),
+        amount: 42,
+    };
     let bytes = borsh::to_vec(&v).unwrap();
     let v2: VaultAttr = borsh::from_slice(&bytes).unwrap();
     assert_eq!(v2.amount, 42);
@@ -680,7 +944,14 @@ struct OneMut<'info> {
 
 /// A writable account at a chosen key.
 fn writable_at(key: Pubkey) -> Acct {
-    Acct { key, owner: Pubkey::new_unique(), lamports: 1, data: vec![], is_signer: false, is_writable: true }
+    Acct {
+        key,
+        owner: Pubkey::new_unique(),
+        lamports: 1,
+        data: vec![],
+        is_signer: false,
+        is_writable: true,
+    }
 }
 
 #[test]
@@ -697,8 +968,13 @@ fn dup_mut_rejects_same_key() {
     let mut a = writable_at(dup);
     let mut b = writable_at(dup);
     let accts = [a.info(), b.info()];
-    assert_eq!(DupMut::validate(&accts, &[], &any_pid()),
-               Err(VAError::DuplicateAccount { field_a: "a", field_b: "b" }));
+    assert_eq!(
+        DupMut::validate(&accts, &[], &any_pid()),
+        Err(VAError::DuplicateAccount {
+            field_a: "a",
+            field_b: "b"
+        })
+    );
 }
 
 #[test]
@@ -716,8 +992,14 @@ fn one_mut_pair_has_no_distinct_obligation() {
     // a (mut) and b (read-only) share a key — only mut/mut pairs are checked, so this is fine.
     let dup = Pubkey::new_unique();
     let mut a = writable_at(dup);
-    let mut b = Acct { key: dup, owner: Pubkey::new_unique(), lamports: 1, data: vec![],
-                       is_signer: false, is_writable: false };
+    let mut b = Acct {
+        key: dup,
+        owner: Pubkey::new_unique(),
+        lamports: 1,
+        data: vec![],
+        is_signer: false,
+        is_writable: false,
+    };
     let accts = [a.info(), b.info()];
     assert_eq!(OneMut::validate(&accts, &[], &any_pid()), Ok(()));
 }
@@ -736,14 +1018,26 @@ struct ZeroGuard<'info> {
 
 fn acct_with_zeros() -> Acct {
     // 8 zero bytes — accepted by the `zero` constraint
-    Acct { key: Pubkey::new_unique(), owner: Pubkey::new_unique(), lamports: 1,
-           data: vec![0u8; 8], is_signer: false, is_writable: false }
+    Acct {
+        key: Pubkey::new_unique(),
+        owner: Pubkey::new_unique(),
+        lamports: 1,
+        data: vec![0u8; 8],
+        is_signer: false,
+        is_writable: false,
+    }
 }
 
 fn acct_with_nonzero_disc() -> Acct {
     // First byte non-zero — rejected by the `zero` constraint
-    Acct { key: Pubkey::new_unique(), owner: Pubkey::new_unique(), lamports: 1,
-           data: vec![1u8, 0, 0, 0, 0, 0, 0, 0], is_signer: false, is_writable: false }
+    Acct {
+        key: Pubkey::new_unique(),
+        owner: Pubkey::new_unique(),
+        lamports: 1,
+        data: vec![1u8, 0, 0, 0, 0, 0, 0, 0],
+        is_signer: false,
+        is_writable: false,
+    }
 }
 
 #[test]
@@ -766,8 +1060,14 @@ fn zero_rejects_non_zero_discriminator() {
 #[test]
 fn zero_rejects_short_data() {
     // Fewer than 8 bytes → also rejected (can't confirm all-zero prefix of length 8)
-    let mut a = Acct { key: Pubkey::new_unique(), owner: Pubkey::new_unique(), lamports: 1,
-                       data: vec![0u8; 4], is_signer: false, is_writable: false };
+    let mut a = Acct {
+        key: Pubkey::new_unique(),
+        owner: Pubkey::new_unique(),
+        lamports: 1,
+        data: vec![0u8; 4],
+        is_signer: false,
+        is_writable: false,
+    };
     let accts = [a.info()];
     assert_eq!(
         ZeroGuard::validate(&accts, &[], &any_pid()),
@@ -866,11 +1166,14 @@ fn has_one_rejects_mismatch_at_nonzero_offset() {
     let auth = Pubkey::new_unique();
     let mut v = acct_with_data(Pubkey::new_unique(), offset_vault_data(254, auth));
     v.owner = crate::ID;
-    let mut a = acct_with_data(Pubkey::new_unique(), vec![]);   // different key
+    let mut a = acct_with_data(Pubkey::new_unique(), vec![]); // different key
     let accts = [v.info(), a.info()];
     assert_eq!(
         CheckOffsetHasOne::validate(&accts, &[], &any_pid()),
-        Err(VAError::WrongHasOne { field: "vault", target: "authority" })
+        Err(VAError::WrongHasOne {
+            field: "vault",
+            target: "authority"
+        })
     );
 }
 
@@ -879,7 +1182,10 @@ fn lean_spec_carries_the_real_layout() {
     let s = CheckOffsetHasOne::lean_spec();
     assert!(s.contains("(\"bump\", Ty.u8)"), "spec was: {s}");
     assert!(s.contains("(\"authority\", Ty.pubkey)"), "spec was: {s}");
-    assert!(!s.contains("(\"authority\", 8)"), "spec still hardcodes offset 8: {s}");
+    assert!(
+        !s.contains("(\"authority\", 8)"),
+        "spec still hardcodes offset 8: {s}"
+    );
 }
 
 /// The build-time `has_one` guard keys off the field NAME being present in the descriptor, not
@@ -894,7 +1200,7 @@ struct LabelVault {
 
 fn label_vault_data(label: &str, authority: Pubkey) -> Vec<u8> {
     let mut d = <LabelVault as verified_anchor::AccountData>::DISCRIMINATOR.to_vec();
-    d.extend_from_slice(&(label.len() as u32).to_le_bytes());   // borsh String length prefix
+    d.extend_from_slice(&(label.len() as u32).to_le_bytes()); // borsh String length prefix
     d.extend_from_slice(label.as_bytes());
     d.extend_from_slice(authority.as_ref());
     d
@@ -910,7 +1216,10 @@ struct CheckLabelHasOne<'info> {
 #[test]
 fn has_one_locates_past_a_variable_width_field() {
     let auth = Pubkey::new_unique();
-    let mut v = acct_with_data(Pubkey::new_unique(), label_vault_data("a-long-ish-label", auth));
+    let mut v = acct_with_data(
+        Pubkey::new_unique(),
+        label_vault_data("a-long-ish-label", auth),
+    );
     v.owner = crate::ID;
     let mut a = acct_with_data(auth, vec![]);
     let accts = [v.info(), a.info()];
@@ -928,7 +1237,10 @@ fn has_one_rejects_mismatch_past_a_variable_width_field() {
     let accts = [v.info(), a.info()];
     assert_eq!(
         CheckLabelHasOne::validate(&accts, &[], &any_pid()),
-        Err(VAError::WrongHasOne { field: "vault", target: "authority" })
+        Err(VAError::WrongHasOne {
+            field: "vault",
+            target: "authority"
+        })
     );
 }
 
@@ -965,7 +1277,10 @@ fn seeds_resolve_a_named_string_arg() {
     let (expected, _bump) = Pubkey::find_program_address(&[b"vault", b"alice"], &pid);
     let mut p = acct_with_data(expected, vec![]);
     let accts = [p.info()];
-    assert_eq!(SeedFromArg::validate(&accts, &borsh_string_arg("alice"), &pid), Ok(()));
+    assert_eq!(
+        SeedFromArg::validate(&accts, &borsh_string_arg("alice"), &pid),
+        Ok(())
+    );
 }
 
 #[test]
@@ -1026,7 +1341,10 @@ fn arg_bytes_fixed_size_uses_the_whole_encoding() {
     let (expected, _) = Pubkey::find_program_address(&[b"vault", &[1, 0, 0, 0, 0, 0, 0, 0]], &pid);
     let mut p = acct_with_data(expected, vec![]);
     let accts = [p.info()];
-    assert_eq!(ArgFixedSeed::validate(&accts, &LEAN_ARG_FIXTURE, &pid), Ok(()));
+    assert_eq!(
+        ArgFixedSeed::validate(&accts, &LEAN_ARG_FIXTURE, &pid),
+        Ok(())
+    );
 }
 
 /// THE POINT, and the top failure mode of this task. `label` is at offset 8 (after the u64),
@@ -1038,7 +1356,10 @@ fn arg_bytes_string_strips_the_length_prefix() {
     let (payload_only, _) = Pubkey::find_program_address(&[b"vault", &[104, 105]], &pid);
     let mut p = acct_with_data(payload_only, vec![]);
     let accts = [p.info()];
-    assert_eq!(ArgStringSeed::validate(&accts, &LEAN_ARG_FIXTURE, &pid), Ok(()));
+    assert_eq!(
+        ArgStringSeed::validate(&accts, &LEAN_ARG_FIXTURE, &pid),
+        Ok(())
+    );
 }
 
 /// The negative half of the parity claim: had we kept the Borsh framing (the natural mistake),
@@ -1154,7 +1475,8 @@ struct DepositAtOffset<'info> {
 fn numeric_arg_seed_derives_the_anchor_address() {
     let pid = any_pid();
     let amount: u64 = 42;
-    let (expected, _) = Pubkey::find_program_address(&[b"vault", amount.to_le_bytes().as_ref()], &pid);
+    let (expected, _) =
+        Pubkey::find_program_address(&[b"vault", amount.to_le_bytes().as_ref()], &pid);
     let mut p = acct_with_data(expected, vec![]);
     let accts = [p.info()];
     let data = amount.to_le_bytes().to_vec();
@@ -1166,10 +1488,14 @@ fn numeric_arg_seed_derives_the_anchor_address() {
 fn numeric_arg_seed_accepts_the_reference_spelling() {
     let pid = any_pid();
     let amount: u64 = 42;
-    let (expected, _) = Pubkey::find_program_address(&[b"vault", amount.to_le_bytes().as_ref()], &pid);
+    let (expected, _) =
+        Pubkey::find_program_address(&[b"vault", amount.to_le_bytes().as_ref()], &pid);
     let mut p = acct_with_data(expected, vec![]);
     let accts = [p.info()];
-    assert_eq!(DepositRef::validate(&accts, &amount.to_le_bytes(), &pid), Ok(()));
+    assert_eq!(
+        DepositRef::validate(&accts, &amount.to_le_bytes(), &pid),
+        Ok(())
+    );
 }
 
 /// Negative: a different amount is a different PDA. Without this the test above would pass for
@@ -1177,7 +1503,8 @@ fn numeric_arg_seed_accepts_the_reference_spelling() {
 #[test]
 fn numeric_arg_seed_rejects_a_different_amount() {
     let pid = any_pid();
-    let (expected, _) = Pubkey::find_program_address(&[b"vault", 42u64.to_le_bytes().as_ref()], &pid);
+    let (expected, _) =
+        Pubkey::find_program_address(&[b"vault", 42u64.to_le_bytes().as_ref()], &pid);
     let mut p = acct_with_data(expected, vec![]);
     let accts = [p.info()];
     assert_eq!(
@@ -1208,10 +1535,11 @@ fn numeric_arg_seed_is_little_endian() {
 fn numeric_arg_seed_at_a_nonzero_offset() {
     let pid = any_pid();
     let amount: u64 = 7;
-    let (expected, _) = Pubkey::find_program_address(&[b"vault", amount.to_le_bytes().as_ref()], &pid);
+    let (expected, _) =
+        Pubkey::find_program_address(&[b"vault", amount.to_le_bytes().as_ref()], &pid);
     let mut p = acct_with_data(expected, vec![]);
     let accts = [p.info()];
-    let mut data = 3u16.to_le_bytes().to_vec();   // idx, declared first
+    let mut data = 3u16.to_le_bytes().to_vec(); // idx, declared first
     data.extend_from_slice(&amount.to_le_bytes());
     assert_eq!(DepositAtOffset::validate(&accts, &data, &pid), Ok(()));
 }
@@ -1220,7 +1548,8 @@ fn numeric_arg_seed_at_a_nonzero_offset() {
 #[test]
 fn numeric_arg_seed_overrun_fails_closed() {
     let pid = any_pid();
-    let (expected, _) = Pubkey::find_program_address(&[b"vault", 42u64.to_le_bytes().as_ref()], &pid);
+    let (expected, _) =
+        Pubkey::find_program_address(&[b"vault", 42u64.to_le_bytes().as_ref()], &pid);
     let mut p = acct_with_data(expected, vec![]);
     let accts = [p.info()];
     assert_eq!(
@@ -1279,9 +1608,10 @@ fn account_key_as_ref_seed_derives_the_anchor_address() {
 #[test]
 fn account_key_as_ref_seed_rejects_a_different_key() {
     let pid = any_pid();
-    let (expected, _) = Pubkey::find_program_address(&[b"vault", Pubkey::new_unique().as_ref()], &pid);
+    let (expected, _) =
+        Pubkey::find_program_address(&[b"vault", Pubkey::new_unique().as_ref()], &pid);
     let mut p = acct_with_data(expected, vec![]);
-    let mut u = acct_with_data(Pubkey::new_unique(), vec![]);   // a DIFFERENT user account
+    let mut u = acct_with_data(Pubkey::new_unique(), vec![]); // a DIFFERENT user account
     let accts = [p.info(), u.info()];
     assert_eq!(
         KeyAsRefSeed::validate(&accts, &[], &pid),
@@ -1298,13 +1628,17 @@ fn pubkey_arg_seed_derives_the_anchor_address() {
     let (expected, _) = Pubkey::find_program_address(&[b"vault", authority.as_ref()], &pid);
     let mut p = acct_with_data(expected, vec![]);
     let accts = [p.info()];
-    assert_eq!(PubkeyArgSeed::validate(&accts, authority.as_ref(), &pid), Ok(()));
+    assert_eq!(
+        PubkeyArgSeed::validate(&accts, authority.as_ref(), &pid),
+        Ok(())
+    );
 }
 
 #[test]
 fn pubkey_arg_seed_rejects_a_different_authority() {
     let pid = any_pid();
-    let (expected, _) = Pubkey::find_program_address(&[b"vault", Pubkey::new_unique().as_ref()], &pid);
+    let (expected, _) =
+        Pubkey::find_program_address(&[b"vault", Pubkey::new_unique().as_ref()], &pid);
     let mut p = acct_with_data(expected, vec![]);
     let accts = [p.info()];
     assert_eq!(
@@ -1416,7 +1750,10 @@ struct CheckKeyExpr<'info> {
 fn constraint_expr_compares_keys() {
     let mut a = acct_with_data(Pubkey::new_unique(), vec![]);
     let mut b = acct_with_data(Pubkey::new_unique(), vec![]);
-    assert_eq!(CheckKeyExpr::validate(&[a.info(), b.info()], &[], &any_pid()), Ok(()));
+    assert_eq!(
+        CheckKeyExpr::validate(&[a.info(), b.info()], &[], &any_pid()),
+        Ok(())
+    );
 
     let k = Pubkey::new_unique();
     let mut c = acct_with_data(k, vec![]);
@@ -1471,7 +1808,10 @@ fn strict_or_rejects_when_right_operand_is_unevaluable() {
 fn strict_or_accepts_once_the_right_operand_is_readable() {
     let mut u = acct(true, false);
     let accts = [u.info()];
-    assert_eq!(StrictOr::validate(&accts, &7u64.to_le_bytes(), &any_pid()), Ok(()));
+    assert_eq!(
+        StrictOr::validate(&accts, &7u64.to_le_bytes(), &any_pid()),
+        Ok(())
+    );
 }
 
 #[derive(VerifiedAccounts)]
@@ -1504,7 +1844,10 @@ struct EvaluableOr<'info> {
 fn evaluable_or_still_accepts_and_rejects_normally() {
     let mut a = acct(false, false);
     let mut b = acct(true, false);
-    assert_eq!(EvaluableOr::validate(&[a.info(), b.info()], &[], &any_pid()), Ok(()));
+    assert_eq!(
+        EvaluableOr::validate(&[a.info(), b.info()], &[], &any_pid()),
+        Ok(())
+    );
     let mut c = acct(false, false);
     let mut d = acct(false, false);
     assert!(EvaluableOr::validate(&[c.info(), d.info()], &[], &any_pid()).is_err());
@@ -1555,7 +1898,10 @@ fn constraint_expr_reads_an_instruction_argument() {
     // `Account<'info, T>` implies `owner = crate::ID`; without it validate stops before the expr.
     v.owner = crate::ID;
     let accts = [v.info()];
-    assert_eq!(ArgExpr::validate(&accts, &1000u64.to_le_bytes(), &any_pid()), Ok(()));
+    assert_eq!(
+        ArgExpr::validate(&accts, &1000u64.to_le_bytes(), &any_pid()),
+        Ok(())
+    );
     assert!(ArgExpr::validate(&accts, &1001u64.to_le_bytes(), &any_pid()).is_err());
     // Truncated instruction data: the argument cannot be located → `none` → fail closed.
     assert!(ArgExpr::validate(&accts, &[], &any_pid()).is_err());
@@ -1585,15 +1931,24 @@ fn constraint_violation_names_the_expression() {
     let accts = [v.info(), u.info()];
     assert_eq!(
         CheckExpr::validate(&accts, &[], &any_pid()),
-        Err(VAError::ConstraintViolated { field: "vault", expr: "vault.amount >= 1000" })
+        Err(VAError::ConstraintViolated {
+            field: "vault",
+            expr: "vault.amount >= 1000"
+        })
     );
 }
 
 /// The `Display` arm, and the distinct `ProgramError` custom code.
 #[test]
 fn constraint_violated_renders_and_maps_to_a_distinct_code() {
-    let e = VAError::ConstraintViolated { field: "vault", expr: "vault.amount >= 1000" };
-    assert_eq!(e.to_string(), "account `vault` violates constraint `vault.amount >= 1000`");
+    let e = VAError::ConstraintViolated {
+        field: "vault",
+        expr: "vault.amount >= 1000",
+    };
+    assert_eq!(
+        e.to_string(),
+        "account `vault` violates constraint `vault.amount >= 1000`"
+    );
     assert_eq!(
         solana_program::program_error::ProgramError::from(e),
         solana_program::program_error::ProgramError::Custom(18)
@@ -1608,7 +1963,10 @@ fn constraint_violation_renders_method_calls() {
     let mut d = acct_with_data(k, vec![]);
     assert_eq!(
         CheckKeyExpr::validate(&[c.info(), d.info()], &[], &any_pid()),
-        Err(VAError::ConstraintViolated { field: "a", expr: "a.key() != b.key()" })
+        Err(VAError::ConstraintViolated {
+            field: "a",
+            expr: "a.key() != b.key()"
+        })
     );
 }
 
@@ -1660,15 +2018,24 @@ fn signed_ne_unsigned_literal_is_not_a_tautology() {
     let mut zero = signed_vault(0, 0);
     assert_eq!(
         SignedNeZero::validate(&[zero.info()], &[], &any_pid()),
-        Err(VAError::ConstraintViolated { field: "vault", expr: "vault.delta != 0" }),
+        Err(VAError::ConstraintViolated {
+            field: "vault",
+            expr: "vault.delta != 0"
+        }),
         "`delta != 0` MUST reject a zero delta. Constructor equality made this ACCEPT for every \
          delta — a security check silently disabled."
     );
     // …and still accepts a genuinely non-zero delta, in both signs.
     let mut neg = signed_vault(-1, 0);
-    assert_eq!(SignedNeZero::validate(&[neg.info()], &[], &any_pid()), Ok(()));
+    assert_eq!(
+        SignedNeZero::validate(&[neg.info()], &[], &any_pid()),
+        Ok(())
+    );
     let mut pos = signed_vault(7, 0);
-    assert_eq!(SignedNeZero::validate(&[pos.info()], &[], &any_pid()), Ok(()));
+    assert_eq!(
+        SignedNeZero::validate(&[pos.info()], &[], &any_pid()),
+        Ok(())
+    );
 }
 
 // `delta == 0` — the mirror-image brick. Must now ACCEPT when `delta == 0`.
@@ -1681,7 +2048,10 @@ struct SignedEqZero<'info> {
 #[test]
 fn signed_eq_unsigned_literal_is_not_a_brick() {
     let mut zero = signed_vault(0, 0);
-    assert_eq!(SignedEqZero::validate(&[zero.info()], &[], &any_pid()), Ok(()));
+    assert_eq!(
+        SignedEqZero::validate(&[zero.info()], &[], &any_pid()),
+        Ok(())
+    );
     let mut neg = signed_vault(-1, 0);
     assert!(SignedEqZero::validate(&[neg.info()], &[], &any_pid()).is_err());
 }
@@ -1696,7 +2066,10 @@ struct SignedLtZero<'info> {
 #[test]
 fn signed_ordering_against_an_unsigned_literal_evaluates() {
     let mut neg = signed_vault(-1, 0);
-    assert_eq!(SignedLtZero::validate(&[neg.info()], &[], &any_pid()), Ok(()));
+    assert_eq!(
+        SignedLtZero::validate(&[neg.info()], &[], &any_pid()),
+        Ok(())
+    );
     let mut zero = signed_vault(0, 0);
     assert!(SignedLtZero::validate(&[zero.info()], &[], &any_pid()).is_err());
     let mut pos = signed_vault(5, 0);
@@ -1714,13 +2087,19 @@ struct SignedMixedFields<'info> {
 #[test]
 fn mixed_signedness_field_comparison_evaluates() {
     let mut a = signed_vault(-1, 3); // -1 < 3
-    assert_eq!(SignedMixedFields::validate(&[a.info()], &[], &any_pid()), Ok(()));
+    assert_eq!(
+        SignedMixedFields::validate(&[a.info()], &[], &any_pid()),
+        Ok(())
+    );
     let mut b = signed_vault(5, 3); // 5 < 3 is false
     assert!(SignedMixedFields::validate(&[b.info()], &[], &any_pid()).is_err());
     // THE BOUNDARY: a u64 whose value exceeds i64 range is still ordered correctly against a
     // negative i64. (`u128`/`i128` in the generated code, but the same widening question.)
     let mut c = signed_vault(-1, u64::MAX);
-    assert_eq!(SignedMixedFields::validate(&[c.info()], &[], &any_pid()), Ok(()));
+    assert_eq!(
+        SignedMixedFields::validate(&[c.info()], &[], &any_pid()),
+        Ok(())
+    );
 }
 
 // A `u128` field beyond `i128::MAX` — the one place the generated Rust needs a guard Lean does
@@ -1785,7 +2164,10 @@ fn escape_hatch_compiles_and_is_listed_as_unproven() {
 #[test]
 fn escape_hatch_omits_the_check_from_the_lean_spec() {
     let s = CheckEscapeHatch::lean_spec();
-    assert!(!s.contains("Constraint.expr"), "unproven check leaked into the spec: {s}");
+    assert!(
+        !s.contains("Constraint.expr"),
+        "unproven check leaked into the spec: {s}"
+    );
 }
 
 /// The point of the whole task: the hatch must RUN. A hatch that compiles but never executes
@@ -1803,7 +2185,10 @@ fn escape_hatch_runs_in_try_accounts() {
     let accts2 = [b.info()];
     assert!(matches!(
         CheckEscapeHatch::try_accounts(&any_pid(), &accts2, &[]),
-        Err(VAError::ConstraintViolated { field: "a", expr: "is_blessed(a.key)" })
+        Err(VAError::ConstraintViolated {
+            field: "a",
+            expr: "is_blessed(a.key)"
+        })
     ));
 }
 
@@ -1813,7 +2198,10 @@ fn escape_hatch_runs_in_try_accounts() {
 #[test]
 fn escape_hatch_is_not_enforced_by_validate_alone() {
     let mut b = acct_with_data(Pubkey::new_from_array([2u8; 32]), vec![]);
-    assert_eq!(CheckEscapeHatch::validate(&[b.info()], &[], &any_pid()), Ok(()));
+    assert_eq!(
+        CheckEscapeHatch::validate(&[b.info()], &[], &any_pid()),
+        Ok(())
+    );
 }
 
 // `a.key() == crate::ID` is the single most common real-Anchor `constraint` idiom, and — like
@@ -1828,7 +2216,10 @@ struct CheckKeyEqCrateId<'info> {
 
 #[test]
 fn key_eq_crate_id_is_listed_as_unproven() {
-    assert_eq!(CheckKeyEqCrateId::UNPROVEN_CHECKS, &["a.key() == crate::ID"]);
+    assert_eq!(
+        CheckKeyEqCrateId::UNPROVEN_CHECKS,
+        &["a.key() == crate::ID"]
+    );
 }
 
 #[test]
@@ -1840,7 +2231,10 @@ fn key_eq_crate_id_runs_in_try_accounts() {
     let mut other = acct_with_data(Pubkey::new_unique(), vec![]);
     assert!(matches!(
         CheckKeyEqCrateId::try_accounts(&any_pid(), &[other.info()], &[]),
-        Err(VAError::ConstraintViolated { field: "a", expr: "a.key() == crate::ID" })
+        Err(VAError::ConstraintViolated {
+            field: "a",
+            expr: "a.key() == crate::ID"
+        })
     ));
 }
 
@@ -1871,14 +2265,20 @@ fn mixed_struct_enforces_both_halves() {
     let mut b = acct_with_data(Pubkey::new_from_array(blessed), vec![]);
     assert!(matches!(
         CheckMixed::try_accounts(&any_pid(), &[a.info(), b.info()], &[]),
-        Err(VAError::ConstraintViolated { field: "a", expr: "a.key() != b.key()" })
+        Err(VAError::ConstraintViolated {
+            field: "a",
+            expr: "a.key() != b.key()"
+        })
     ));
     // unproven half violated (a is not blessed) → rejected by the hatch.
     let mut c = acct_with_data(Pubkey::new_from_array([2u8; 32]), vec![]);
     let mut d = acct_with_data(Pubkey::new_unique(), vec![]);
     assert!(matches!(
         CheckMixed::try_accounts(&any_pid(), &[c.info(), d.info()], &[]),
-        Err(VAError::ConstraintViolated { field: "a", expr: "is_blessed(a.key)" })
+        Err(VAError::ConstraintViolated {
+            field: "a",
+            expr: "is_blessed(a.key)"
+        })
     ));
     // both satisfied → accepted.
     let mut e = acct_with_data(Pubkey::new_from_array(blessed), vec![]);
@@ -1938,7 +2338,10 @@ fn unlocatable_field_is_listed_as_unproven() {
 #[test]
 fn unlocatable_field_omits_the_check_from_the_lean_spec() {
     let s = CheckUnlocatable::lean_spec();
-    assert!(!s.contains("Constraint.expr"), "unproven check leaked into the spec: {s}");
+    assert!(
+        !s.contains("Constraint.expr"),
+        "unproven check leaked into the spec: {s}"
+    );
 }
 
 /// The point of this whole block: the const-selected fallback must RUN, both ways.
@@ -1955,7 +2358,10 @@ fn unlocatable_field_check_runs_in_try_accounts() {
     bad.owner = crate::ID;
     assert!(matches!(
         CheckUnlocatable::try_accounts(&any_pid(), &[bad.info()], &[]),
-        Err(VAError::ConstraintViolated { field: "vault", expr: "vault.amount >= 1000" })
+        Err(VAError::ConstraintViolated {
+            field: "vault",
+            expr: "vault.amount >= 1000"
+        })
     ));
 }
 
@@ -1966,7 +2372,10 @@ fn unlocatable_field_check_runs_in_try_accounts() {
 fn unlocatable_field_is_not_enforced_by_validate_alone() {
     let mut bad = acct_with_data(Pubkey::new_unique(), name_vault_data([0u8; 32], 999));
     bad.owner = crate::ID;
-    assert_eq!(CheckUnlocatable::validate(&[bad.info()], &[], &any_pid()), Ok(()));
+    assert_eq!(
+        CheckUnlocatable::validate(&[bad.info()], &[], &any_pid()),
+        Ok(())
+    );
 }
 
 // ── M10 Task 15b: `map_ty` gains a `[T; N]` arm ─────────────────────────────────────────────
@@ -2056,7 +2465,10 @@ fn array_field_equality_is_reported_unproven() {
 #[test]
 fn array_field_equality_omits_the_check_from_the_lean_spec() {
     let s = ArrayEq::lean_spec();
-    assert!(!s.contains("Constraint.expr"), "unreadable-field check leaked into the spec: {s}");
+    assert!(
+        !s.contains("Constraint.expr"),
+        "unreadable-field check leaked into the spec: {s}"
+    );
 }
 
 /// The heart of C1: the check must still be ENFORCED, both ways. Before the fix this returned
@@ -2078,7 +2490,10 @@ fn array_field_equality_is_enforced_through_try_accounts() {
     bad.owner = crate::ID;
     assert!(matches!(
         ArrayEq::try_accounts(&any_pid(), &[bad.info()], &instr),
-        Err(VAError::ConstraintViolated { field: "vault", expr: "vault.root == root" })
+        Err(VAError::ConstraintViolated {
+            field: "vault",
+            expr: "vault.root == root"
+        })
     ));
 }
 
@@ -2125,7 +2540,10 @@ fn string_field_equality_is_enforced_through_try_accounts() {
     bad.owner = crate::ID;
     assert!(matches!(
         StringEq::try_accounts(&any_pid(), &[bad.info()], &instr),
-        Err(VAError::ConstraintViolated { field: "vault", expr: "vault.label == label" })
+        Err(VAError::ConstraintViolated {
+            field: "vault",
+            expr: "vault.label == label"
+        })
     ));
 }
 
@@ -2146,14 +2564,20 @@ fn a_scalar_field_after_an_array_is_still_proven() {
         ScalarStillProven::UNPROVEN_CHECKS
     );
     let s = ScalarStillProven::lean_spec();
-    assert!(s.contains("Constraint.expr"), "proven check missing from the spec: {s}");
+    assert!(
+        s.contains("Constraint.expr"),
+        "proven check missing from the spec: {s}"
+    );
 }
 
 #[test]
 fn a_scalar_field_after_an_array_is_enforced_by_the_proven_core() {
     let mut good = acct_with_data(Pubkey::new_unique(), root_vault_data([0u8; 32], 1000));
     good.owner = crate::ID;
-    assert_eq!(ScalarStillProven::validate(&[good.info()], &[], &any_pid()), Ok(()));
+    assert_eq!(
+        ScalarStillProven::validate(&[good.info()], &[], &any_pid()),
+        Ok(())
+    );
 
     let mut bad = acct_with_data(Pubkey::new_unique(), root_vault_data([0u8; 32], 999));
     bad.owner = crate::ID;
@@ -2211,7 +2635,10 @@ fn pubkey_ordering_is_reported_unproven() {
 #[test]
 fn pubkey_ordering_omits_the_check_from_the_lean_spec() {
     let s = MintOrder::lean_spec();
-    assert!(!s.contains("Constraint.expr"), "unorderable check leaked into the spec: {s}");
+    assert!(
+        !s.contains("Constraint.expr"),
+        "unorderable check leaked into the spec: {s}"
+    );
 }
 
 /// The heart of the twin: still ENFORCED, both ways. Before the fix the accepting direction
@@ -2229,7 +2656,10 @@ fn pubkey_ordering_is_enforced_through_try_accounts() {
     bad.owner = crate::ID;
     assert!(matches!(
         MintOrder::try_accounts(&any_pid(), &[bad.info()], &[]),
-        Err(VAError::ConstraintViolated { field: "pool", expr: "pool.mint_a < pool.mint_b" })
+        Err(VAError::ConstraintViolated {
+            field: "pool",
+            expr: "pool.mint_a < pool.mint_b"
+        })
     ));
 }
 
@@ -2252,7 +2682,10 @@ fn pubkey_equality_is_still_proven() {
         PubkeyEqStillProven::UNPROVEN_CHECKS
     );
     let s = PubkeyEqStillProven::lean_spec();
-    assert!(s.contains("Constraint.expr"), "proven Pubkey equality missing from the spec: {s}");
+    assert!(
+        s.contains("Constraint.expr"),
+        "proven Pubkey equality missing from the spec: {s}"
+    );
 }
 
 #[test]
@@ -2299,7 +2732,10 @@ fn numeric_ordering_on_the_pool_is_enforced_by_the_proven_core() {
     let (lo, hi) = ordered_mints();
     let mut good = acct_with_data(Pubkey::new_unique(), pool_data(lo, hi, 10000, false));
     good.owner = crate::ID;
-    assert_eq!(PoolScalarsStillProven::validate(&[good.info()], &[], &any_pid()), Ok(()));
+    assert_eq!(
+        PoolScalarsStillProven::validate(&[good.info()], &[], &any_pid()),
+        Ok(())
+    );
 
     let mut bad = acct_with_data(Pubkey::new_unique(), pool_data(lo, hi, 10001, false));
     bad.owner = crate::ID;
@@ -2334,6 +2770,9 @@ fn key_ordering_between_two_accounts_is_unproven_but_enforced() {
     let (mut x, mut y) = (acct_with_data(hi, vec![]), acct_with_data(lo, vec![]));
     assert!(matches!(
         KeyOrder::try_accounts(&any_pid(), &[x.info(), y.info()], &[]),
-        Err(VAError::ConstraintViolated { field: "a", expr: "a.key() < b.key()" })
+        Err(VAError::ConstraintViolated {
+            field: "a",
+            expr: "a.key() < b.key()"
+        })
     ));
 }
