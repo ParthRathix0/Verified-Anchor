@@ -122,6 +122,22 @@ impl From<VAError> for solana_program::program_error::ProgramError {
 
 /// Implemented by `#[derive(VerifiedAccounts)]`. Validation is positional over the
 /// runtime account slice (index = field declaration order), matching the Lean `Ctx`.
+///
+/// **THE PROVEN CORE ONLY (M10 Task 13).** `validate` runs before Borsh deserialisation, so it
+/// can enforce nothing that reads a deserialised account's fields as Rust — that rules out
+/// EVERY `constraint = <expr>` the macro could not compile into the byte-level sublanguage:
+/// an out-of-sublanguage expression (a function call, a macro, `a.key() == crate::ID`, ...)
+/// and a sublanguage expression whose target field is not locatable in the user's Borsh
+/// descriptor. Those checks still run, just not here — see `Accounts::try_accounts` below.
+///
+/// Call `validate` directly only when you specifically want the proven core alone (e.g. a
+/// byte-level pre-check before deserialising). For a struct that may carry such a check, that
+/// is an intentional narrowing of enforcement, not a superset of what `try_accounts` does — a
+/// caller that adds an unproven `constraint` to a struct validated this way gets NO enforcement
+/// of it. For everyday use, prefer `Accounts::try_accounts`, which runs `validate` and then the
+/// unproven checks against the deserialised bindings. `<Struct>::UNPROVEN_CHECKS` (host-only)
+/// lists exactly what a given struct defers past `validate`; empty means the two are equivalent
+/// for that struct.
 pub trait Validate {
     fn validate(
         accounts: &[AccountInfo],

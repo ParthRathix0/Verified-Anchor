@@ -3,6 +3,12 @@ use solana_program::account_info::AccountInfo;
 use solana_program::pubkey::Pubkey;
 use verified_anchor::{Validate, VAError, VerifiedAccounts};
 use verified_anchor::{Signer, UncheckedAccount};
+// Needed for `a.key() == crate::ID`-style hatch checks below: that idiom is OUTSIDE the
+// sublanguage (the RHS is a module-qualified path, not a single operand `compile_expr` can
+// resolve), so it runs as verbatim Rust in `try_accounts`, and verbatim Rust needs the `Key`
+// trait in scope to resolve `.key()` by method-call syntax — exactly as real Anchor needs
+// `anchor_lang::prelude::Key` in scope.
+use verified_anchor::Key;
 
 // Provide a crate::ID so that Account<'info, T> (which implies owner=crate::ID)
 // resolves in this test binary. Must be a valid base58 pubkey string of length 44.
@@ -1784,6 +1790,34 @@ fn escape_hatch_runs_in_try_accounts() {
 fn escape_hatch_is_not_enforced_by_validate_alone() {
     let mut b = acct_with_data(Pubkey::new_from_array([2u8; 32]), vec![]);
     assert_eq!(CheckEscapeHatch::validate(&[b.info()], &[], &any_pid()), Ok(()));
+}
+
+// `a.key() == crate::ID` is the single most common real-Anchor `constraint` idiom, and — like
+// `is_blessed(..)` above — it runs through the hatch (`crate::ID` is a module-qualified path,
+// which `compile_expr` cannot resolve to an operand). Its execution path is identical to the
+// `is_blessed` case already proven above; this pins the idiom itself, not a new mechanism.
+#[derive(VerifiedAccounts)]
+struct CheckKeyEqCrateId<'info> {
+    #[account(constraint = a.key() == crate::ID)]
+    a: UncheckedAccount<'info>,
+}
+
+#[test]
+fn key_eq_crate_id_is_listed_as_unproven() {
+    assert_eq!(CheckKeyEqCrateId::UNPROVEN_CHECKS, &["a.key() == crate::ID"]);
+}
+
+#[test]
+fn key_eq_crate_id_runs_in_try_accounts() {
+    use verified_anchor::Accounts;
+    let mut matching = acct_with_data(crate::ID, vec![]);
+    assert!(CheckKeyEqCrateId::try_accounts(&any_pid(), &[matching.info()], &[]).is_ok());
+
+    let mut other = acct_with_data(Pubkey::new_unique(), vec![]);
+    assert!(matches!(
+        CheckKeyEqCrateId::try_accounts(&any_pid(), &[other.info()], &[]),
+        Err(VAError::ConstraintViolated { field: "a", expr: "a.key() == crate::ID" })
+    ));
 }
 
 /// A proven check and an unproven one coexist; the proven one is still in the spec.
