@@ -86,13 +86,24 @@ pub(crate) struct ExprCtx<'a> {
 
 fn operand(e: &Expr, ctx: &ExprCtx) -> Option<Operand> {
     match e {
-        Expr::Lit(syn::ExprLit { lit: syn::Lit::Int(i), .. }) => {
-            Some(Operand::LitNat(i.base10_parse::<u128>().ok()?))
-        }
-        Expr::Lit(syn::ExprLit { lit: syn::Lit::Bool(b), .. }) => Some(Operand::LitBool(b.value)),
+        Expr::Lit(syn::ExprLit {
+            lit: syn::Lit::Int(i),
+            ..
+        }) => Some(Operand::LitNat(i.base10_parse::<u128>().ok()?)),
+        Expr::Lit(syn::ExprLit {
+            lit: syn::Lit::Bool(b),
+            ..
+        }) => Some(Operand::LitBool(b.value)),
         // `-1` is `Unary(Neg, Lit(1))`, not a negative literal token.
-        Expr::Unary(syn::ExprUnary { op: UnOp::Neg(_), expr, .. }) => match expr.as_ref() {
-            Expr::Lit(syn::ExprLit { lit: syn::Lit::Int(i), .. }) => {
+        Expr::Unary(syn::ExprUnary {
+            op: UnOp::Neg(_),
+            expr,
+            ..
+        }) => match expr.as_ref() {
+            Expr::Lit(syn::ExprLit {
+                lit: syn::Lit::Int(i),
+                ..
+            }) => {
                 let n = i.base10_parse::<i128>().ok()?;
                 Some(Operand::LitInt(n.checked_neg()?))
             }
@@ -175,7 +186,11 @@ fn operand(e: &Expr, ctx: &ExprCtx) -> Option<Operand> {
         // invisible in source, so it must be transparent here too.
         Expr::Group(g) => operand(&g.expr, ctx),
         Expr::Reference(r) => operand(&r.expr, ctx),
-        Expr::Unary(syn::ExprUnary { op: UnOp::Deref(_), expr, .. }) => operand(expr, ctx),
+        Expr::Unary(syn::ExprUnary {
+            op: UnOp::Deref(_),
+            expr,
+            ..
+        }) => operand(expr, ctx),
         _ => None,
     }
 }
@@ -196,7 +211,11 @@ pub(crate) fn compile_expr(e: &Expr, ctx: &ExprCtx) -> Option<VExpr> {
                 _ => None,
             };
             if let Some(c) = cmp {
-                return Some(VExpr::Cmp(c, operand(&b.left, ctx)?, operand(&b.right, ctx)?));
+                return Some(VExpr::Cmp(
+                    c,
+                    operand(&b.left, ctx)?,
+                    operand(&b.right, ctx)?,
+                ));
             }
             match b.op {
                 BinOp::And(_) => Some(VExpr::And(
@@ -210,9 +229,11 @@ pub(crate) fn compile_expr(e: &Expr, ctx: &ExprCtx) -> Option<VExpr> {
                 _ => None,
             }
         }
-        Expr::Unary(syn::ExprUnary { op: UnOp::Not(_), expr, .. }) => {
-            Some(VExpr::Not(Box::new(compile_expr(expr, ctx)?)))
-        }
+        Expr::Unary(syn::ExprUnary {
+            op: UnOp::Not(_),
+            expr,
+            ..
+        }) => Some(VExpr::Not(Box::new(compile_expr(expr, ctx)?))),
         other => Some(VExpr::Truthy(operand(other, ctx)?)),
     }
 }
@@ -249,7 +270,10 @@ impl Operand {
 
     /// A literal written in the source, as opposed to something read at runtime.
     fn is_literal(&self) -> bool {
-        matches!(self, Operand::LitNat(_) | Operand::LitInt(_) | Operand::LitBool(_))
+        matches!(
+            self,
+            Operand::LitNat(_) | Operand::LitInt(_) | Operand::LitBool(_)
+        )
     }
 
     /// A NEGATIVE integer literal. `vault.big > -1` over a `u128` field is answerable in the
@@ -265,12 +289,9 @@ impl VExpr {
     /// as `Constraint.expr (<this>)`; nested occurrences are parenthesised here.
     pub(crate) fn to_lean(&self) -> String {
         match self {
-            VExpr::Cmp(op, l, r) => format!(
-                "Expr.cmp {} ({}) ({})",
-                op.lean(),
-                l.to_lean(),
-                r.to_lean()
-            ),
+            VExpr::Cmp(op, l, r) => {
+                format!("Expr.cmp {} ({}) ({})", op.lean(), l.to_lean(), r.to_lean())
+            }
             VExpr::And(l, r) => format!("Expr.and ({}) ({})", l.to_lean(), r.to_lean()),
             VExpr::Or(l, r) => format!("Expr.or ({}) ({})", l.to_lean(), r.to_lean()),
             VExpr::Not(e) => format!("Expr.not ({})", e.to_lean()),
@@ -319,12 +340,12 @@ impl VExpr {
                 }
                 match op {
                     Cmp::Eq | Cmp::Ne => false,
-                    Cmp::Lt | Cmp::Le | Cmp::Gt | Cmp::Ge =>
-                        !l.is_literal() && !r.is_literal(),
+                    Cmp::Lt | Cmp::Le | Cmp::Gt | Cmp::Ge => !l.is_literal() && !r.is_literal(),
                 }
             }
-            VExpr::And(l, r) | VExpr::Or(l, r) =>
-                l.fallback_needs_value_form() || r.fallback_needs_value_form(),
+            VExpr::And(l, r) | VExpr::Or(l, r) => {
+                l.fallback_needs_value_form() || r.fallback_needs_value_form()
+            }
             VExpr::Not(e) => e.fallback_needs_value_form(),
             VExpr::Truthy(o) => o.is_negative_literal(),
         }
@@ -408,7 +429,9 @@ impl Operand {
                     // The const-selected fallback: the descriptor cannot locate this field, so
                     // read it off the deserialised struct instead. Same `Value`, same
                     // fail-closed refusals — see `layout::FieldValue`.
-                    let fname = ctx.index_of.iter()
+                    let fname = ctx
+                        .index_of
+                        .iter()
                         .find(|(_, idx)| **idx == i)
                         .map(|(nm, _)| syn::Ident::new(nm, proc_macro2::Span::call_site()))
                         .expect("data-field operand on an unknown account index");
@@ -461,11 +484,15 @@ impl Operand {
             }
             Operand::Lamports(i) => {
                 let i = *i;
-                some(quote! { ::verified_anchor::layout::Value::Nat(accounts[#i].lamports() as u128) })
+                some(
+                    quote! { ::verified_anchor::layout::Value::Nat(accounts[#i].lamports() as u128) },
+                )
             }
             Operand::DataLen(i) => {
                 let i = *i;
-                some(quote! { ::verified_anchor::layout::Value::Nat(accounts[#i].data_len() as u128) })
+                some(
+                    quote! { ::verified_anchor::layout::Value::Nat(accounts[#i].data_len() as u128) },
+                )
             }
             Operand::IsSigner(i) => {
                 let i = *i;
@@ -518,12 +545,17 @@ impl Operand {
     fn orderable(&self) -> Orderable<'_> {
         match self {
             // `Value.nat` / `Value.int` in every build.
-            Operand::LitNat(_) | Operand::LitInt(_)
-            | Operand::Lamports(_) | Operand::DataLen(_) => Orderable::Always,
+            Operand::LitNat(_)
+            | Operand::LitInt(_)
+            | Operand::Lamports(_)
+            | Operand::DataLen(_) => Orderable::Always,
             // `Value.key` / `Value.bool` in every build — `Value.toInt?` is `none`.
-            Operand::LitBool(_) | Operand::Key(_) | Operand::Owner(_)
-            | Operand::IsSigner(_) | Operand::IsWritable(_) | Operand::Executable(_) =>
-                Orderable::Never,
+            Operand::LitBool(_)
+            | Operand::Key(_)
+            | Operand::Owner(_)
+            | Operand::IsSigner(_)
+            | Operand::IsWritable(_)
+            | Operand::Executable(_) => Orderable::Never,
             Operand::Field(i, path) => Orderable::Field(*i, path[0].as_str()),
             Operand::InstrArg(n) => Orderable::InstrArg(n.as_str()),
         }
@@ -716,7 +748,11 @@ impl Cmp {
         // Lean's `| _, _ =>` fallback arm, reached only when a side is non-numeric.
         let fallback = match self {
             Cmp::Eq | Cmp::Ne => {
-                let op = if matches!(self, Cmp::Eq) { quote! { == } } else { quote! { != } };
+                let op = if matches!(self, Cmp::Eq) {
+                    quote! { == }
+                } else {
+                    quote! { != }
+                };
                 quote! {
                     match (__l, __r) {
                         (::core::option::Option::Some(__a), ::core::option::Option::Some(__b)) =>

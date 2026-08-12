@@ -49,7 +49,11 @@ fn init_creates_and_funds_account() {
         .expect("account exists after init");
     assert_eq!(created.owner, program_id, "owned by program after init");
     assert!(created.lamports > 0, "account is funded after init");
-    assert_eq!(created.data.len(), 8, "8-byte discriminator space (space=0 + 8)");
+    assert_eq!(
+        created.data.len(),
+        8,
+        "8-byte discriminator space (space=0 + 8)"
+    );
 }
 
 #[test]
@@ -117,11 +121,7 @@ fn close_drains_to_dest() {
         }
         Err(ref e) => {
             // Report the failure with full details so the error is diagnosable
-            panic!(
-                "close tx failed: {:?}\nlogs: {:?}",
-                e.err,
-                e.meta.logs
-            );
+            panic!("close tx failed: {:?}\nlogs: {:?}", e.err, e.meta.logs);
         }
     }
 }
@@ -136,7 +136,11 @@ fn send(
     tag: u8,
     metas: Vec<AccountMeta>,
 ) -> Result<(), ()> {
-    let ix = Instruction { program_id, data: vec![tag], accounts: metas };
+    let ix = Instruction {
+        program_id,
+        data: vec![tag],
+        accounts: metas,
+    };
     let bh = svm.latest_blockhash();
     let tx = Transaction::new(&[payer], Message::new(&[ix], Some(&payer.pubkey())), bh);
     svm.send_transaction(tx).map(|_| ()).map_err(|_| ())
@@ -150,7 +154,8 @@ fn send(
 fn realloc_grow_increases_data_len_and_tops_up_lamports() {
     let mut svm = LiteSVM::new();
     let program_id = Pubkey::new_unique();
-    svm.add_program_from_file(program_id, so_path()).expect("load .so");
+    svm.add_program_from_file(program_id, so_path())
+        .expect("load .so");
 
     let payer = Keypair::new();
     svm.airdrop(&payer.pubkey(), 100_000_000).unwrap();
@@ -178,8 +183,8 @@ fn realloc_grow_increases_data_len_and_tops_up_lamports() {
         &payer,
         7,
         vec![
-            AccountMeta::new(vault, false),          // vault: mut
-            AccountMeta::new(payer.pubkey(), true),  // payer: mut signer
+            AccountMeta::new(vault, false),         // vault: mut
+            AccountMeta::new(payer.pubkey(), true), // payer: mut signer
             AccountMeta::new_readonly(system_program_id(), false),
         ],
     );
@@ -205,7 +210,8 @@ fn realloc_grow_increases_data_len_and_tops_up_lamports() {
 fn realloc_shrink_preserves_lamports() {
     let mut svm = LiteSVM::new();
     let program_id = Pubkey::new_unique();
-    svm.add_program_from_file(program_id, so_path()).expect("load .so");
+    svm.add_program_from_file(program_id, so_path())
+        .expect("load .so");
 
     let payer = Keypair::new();
     svm.airdrop(&payer.pubkey(), 100_000_000).unwrap();
@@ -243,8 +249,7 @@ fn realloc_shrink_preserves_lamports() {
     assert_eq!(after.data.len(), 32, "data length must be 32 after shrink");
     // Surplus-preserving: lamports MUST NOT be drained.
     assert_eq!(
-        after.lamports,
-        initial_vault_lamports,
+        after.lamports, initial_vault_lamports,
         "lamports must be exactly preserved after shrink (surplus-preserving guarantee)"
     );
 }
@@ -256,7 +261,8 @@ fn realloc_shrink_preserves_lamports() {
 fn zero_accepts_zeroed_discriminator() {
     let mut svm = LiteSVM::new();
     let program_id = Pubkey::new_unique();
-    svm.add_program_from_file(program_id, so_path()).expect("load .so");
+    svm.add_program_from_file(program_id, so_path())
+        .expect("load .so");
 
     let payer = Keypair::new();
     svm.airdrop(&payer.pubkey(), 10_000_000).unwrap();
@@ -283,7 +289,10 @@ fn zero_accepts_zeroed_discriminator() {
         9,
         vec![AccountMeta::new_readonly(data_acct, false)],
     );
-    assert!(result.is_ok(), "zero constraint must accept an all-zero discriminator");
+    assert!(
+        result.is_ok(),
+        "zero constraint must accept an all-zero discriminator"
+    );
 }
 
 /// `#[account(zero)]` rejects an account whose discriminator is non-zero (reinit guard).
@@ -291,7 +300,8 @@ fn zero_accepts_zeroed_discriminator() {
 fn zero_rejects_nonzero_discriminator() {
     let mut svm = LiteSVM::new();
     let program_id = Pubkey::new_unique();
-    svm.add_program_from_file(program_id, so_path()).expect("load .so");
+    svm.add_program_from_file(program_id, so_path())
+        .expect("load .so");
 
     let payer = Keypair::new();
     svm.airdrop(&payer.pubkey(), 10_000_000).unwrap();
@@ -319,7 +329,10 @@ fn zero_rejects_nonzero_discriminator() {
         9,
         vec![AccountMeta::new_readonly(data_acct, false)],
     );
-    assert!(result.is_err(), "zero constraint must reject a non-zero discriminator");
+    assert!(
+        result.is_err(),
+        "zero constraint must reject a non-zero discriminator"
+    );
 }
 
 // ── init_if_needed ────────────────────────────────────────────────────────────
@@ -370,7 +383,8 @@ fn init_if_needed_ix(program_id: Pubkey, pda: Pubkey, payer: Pubkey) -> Instruct
 fn init_if_needed_first_call_creates_pda() {
     let mut svm = LiteSVM::new();
     let program_id = typed_program_id();
-    svm.add_program_from_file(program_id, so_path()).expect("load .so");
+    svm.add_program_from_file(program_id, so_path())
+        .expect("load .so");
 
     let payer = Keypair::new();
     svm.airdrop(&payer.pubkey(), 100_000_000).unwrap();
@@ -388,9 +402,17 @@ fn init_if_needed_first_call_creates_pda() {
         result.err().map(|e| e.meta.logs)
     );
 
-    let created = svm.get_account(&pda).expect("PDA must exist after first call");
-    assert_eq!(created.owner, program_id, "PDA must be program-owned after init");
-    assert!(created.data.len() >= 8, "PDA must have at least 8 bytes after init");
+    let created = svm
+        .get_account(&pda)
+        .expect("PDA must exist after first call");
+    assert_eq!(
+        created.owner, program_id,
+        "PDA must be program-owned after init"
+    );
+    assert!(
+        created.data.len() >= 8,
+        "PDA must have at least 8 bytes after init"
+    );
     assert!(created.lamports > 0, "PDA must be funded after init");
     assert_eq!(
         &created.data[0..8],
@@ -406,7 +428,8 @@ fn init_if_needed_first_call_creates_pda() {
 fn init_if_needed_second_call_accepted_not_reinit() {
     let mut svm = LiteSVM::new();
     let program_id = typed_program_id();
-    svm.add_program_from_file(program_id, so_path()).expect("load .so");
+    svm.add_program_from_file(program_id, so_path())
+        .expect("load .so");
 
     let payer = Keypair::new();
     svm.airdrop(&payer.pubkey(), 100_000_000).unwrap();
@@ -437,7 +460,9 @@ fn init_if_needed_second_call_accepted_not_reinit() {
         result2.err().map(|e| e.meta.logs)
     );
 
-    let after_second = svm.get_account(&pda).expect("PDA still exists after second call");
+    let after_second = svm
+        .get_account(&pda)
+        .expect("PDA still exists after second call");
     assert_eq!(
         after_second.lamports, lamports_after_first,
         "lamports must not change on second call (no re-init)"
@@ -461,7 +486,8 @@ fn init_if_needed_second_call_accepted_not_reinit() {
 fn init_if_needed_rejects_wrong_owner_existing_account() {
     let mut svm = LiteSVM::new();
     let program_id = typed_program_id();
-    svm.add_program_from_file(program_id, so_path()).expect("load .so");
+    svm.add_program_from_file(program_id, so_path())
+        .expect("load .so");
 
     let payer = Keypair::new();
     svm.airdrop(&payer.pubkey(), 100_000_000).unwrap();
@@ -497,7 +523,9 @@ fn init_if_needed_rejects_wrong_owner_existing_account() {
     );
 
     // The planted account must be untouched (owner still the system program).
-    let after = svm.get_account(&pda).expect("planted account still present");
+    let after = svm
+        .get_account(&pda)
+        .expect("planted account still present");
     assert_eq!(
         after.owner,
         system_program_id(),

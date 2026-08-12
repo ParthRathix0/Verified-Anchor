@@ -11,13 +11,20 @@ pub fn collect(crate_name: Option<&str>, spec_dir: &Path) -> Result<Vec<Spec>, S
 
     let mut cmd = Command::new("cargo");
     cmd.arg("test");
-    if let Some(c) = crate_name { cmd.args(["-p", c]); }
+    if let Some(c) = crate_name {
+        cmd.args(["-p", c]);
+    }
     cmd.args(["--lib", "__verified_anchor_emit_specs"]);
     cmd.env("VERIFIED_ANCHOR_SPEC_DIR", spec_dir);
-    let out = cmd.output().map_err(|e| format!("running cargo test: {e}"))?;
+    let out = cmd
+        .output()
+        .map_err(|e| format!("running cargo test: {e}"))?;
     if !out.status.success() {
-        return Err(format!("cargo test (spec emitter) failed:\n{}{}",
-            String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)));
+        return Err(format!(
+            "cargo test (spec emitter) failed:\n{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        ));
     }
 
     let mut specs = Vec::new();
@@ -30,19 +37,31 @@ pub fn collect(crate_name: Option<&str>, spec_dir: &Path) -> Result<Vec<Spec>, S
             Some("unproven") => continue,
             _ => continue,
         };
-        let name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("?").to_string();
-        let lean_spec = std::fs::read_to_string(&path).map_err(|e| format!("read {path:?}: {e}"))?;
+        let name = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("?")
+            .to_string();
+        let lean_spec =
+            std::fs::read_to_string(&path).map_err(|e| format!("read {path:?}: {e}"))?;
         // `<name>.unproven` is written only when the struct has an escape-hatch surface
         // (`verified_anchor::write_spec_files`); absent means fully proven.
         let unproven_path = spec_dir.join(format!("{name}.unproven"));
         let unproven = if unproven_path.exists() {
             std::fs::read_to_string(&unproven_path)
                 .map_err(|e| format!("read {unproven_path:?}: {e}"))?
-                .lines().map(|l| l.to_string()).collect()
+                .lines()
+                .map(|l| l.to_string())
+                .collect()
         } else {
             Vec::new()
         };
-        specs.push(Spec { name, kind, lean_spec, unproven });
+        specs.push(Spec {
+            name,
+            kind,
+            lean_spec,
+            unproven,
+        });
     }
     Ok(specs)
 }

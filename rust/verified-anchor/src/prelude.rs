@@ -2,8 +2,8 @@
 //! wrappers, traits, `Context`, and the derive macros in one import.
 
 pub use crate::{
-    account, Account, Accounts, AccountData, Context, Key, Program, ProgramId,
-    Signer, System, SystemAccount, UncheckedAccount, VAError, Validate, VerifiedAccounts,
+    account, Account, AccountData, Accounts, Context, Key, Program, ProgramId, Signer, System,
+    SystemAccount, UncheckedAccount, VAError, Validate, VerifiedAccounts,
 };
 pub use solana_program::account_info::AccountInfo;
 pub use solana_program::declare_id;

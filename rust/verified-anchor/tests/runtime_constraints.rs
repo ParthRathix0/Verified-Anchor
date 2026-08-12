@@ -38,7 +38,11 @@ fn send(
     data: Vec<u8>,
     metas: Vec<AccountMeta>,
 ) -> Result<(), ()> {
-    let ix = Instruction { program_id, data, accounts: metas };
+    let ix = Instruction {
+        program_id,
+        data,
+        accounts: metas,
+    };
     let bh = svm.latest_blockhash();
     let tx = Transaction::new(&[payer], Message::new(&[ix], Some(&payer.pubkey())), bh);
     svm.send_transaction(tx).map(|_| ()).map_err(|_| ())
@@ -86,33 +90,64 @@ fn constraint_after_string_field_enforced_onchain() {
     let (mut svm, payer) = setup(program_id);
 
     let out = Pubkey::new_unique();
-    svm.set_account(out, Account {
-        lamports: 1, data: vec![0u8; 8], owner: program_id, executable: false, rent_epoch: 0,
-    }).unwrap();
+    svm.set_account(
+        out,
+        Account {
+            lamports: 1,
+            data: vec![0u8; 8],
+            owner: program_id,
+            executable: false,
+            rent_epoch: 0,
+        },
+    )
+    .unwrap();
 
     // A label whose length is NOT a multiple of 8/4 — proves the offset math is real prefix
     // arithmetic, not an accidentally-aligned constant.
     let label = "on-chain-length-prefix-proof";
 
     let attacker_vault = Pubkey::new_unique();
-    svm.set_account(attacker_vault, Account {
-        lamports: 1, data: data_vault_account(label, 500), // below the 1000 threshold
-        owner: program_id, executable: false, rent_epoch: 0,
-    }).unwrap();
+    svm.set_account(
+        attacker_vault,
+        Account {
+            lamports: 1,
+            data: data_vault_account(label, 500), // below the 1000 threshold
+            owner: program_id,
+            executable: false,
+            rent_epoch: 0,
+        },
+    )
+    .unwrap();
     let legit_vault = Pubkey::new_unique();
-    svm.set_account(legit_vault, Account {
-        lamports: 1, data: data_vault_account(label, 5_000), // at/above the threshold
-        owner: program_id, executable: false, rent_epoch: 0,
-    }).unwrap();
+    svm.set_account(
+        legit_vault,
+        Account {
+            lamports: 1,
+            data: data_vault_account(label, 5_000), // at/above the threshold
+            owner: program_id,
+            executable: false,
+            rent_epoch: 0,
+        },
+    )
+    .unwrap();
 
-    let metas = |vault: Pubkey| vec![
-        AccountMeta::new_readonly(vault, false),
-        AccountMeta::new(out, false),
-    ];
+    let metas = |vault: Pubkey| {
+        vec![
+            AccountMeta::new_readonly(vault, false),
+            AccountMeta::new(out, false),
+        ]
+    };
 
     // Attacker input rejected.
     assert!(
-        send(&mut svm, program_id, &payer, vec![11u8], metas(attacker_vault)).is_err(),
+        send(
+            &mut svm,
+            program_id,
+            &payer,
+            vec![11u8],
+            metas(attacker_vault)
+        )
+        .is_err(),
         "amount below 1000 (positioned after a String) must be rejected on-chain"
     );
 
@@ -150,9 +185,17 @@ fn named_instruction_arg_seed_enforced_onchain() {
     let (mut svm, payer) = setup(program_id);
 
     let out = Pubkey::new_unique();
-    svm.set_account(out, Account {
-        lamports: 1, data: vec![0u8; 32], owner: program_id, executable: false, rent_epoch: 0,
-    }).unwrap();
+    svm.set_account(
+        out,
+        Account {
+            lamports: 1,
+            data: vec![0u8; 32],
+            owner: program_id,
+            executable: false,
+            rent_epoch: 0,
+        },
+    )
+    .unwrap();
 
     let (pda, _bump) = Pubkey::find_program_address(&[b"vault", b"alice"], &program_id);
     let attacker_pda = Pubkey::new_unique(); // not the PDA derived from "alice"
@@ -160,14 +203,23 @@ fn named_instruction_arg_seed_enforced_onchain() {
     let mut ix_data = vec![12u8];
     ix_data.extend_from_slice(&borsh_string_arg("alice"));
 
-    let metas = |pda: Pubkey| vec![
-        AccountMeta::new_readonly(pda, false),
-        AccountMeta::new(out, false),
-    ];
+    let metas = |pda: Pubkey| {
+        vec![
+            AccountMeta::new_readonly(pda, false),
+            AccountMeta::new(out, false),
+        ]
+    };
 
     // Attacker input rejected.
     assert!(
-        send(&mut svm, program_id, &payer, ix_data.clone(), metas(attacker_pda)).is_err(),
+        send(
+            &mut svm,
+            program_id,
+            &payer,
+            ix_data.clone(),
+            metas(attacker_pda)
+        )
+        .is_err(),
         "wrong PDA under the decoded `name` argument must be rejected on-chain"
     );
 
@@ -200,18 +252,28 @@ fn escape_hatch_constraint_runs_in_try_accounts_onchain() {
     let (mut svm, payer) = setup(program_id);
 
     let out = Pubkey::new_unique();
-    svm.set_account(out, Account {
-        lamports: 1, data: vec![0u8; 8], owner: program_id, executable: false, rent_epoch: 0,
-    }).unwrap();
+    svm.set_account(
+        out,
+        Account {
+            lamports: 1,
+            data: vec![0u8; 8],
+            owner: program_id,
+            executable: false,
+            rent_epoch: 0,
+        },
+    )
+    .unwrap();
 
     // `crate::ID` baked into `verified-anchor-program`.
     let matching_key = Pubkey::new_from_array([0x0Bu8; 32]);
     let other_key = Pubkey::new_unique();
 
-    let metas = |a: Pubkey| vec![
-        AccountMeta::new_readonly(a, false),
-        AccountMeta::new(out, false),
-    ];
+    let metas = |a: Pubkey| {
+        vec![
+            AccountMeta::new_readonly(a, false),
+            AccountMeta::new(out, false),
+        ]
+    };
 
     // Attacker input (key != crate::ID) rejected.
     assert!(
@@ -221,11 +283,19 @@ fn escape_hatch_constraint_runs_in_try_accounts_onchain() {
 
     // Legitimate input (key == crate::ID) accepted, with an observable on-chain effect.
     assert!(
-        send(&mut svm, program_id, &payer, vec![13u8], metas(matching_key)).is_ok(),
+        send(
+            &mut svm,
+            program_id,
+            &payer,
+            vec![13u8],
+            metas(matching_key)
+        )
+        .is_ok(),
         "escape-hatch constraint must accept the matching key via try_accounts on-chain"
     );
     assert_eq!(
-        svm.get_account(&out).unwrap().data[0], 1,
+        svm.get_account(&out).unwrap().data[0],
+        1,
         "the hatch must actually have RUN — an unreachable hatch would never flip this byte"
     );
 }

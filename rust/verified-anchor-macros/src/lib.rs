@@ -1,7 +1,7 @@
 use proc_macro::TokenStream;
 
-mod account_data_derive;
 mod account_attr;
+mod account_data_derive;
 mod expr;
 mod ty_map;
 
@@ -23,8 +23,8 @@ use syn::{parse_macro_input, punctuated::Punctuated, Data, DeriveInput, Expr, Fi
 /// One element of a `seeds = [...]` list.
 #[derive(Clone)]
 enum SeedElem {
-    Literal(syn::LitByteStr),   // b"vault"
-    FieldKey(syn::Ident),       // field.key()
+    Literal(syn::LitByteStr), // b"vault"
+    FieldKey(syn::Ident),     // field.key()
     /// `arg(off, len)` — DEPRECATED raw slice of `instr_data`. Kept working (removing it would
     /// break existing verified-anchor users), but no real Anchor program writes it.
     InstrArg(usize, usize),
@@ -86,8 +86,9 @@ fn classify_field_type(ty: &syn::Type) -> syn::Result<WrapperKind> {
             return Err(syn::Error::new_spanned(ty,
                 "verified-anchor: bare `u8` field types are not supported; use a typed wrapper like `Account<'info, T>`, `Signer<'info>`, `UncheckedAccount<'info>`, etc. See docs/migrating-from-anchor.md"));
         }
-        let last = path.segments.last().ok_or_else(||
-            syn::Error::new_spanned(ty, "verified-anchor: unrecognised field type"))?;
+        let last = path.segments.last().ok_or_else(|| {
+            syn::Error::new_spanned(ty, "verified-anchor: unrecognised field type")
+        })?;
         let ident_str = last.ident.to_string();
         match ident_str.as_str() {
             "Account" => {
@@ -121,7 +122,10 @@ fn classify_field_type(ty: &syn::Type) -> syn::Result<WrapperKind> {
                 format!("verified-anchor: unrecognised field wrapper `{ident_str}`; use one of Account<'info, T>, Signer<'info>, Program<'info, P>, SystemAccount<'info>, UncheckedAccount<'info>, AccountInfo<'info>"))),
         }
     } else {
-        Err(syn::Error::new_spanned(ty, "verified-anchor: unrecognised field type"))
+        Err(syn::Error::new_spanned(
+            ty,
+            "verified-anchor: unrecognised field type",
+        ))
     }
 }
 
@@ -145,9 +149,9 @@ fn wrapper_implied(kind: &WrapperKind) -> Vec<Constraint> {
             ]
         }
         WrapperKind::Signer => vec![Constraint::Signer],
-        WrapperKind::SystemAccount => vec![
-            Constraint::Owner(syn::parse_quote! { ::verified_anchor::solana_program::system_program::ID }),
-        ],
+        WrapperKind::SystemAccount => vec![Constraint::Owner(
+            syn::parse_quote! { ::verified_anchor::solana_program::system_program::ID },
+        )],
         WrapperKind::Program(p) => vec![Constraint::ProgramMarker(p.clone())],
         WrapperKind::Unchecked => vec![],
     }
@@ -263,8 +267,10 @@ impl Parse for Constraint {
                     input.parse::<Token![::]>()?;
                     let key: syn::Ident = input.parse()?;
                     if key != "program" {
-                        return Err(syn::Error::new(key.span(),
-                            "unsupported `seeds::` key (expected `seeds::program = <expr>`)"));
+                        return Err(syn::Error::new(
+                            key.span(),
+                            "unsupported `seeds::` key (expected `seeds::program = <expr>`)",
+                        ));
                     }
                     input.parse::<Token![=]>()?;
                     let expr: Expr = input.parse()?;
@@ -284,9 +290,10 @@ impl Parse for Constraint {
                     // `bump = <litint>` (declared) vs `bump = arg(off)` (stored, non-canonical).
                     let expr: Expr = input.parse()?;
                     match expr {
-                        Expr::Lit(syn::ExprLit { lit: syn::Lit::Int(i), .. }) => {
-                            Ok(Constraint::BumpDeclared(i.base10_parse()?))
-                        }
+                        Expr::Lit(syn::ExprLit {
+                            lit: syn::Lit::Int(i),
+                            ..
+                        }) => Ok(Constraint::BumpDeclared(i.base10_parse()?)),
                         Expr::Call(call) => {
                             let is_arg = matches!(call.func.as_ref(),
                                 Expr::Path(p) if p.path.is_ident("arg"));
@@ -297,8 +304,10 @@ impl Parse for Constraint {
                             let off = lit_usize(call.args.iter().next())?;
                             Ok(Constraint::BumpStored(off))
                         }
-                        other => Err(syn::Error::new_spanned(other,
-                            "unsupported `bump = <expr>` (expected a u8 literal or `arg(off)`)")),
+                        other => Err(syn::Error::new_spanned(
+                            other,
+                            "unsupported `bump = <expr>` (expected a u8 literal or `arg(off)`)",
+                        )),
                     }
                 } else {
                     Ok(Constraint::BumpCanonical)
@@ -321,8 +330,12 @@ impl Parse for Constraint {
                 match mode.to_string().as_str() {
                     "enforce" => Ok(Constraint::RentExemptEnforce),
                     "skip" => Ok(Constraint::RentExemptSkip),
-                    other => Err(syn::Error::new(mode.span(),
-                        format!("expected `enforce` or `skip` after `rent_exempt =`, got `{other}`"))),
+                    other => Err(syn::Error::new(
+                        mode.span(),
+                        format!(
+                            "expected `enforce` or `skip` after `rent_exempt =`, got `{other}`"
+                        ),
+                    )),
                 }
             }
             "zero" => Ok(Constraint::Zero),
@@ -360,8 +373,10 @@ impl Parse for Constraint {
             }
             other => {
                 let known_unsupported = [
-                    "token", "mint",
-                    "associated_token", "owner_program",
+                    "token",
+                    "mint",
+                    "associated_token",
+                    "owner_program",
                     "token_program",
                 ];
                 let hint = if known_unsupported.contains(&other) {
@@ -391,10 +406,16 @@ fn peel_seed(e: &Expr) -> Option<SeedElem> {
         Expr::Reference(r) => peel_seed(&r.expr),
         // Reached only by peeling (a NAKED path is not accepted as a seed): `&blob`,
         // `blob.as_slice()`, `authority.as_ref()`. Which binding it names is resolved later.
-        Expr::Path(p) => p.path.get_ident().map(|id| SeedElem::Unresolved(id.clone())),
+        Expr::Path(p) => p
+            .path
+            .get_ident()
+            .map(|id| SeedElem::Unresolved(id.clone())),
         // The peeling applies to LITERAL seeds too: `b"vault".as_ref()` and `&b"vault"` are the
         // same seed as the bare `b"vault"` that `parse_seed_elem` matches first.
-        Expr::Lit(syn::ExprLit { lit: syn::Lit::ByteStr(b), .. }) => Some(SeedElem::Literal(b.clone())),
+        Expr::Lit(syn::ExprLit {
+            lit: syn::Lit::ByteStr(b),
+            ..
+        }) => Some(SeedElem::Literal(b.clone())),
         Expr::MethodCall(mc) if mc.args.is_empty() => {
             let recv_ident = || match mc.receiver.as_ref() {
                 Expr::Path(p) => p.path.get_ident().cloned(),
@@ -409,11 +430,18 @@ fn peel_seed(e: &Expr) -> Option<SeedElem> {
                 "as_bytes" => match mc.receiver.as_ref() {
                     // `"vault".as_bytes()` — the str-literal spelling of a literal seed. Anchor
                     // programs use it interchangeably with `b"vault"`; same bytes, so same seed.
-                    Expr::Lit(syn::ExprLit { lit: syn::Lit::Str(sl), .. }) =>
-                        Some(SeedElem::Literal(syn::LitByteStr::new(sl.value().as_bytes(), sl.span()))),
+                    Expr::Lit(syn::ExprLit {
+                        lit: syn::Lit::Str(sl),
+                        ..
+                    }) => Some(SeedElem::Literal(syn::LitByteStr::new(
+                        sl.value().as_bytes(),
+                        sl.span(),
+                    ))),
                     _ => recv_ident().map(|id| SeedElem::ArgField(id, ArgSeedForm::AsBytes)),
                 },
-                "to_le_bytes" => recv_ident().map(|id| SeedElem::ArgField(id, ArgSeedForm::ToLeBytes)),
+                "to_le_bytes" => {
+                    recv_ident().map(|id| SeedElem::ArgField(id, ArgSeedForm::ToLeBytes))
+                }
                 // Slice-coercion noise, not a seed source: keep peeling.
                 "as_ref" | "as_slice" => peel_seed(&mc.receiver),
                 _ => None,
@@ -442,7 +470,10 @@ fn big_or_native_endian_seed(e: &Expr) -> Option<String> {
 
 fn parse_seed_elem(e: Expr) -> syn::Result<SeedElem> {
     match e {
-        Expr::Lit(syn::ExprLit { lit: syn::Lit::ByteStr(b), .. }) => Ok(SeedElem::Literal(b)),
+        Expr::Lit(syn::ExprLit {
+            lit: syn::Lit::ByteStr(b),
+            ..
+        }) => Ok(SeedElem::Literal(b)),
         // `user.key()` / `user.key().as_ref()` / `name.as_bytes()` / `amount.to_le_bytes()`.
         // These are the forms real Anchor source writes, and the whole point of M10 Task 9: an
         // unmodified Anchor `#[derive(Accounts)]` struct must compile under
@@ -454,32 +485,42 @@ fn parse_seed_elem(e: Expr) -> syn::Result<SeedElem> {
             // therefore Lean `argBytes`' fixed-size arm) is little-endian, so there is no correct
             // way to honour it: refuse to compile rather than derive a wrong address.
             if let Some(bad) = big_or_native_endian_seed(&e) {
-                return Err(syn::Error::new_spanned(&e, format!(
+                return Err(syn::Error::new_spanned(
+                    &e,
+                    format!(
                     "seed `{bad}` is not supported: Borsh — and therefore the PDA Anchor derives \
                      — is LITTLE-endian, so this would silently derive a different address than \
-                     the same program under Anchor. Use `to_le_bytes()`.")));
+                     the same program under Anchor. Use `to_le_bytes()`."),
+                ));
             }
             match peel_seed(&e) {
                 Some(se) => Ok(se),
-                None => Err(syn::Error::new_spanned(&e,
+                None => Err(syn::Error::new_spanned(
+                    &e,
                     "unsupported seed (expected b\"..\", field.key(), name.as_bytes(), \
                      amount.to_le_bytes(), a Pubkey/Vec argument via `.as_ref()`, \
-                     or arg(off, len))")),
+                     or arg(off, len))",
+                )),
             }
         }
         Expr::Call(call) => {
             let is_arg = matches!(call.func.as_ref(),
                 Expr::Path(p) if p.path.is_ident("arg"));
             if !is_arg {
-                return Err(syn::Error::new_spanned(call.func, "unsupported seed call (expected `arg(off, len)`)"));
+                return Err(syn::Error::new_spanned(
+                    call.func,
+                    "unsupported seed call (expected `arg(off, len)`)",
+                ));
             }
             let mut it = call.args.iter();
             let off = lit_usize(it.next())?;
             let len = lit_usize(it.next())?;
             Ok(SeedElem::InstrArg(off, len))
         }
-        other => Err(syn::Error::new_spanned(other,
-            "unsupported seed (expected b\"..\", field.key(), name.as_bytes(), or arg(off, len))")),
+        other => Err(syn::Error::new_spanned(
+            other,
+            "unsupported seed (expected b\"..\", field.key(), name.as_bytes(), or arg(off, len))",
+        )),
     }
 }
 
@@ -539,8 +580,9 @@ fn classify_arg_ty(ty: &syn::Type) -> ArgTyKind {
             true => ArgTyKind::Prefixed,
             false => ArgTyKind::Other,
         },
-        "u8" | "u16" | "u32" | "u64" | "u128"
-        | "i8" | "i16" | "i32" | "i64" | "i128" => ArgTyKind::Numeric,
+        "u8" | "u16" | "u32" | "u64" | "u128" | "i8" | "i16" | "i32" | "i64" | "i128" => {
+            ArgTyKind::Numeric
+        }
         "Pubkey" => ArgTyKind::Key,
         _ => ArgTyKind::Other,
     }
@@ -571,9 +613,13 @@ struct InstrArgs {
 
 /// Is this `Vec<...>` segment's element type exactly `u8`?
 fn vec_elem_is_u8(seg: &syn::PathSegment) -> bool {
-    let syn::PathArguments::AngleBracketed(a) = &seg.arguments else { return false };
-    a.args.iter().any(|g| matches!(g,
-        syn::GenericArgument::Type(syn::Type::Path(p)) if p.path.is_ident("u8")))
+    let syn::PathArguments::AngleBracketed(a) = &seg.arguments else {
+        return false;
+    };
+    a.args.iter().any(|g| {
+        matches!(g,
+        syn::GenericArgument::Type(syn::Type::Path(p)) if p.path.is_ident("u8"))
+    })
 }
 
 /// Parse `#[instruction(amount: u64, name: String)]` off the derive input.
@@ -584,10 +630,19 @@ fn vec_elem_is_u8(seg: &syn::PathSegment) -> bool {
 /// derive uses. The names are still recorded in `declared`, so a seed naming one is a compile
 /// error rather than a runtime brick OR a silent fallback to a same-named account.
 fn parse_instruction_args(input: &DeriveInput) -> syn::Result<InstrArgs> {
-    let attr = match input.attrs.iter().find(|a| a.path().is_ident("instruction")) {
+    let attr = match input
+        .attrs
+        .iter()
+        .find(|a| a.path().is_ident("instruction"))
+    {
         Some(a) => a,
-        None => return Ok(InstrArgs {
-            mappable: Vec::new(), declared: Vec::new(), all: Vec::new() }),
+        None => {
+            return Ok(InstrArgs {
+                mappable: Vec::new(),
+                declared: Vec::new(),
+                all: Vec::new(),
+            })
+        }
     };
     let parser = Punctuated::<syn::PatType, Token![,]>::parse_terminated;
     let parsed = attr.parse_args_with(parser)?;
@@ -608,12 +663,20 @@ fn parse_instruction_args(input: &DeriveInput) -> syn::Result<InstrArgs> {
             continue;
         }
         match crate::ty_map::map_ty(&pt.ty) {
-            Some((rt, lean)) =>
-                mappable.push(InstrArg { name, rt, lean, kind: classify_arg_ty(&pt.ty) }),
+            Some((rt, lean)) => mappable.push(InstrArg {
+                name,
+                rt,
+                lean,
+                kind: classify_arg_ty(&pt.ty),
+            }),
             None => past_cutoff = true,
         }
     }
-    Ok(InstrArgs { mappable, declared, all })
+    Ok(InstrArgs {
+        mappable,
+        declared,
+        all,
+    })
 }
 
 /// Borsh bindings for the `#[instruction(...)]` arguments an escape-hatch expression names.
@@ -635,28 +698,31 @@ fn instr_arg_binds(
     let Some(last) = all.iter().rposition(|(n, _)| wanted(n)) else {
         return quote! {};
     };
-    let decodes: Vec<TokenStream2> = all[..=last].iter().map(|(n, ty)| {
-        // Arguments before the last referenced one are decoded only to advance the cursor.
-        let pat = match wanted(n) {
-            true => {
-                let id = syn::Ident::new(n, span);
-                quote! { #id }
+    let decodes: Vec<TokenStream2> = all[..=last]
+        .iter()
+        .map(|(n, ty)| {
+            // Arguments before the last referenced one are decoded only to advance the cursor.
+            let pat = match wanted(n) {
+                true => {
+                    let id = syn::Ident::new(n, span);
+                    quote! { #id }
+                }
+                false => quote! { _ },
+            };
+            quote! {
+                // BELT AND BRACES with `idents_in`'s value-position filter. That filter removes the
+                // common false positive, but the walk stays an over-approximation by design, and any
+                // residual one lands here as an `unused_variables` warning attributed to the USER'S
+                // STRUCT SPAN — unsilenceable from their crate and a hard error under
+                // `#![deny(warnings)]`, which is the `compile_error!` the prime directive forbids.
+                #[allow(unused_variables)]
+                let #pat: #ty = <#ty as ::verified_anchor::borsh::BorshDeserialize>::deserialize(
+                    &mut __va_args)
+                    .map_err(|_| ::verified_anchor::VAError::ConstraintViolated {
+                        field: #field, expr: #src })?;
             }
-            false => quote! { _ },
-        };
-        quote! {
-            // BELT AND BRACES with `idents_in`'s value-position filter. That filter removes the
-            // common false positive, but the walk stays an over-approximation by design, and any
-            // residual one lands here as an `unused_variables` warning attributed to the USER'S
-            // STRUCT SPAN — unsilenceable from their crate and a hard error under
-            // `#![deny(warnings)]`, which is the `compile_error!` the prime directive forbids.
-            #[allow(unused_variables)]
-            let #pat: #ty = <#ty as ::verified_anchor::borsh::BorshDeserialize>::deserialize(
-                &mut __va_args)
-                .map_err(|_| ::verified_anchor::VAError::ConstraintViolated {
-                    field: #field, expr: #src })?;
-        }
-    }).collect();
+        })
+        .collect();
     quote! {
         let mut __va_args: &[u8] = instr_data;
         #(#decodes)*
@@ -665,8 +731,12 @@ fn instr_arg_binds(
 
 /// Does any field resolve a `name.as_bytes()` seed? Gates emission of the `INSTR_ARGS` const.
 fn uses_arg_field(specs: &[FieldSpec]) -> bool {
-    specs.iter().any(|s| s.constraints.iter().any(|c| matches!(c,
-        Constraint::Seeds(elems) if elems.iter().any(|e| matches!(e, SeedElem::ArgField(_, _))))))
+    specs.iter().any(|s| {
+        s.constraints.iter().any(|c| {
+            matches!(c,
+        Constraint::Seeds(elems) if elems.iter().any(|e| matches!(e, SeedElem::ArgField(_, _))))
+        })
+    })
 }
 
 /// The `INSTR_ARGS` Borsh field list, emitted as a local `const` in any generated function that
@@ -744,10 +814,16 @@ struct FieldSpec {
 
 fn collect_fields(input: &DeriveInput) -> syn::Result<Vec<FieldSpec>> {
     let Data::Struct(ds) = &input.data else {
-        return Err(syn::Error::new_spanned(input, "VerifiedAccounts requires a struct"));
+        return Err(syn::Error::new_spanned(
+            input,
+            "VerifiedAccounts requires a struct",
+        ));
     };
     let Fields::Named(named) = &ds.fields else {
-        return Err(syn::Error::new_spanned(&ds.fields, "VerifiedAccounts requires named fields"));
+        return Err(syn::Error::new_spanned(
+            &ds.fields,
+            "VerifiedAccounts requires named fields",
+        ));
     };
     let mut specs = Vec::new();
     for field in &named.named {
@@ -755,14 +831,17 @@ fn collect_fields(input: &DeriveInput) -> syn::Result<Vec<FieldSpec>> {
         let mut constraints = Vec::new();
         for attr in &field.attrs {
             if attr.path().is_ident("account") {
-                let parsed = attr.parse_args_with(
-                    Punctuated::<Constraint, Token![,]>::parse_terminated,
-                )?;
+                let parsed =
+                    attr.parse_args_with(Punctuated::<Constraint, Token![,]>::parse_terminated)?;
                 constraints.extend(parsed);
             }
         }
         let kind = classify_field_type(&field.ty)?;
-        specs.push(FieldSpec { name, constraints, kind });
+        specs.push(FieldSpec {
+            name,
+            constraints,
+            kind,
+        });
     }
     Ok(specs)
 }
@@ -773,19 +852,29 @@ fn collect_fields(input: &DeriveInput) -> syn::Result<Vec<FieldSpec>> {
 /// check and the Lean spec must agree on how every name in a `constraint = <expr>` resolves, and
 /// two independent copies of this resolution could drift into emitting a check for one account
 /// while the spec names another.
-fn expr_maps(specs: &[FieldSpec])
-    -> (std::collections::HashMap<String, usize>, std::collections::HashMap<String, syn::Type>)
-{
-    let index_of = specs.iter().enumerate().map(|(i, s)| (s.name.clone(), i)).collect();
+fn expr_maps(
+    specs: &[FieldSpec],
+) -> (
+    std::collections::HashMap<String, usize>,
+    std::collections::HashMap<String, syn::Type>,
+) {
+    let index_of = specs
+        .iter()
+        .enumerate()
+        .map(|(i, s)| (s.name.clone(), i))
+        .collect();
     // Only `Account<'info, T>` has a modelled Borsh layout, so only those fields can carry a
     // data-field operand. Everything else resolves to metadata operands or falls out.
-    let inner_ty = specs.iter().filter_map(|s| match &s.kind {
-        WrapperKind::Account(t) => {
-            let ty: syn::Type = syn::parse_quote! { #t };
-            Some((s.name.clone(), ty))
-        }
-        _ => None,
-    }).collect();
+    let inner_ty = specs
+        .iter()
+        .filter_map(|s| match &s.kind {
+            WrapperKind::Account(t) => {
+                let ty: syn::Type = syn::parse_quote! { #t };
+                Some((s.name.clone(), ty))
+            }
+            _ => None,
+        })
+        .collect();
     (index_of, inner_ty)
 }
 
@@ -798,7 +887,11 @@ fn expr_maps(specs: &[FieldSpec])
 /// `tests/behavior.rs::constraint_violation_names_the_expression` pins the result.
 fn expr_source(e: &Expr) -> String {
     let mut out = String::new();
-    let mut st = RenderState { prev: Prev::Start, prev_joint: false, run_role: Prev::Start };
+    let mut st = RenderState {
+        prev: Prev::Start,
+        prev_joint: false,
+        run_role: Prev::Start,
+    };
     render_tokens(quote!(#e), &mut out, &mut st);
     out
 }
@@ -924,7 +1017,8 @@ fn render_tokens(ts: TokenStream2, out: &mut String, st: &mut RenderState) {
 /// Only a typed account can carry a data-field operand (`expr::operand` builds `Operand::Field`
 /// for nothing else), so the lookup always resolves.
 fn inner_ty_at(i: usize, ctx: &crate::expr::ExprCtx) -> syn::Type {
-    ctx.inner_ty.iter()
+    ctx.inner_ty
+        .iter()
         .find(|(nm, _)| ctx.index_of.get(*nm) == Some(&i))
         .map(|(_, t)| t.clone())
         .expect("data-field operand on a field with no typed layout")
@@ -963,16 +1057,20 @@ fn locatability_cond(
     ctx: &crate::expr::ExprCtx,
     instr_args: &[InstrArg],
 ) -> Option<TokenStream2> {
-    let mut terms: Vec<TokenStream2> = v.field_operands().iter().map(|(i, seg)| {
-        let inner = inner_ty_at(*i, ctx);
-        // SCALAR-READABLE, not merely PRESENT. See `layout::has_top_level_scalar_field`: a
-        // present-but-aggregate field (`[u8; 32]`, `String`, `Vec<T>`, `Option<T>`) is one
-        // `read_val` refuses, so proving a check over it proves "reject everything".
-        quote! {
-            ::verified_anchor::layout::has_top_level_scalar_field(
-                <#inner as ::verified_anchor::AccountData>::LAYOUT, #seg)
-        }
-    }).collect();
+    let mut terms: Vec<TokenStream2> = v
+        .field_operands()
+        .iter()
+        .map(|(i, seg)| {
+            let inner = inner_ty_at(*i, ctx);
+            // SCALAR-READABLE, not merely PRESENT. See `layout::has_top_level_scalar_field`: a
+            // present-but-aggregate field (`[u8; 32]`, `String`, `Vec<T>`, `Option<T>`) is one
+            // `read_val` refuses, so proving a check over it proves "reject everything".
+            quote! {
+                ::verified_anchor::layout::has_top_level_scalar_field(
+                    <#inner as ::verified_anchor::AccountData>::LAYOUT, #seg)
+            }
+        })
+        .collect();
 
     // ORDERABILITY — C1's twin. Readability is necessary but NOT sufficient for `<`/`<=`/`>`/
     // `>=`: `evalCmp` orders only what `Value.toInt?` accepts, so a `Pubkey` or `bool` operand
@@ -988,7 +1086,8 @@ fn locatability_cond(
             // builds `InstrArg` for a name in `ctx.instr_args`, which is built from this same
             // list, so a miss here means "declared but not numeric" and is treated as such.
             crate::expr::Orderable::InstrArg(n) => {
-                let numeric = instr_args.iter()
+                let numeric = instr_args
+                    .iter()
                     .any(|a| a.name == n && a.kind == ArgTyKind::Numeric);
                 if !numeric {
                     return Some(quote! { false });
@@ -1168,27 +1267,40 @@ fn lean_constraint(c: &Constraint) -> String {
         Constraint::Owner(_) => "Constraint.owner ownerPlaceholder".to_string(),
         Constraint::HasOne(t) => format!("Constraint.hasOne \"{}\"", t),
         // Lifecycle markers: not validation constraints; skip in lean_spec output.
-        Constraint::InitMarker | Constraint::Payer(_) | Constraint::Space(_) | Constraint::Close(_) => String::new(),
+        Constraint::InitMarker
+        | Constraint::Payer(_)
+        | Constraint::Space(_)
+        | Constraint::Close(_) => String::new(),
         Constraint::Seeds(elems) => {
-            let seeds: Vec<String> = elems.iter().map(|se| match se {
-                SeedElem::Literal(b) => {
-                    let bytes: Vec<String> = b.value().iter().map(|x| x.to_string()).collect();
-                    format!("SeedSpec.literal (ByteArray.mk #[{}])", bytes.join(", "))
-                }
-                SeedElem::FieldKey(id) => format!("SeedSpec.fieldKey \"{}\"", id),
-                SeedElem::InstrArg(off, len) => format!("SeedSpec.instrArg {} {}", off, len),
-                SeedElem::ArgField(id, _) => format!("SeedSpec.argField \"{}\"", id),
-                SeedElem::Unresolved(id) => unreachable!("unresolved seed `{id}` reached codegen"),
-            }).collect();
+            let seeds: Vec<String> = elems
+                .iter()
+                .map(|se| match se {
+                    SeedElem::Literal(b) => {
+                        let bytes: Vec<String> = b.value().iter().map(|x| x.to_string()).collect();
+                        format!("SeedSpec.literal (ByteArray.mk #[{}])", bytes.join(", "))
+                    }
+                    SeedElem::FieldKey(id) => format!("SeedSpec.fieldKey \"{}\"", id),
+                    SeedElem::InstrArg(off, len) => format!("SeedSpec.instrArg {} {}", off, len),
+                    SeedElem::ArgField(id, _) => format!("SeedSpec.argField \"{}\"", id),
+                    SeedElem::Unresolved(id) => {
+                        unreachable!("unresolved seed `{id}` reached codegen")
+                    }
+                })
+                .collect();
             format!("Constraint.seeds [{}] @@BUMP@@ @@PROG@@", seeds.join(", "))
         }
         // The program override is assembled into the seeds spec's third field below; emit nothing
         // standalone (same pattern as bumps).
         Constraint::SeedsProgram(_) => String::new(),
-        Constraint::BumpCanonical | Constraint::BumpDeclared(_) | Constraint::BumpStored(_) => String::new(),
+        Constraint::BumpCanonical | Constraint::BumpDeclared(_) | Constraint::BumpStored(_) => {
+            String::new()
+        }
         Constraint::Discriminator(d) => {
             let bytes: Vec<String> = d.iter().map(|x| x.to_string()).collect();
-            format!("Constraint.discriminator (ByteArray.mk #[{}])", bytes.join(", "))
+            format!(
+                "Constraint.discriminator (ByteArray.mk #[{}])",
+                bytes.join(", ")
+            )
         }
         // Schematic placeholder: the theorem is ∀ over the pubkey (same trick as `owner`).
         Constraint::Address(_) => "Constraint.address Pubkey.zero".to_string(),
@@ -1203,7 +1315,9 @@ fn lean_constraint(c: &Constraint) -> String {
         // `zero` is a validation constraint (reinit guard); emitted directly in the spec.
         Constraint::Zero => "Constraint.zero".to_string(),
         // Lifecycle markers assembled in lean_spec_string; emit nothing standalone.
-        Constraint::Realloc(_) | Constraint::ReallocPayer(_) | Constraint::ReallocZero(_)
+        Constraint::Realloc(_)
+        | Constraint::ReallocPayer(_)
+        | Constraint::ReallocZero(_)
         | Constraint::InitIfNeeded => String::new(),
         // Needs the `ExprCtx` to resolve names; reached only through `lean_constraint_with`.
         Constraint::Expr(_) => String::new(),
@@ -1243,7 +1357,9 @@ fn lean_spec_string(specs: &[FieldSpec], instr_args: &[InstrArg]) -> (String, Ve
         // the user's crate: the Lean literal when the expression is provable there, `""` when
         // it is not and the escape hatch owns it instead. See `locatability_cond`.
         let mut cs_cond: Vec<TokenStream2> = Vec::new();
-        let cs: Vec<String> = spec.constraints.iter()
+        let cs: Vec<String> = spec
+            .constraints
+            .iter()
             .map(|c| {
                 let s = lean_constraint_with(c, &expr_ctx);
                 if let Constraint::Expr(e) = c {
@@ -1261,40 +1377,95 @@ fn lean_spec_string(specs: &[FieldSpec], instr_args: &[InstrArg]) -> (String, Ve
             })
             .filter(|s| !s.is_empty())
             .collect();
-        let mut cs = cs;   // make mutable
-        // init: assemble InitMarker + Payer + Space -> Constraint.init "<payer>" <space> Pubkey.zero
-        if spec.constraints.iter().any(|c| matches!(c, Constraint::InitMarker)) {
-            let payer = spec.constraints.iter().find_map(|c|
-                if let Constraint::Payer(p) = c { Some(p.to_string()) } else { None });
-            let space = spec.constraints.iter().find_map(|c|
-                if let Constraint::Space(n) = c { Some(*n) } else { None });
+        let mut cs = cs; // make mutable
+                         // init: assemble InitMarker + Payer + Space -> Constraint.init "<payer>" <space> Pubkey.zero
+        if spec
+            .constraints
+            .iter()
+            .any(|c| matches!(c, Constraint::InitMarker))
+        {
+            let payer = spec.constraints.iter().find_map(|c| {
+                if let Constraint::Payer(p) = c {
+                    Some(p.to_string())
+                } else {
+                    None
+                }
+            });
+            let space = spec.constraints.iter().find_map(|c| {
+                if let Constraint::Space(n) = c {
+                    Some(*n)
+                } else {
+                    None
+                }
+            });
             if let (Some(payer), Some(space)) = (payer, space) {
-                cs.push(format!("Constraint.init \"{}\" {} Pubkey.zero", payer, space));
+                cs.push(format!(
+                    "Constraint.init \"{}\" {} Pubkey.zero",
+                    payer, space
+                ));
             }
         }
         // close: Close(dest) -> Constraint.close "<dest>"
-        if let Some(dest) = spec.constraints.iter().find_map(|c|
-            if let Constraint::Close(d) = c { Some(d.to_string()) } else { None }) {
+        if let Some(dest) = spec.constraints.iter().find_map(|c| {
+            if let Constraint::Close(d) = c {
+                Some(d.to_string())
+            } else {
+                None
+            }
+        }) {
             cs.push(format!("Constraint.close \"{}\"", dest));
         }
         // realloc: Realloc(newLen) + ReallocPayer(p) [+ ReallocZero(z)] -> Constraint.realloc "<p>" <newLen> <z>
-        if let Some(newlen) = spec.constraints.iter().find_map(|c|
-            if let Constraint::Realloc(n) = c { Some(*n) } else { None }) {
-            let payer = spec.constraints.iter().find_map(|c|
-                if let Constraint::ReallocPayer(p) = c { Some(p.to_string()) } else { None });
-            let zero = spec.constraints.iter().any(|c| matches!(c, Constraint::ReallocZero(true)));
+        if let Some(newlen) = spec.constraints.iter().find_map(|c| {
+            if let Constraint::Realloc(n) = c {
+                Some(*n)
+            } else {
+                None
+            }
+        }) {
+            let payer = spec.constraints.iter().find_map(|c| {
+                if let Constraint::ReallocPayer(p) = c {
+                    Some(p.to_string())
+                } else {
+                    None
+                }
+            });
+            let zero = spec
+                .constraints
+                .iter()
+                .any(|c| matches!(c, Constraint::ReallocZero(true)));
             if let Some(payer) = payer {
-                cs.push(format!("Constraint.realloc \"{}\" {} {}", payer, newlen, zero));
+                cs.push(format!(
+                    "Constraint.realloc \"{}\" {} {}",
+                    payer, newlen, zero
+                ));
             }
         }
         // init_if_needed: InitIfNeeded + Payer + Space -> Constraint.initIfNeeded "<payer>" <space> Pubkey.zero
-        if spec.constraints.iter().any(|c| matches!(c, Constraint::InitIfNeeded)) {
-            let payer = spec.constraints.iter().find_map(|c|
-                if let Constraint::Payer(p) = c { Some(p.to_string()) } else { None });
-            let space = spec.constraints.iter().find_map(|c|
-                if let Constraint::Space(n) = c { Some(*n) } else { None });
+        if spec
+            .constraints
+            .iter()
+            .any(|c| matches!(c, Constraint::InitIfNeeded))
+        {
+            let payer = spec.constraints.iter().find_map(|c| {
+                if let Constraint::Payer(p) = c {
+                    Some(p.to_string())
+                } else {
+                    None
+                }
+            });
+            let space = spec.constraints.iter().find_map(|c| {
+                if let Constraint::Space(n) = c {
+                    Some(*n)
+                } else {
+                    None
+                }
+            });
             if let (Some(payer), Some(space)) = (payer, space) {
-                cs.push(format!("Constraint.initIfNeeded \"{}\" {} Pubkey.zero", payer, space));
+                cs.push(format!(
+                    "Constraint.initIfNeeded \"{}\" {} Pubkey.zero",
+                    payer, space
+                ));
             }
         }
         let ty = match &spec.kind {
@@ -1310,7 +1481,9 @@ fn lean_spec_string(specs: &[FieldSpec], instr_args: &[InstrArg]) -> (String, Ve
                 args.push(quote! { <#t as ::verified_anchor::AccountData>::LAYOUT_LEAN });
                 // LAYOUT_LEAN is already parenthesised, so it drops straight into the
                 // `layout : Ty` position without adding parens here.
-                format!("AccountType.account \"@@ARG{name_hole}@@\" @@ARG{layout_hole}@@ Pubkey.zero")
+                format!(
+                    "AccountType.account \"@@ARG{name_hole}@@\" @@ARG{layout_hole}@@ Pubkey.zero"
+                )
             }
             WrapperKind::Signer => "AccountType.signer".to_string(),
             WrapperKind::SystemAccount => "AccountType.systemAccount".to_string(),
@@ -1321,16 +1494,24 @@ fn lean_spec_string(specs: &[FieldSpec], instr_args: &[InstrArg]) -> (String, Ve
         };
         // Parenthesise bumps that carry an argument so the emitted spec parses as a single
         // `BumpSpec` argument of `Constraint.seeds` (canonical takes no arg, so no parens).
-        let bump_str = spec.constraints.iter().find_map(|c| match c {
-            Constraint::BumpCanonical => Some("BumpSpec.canonical".to_string()),
-            Constraint::BumpDeclared(d) => Some(format!("(BumpSpec.declared {})", d)),
-            Constraint::BumpStored(off) => Some(format!("(BumpSpec.stored {})", off)),
-            _ => None,
-        }).unwrap_or_else(|| "BumpSpec.canonical".to_string());
+        let bump_str = spec
+            .constraints
+            .iter()
+            .find_map(|c| match c {
+                Constraint::BumpCanonical => Some("BumpSpec.canonical".to_string()),
+                Constraint::BumpDeclared(d) => Some(format!("(BumpSpec.declared {})", d)),
+                Constraint::BumpStored(off) => Some(format!("(BumpSpec.stored {})", off)),
+                _ => None,
+            })
+            .unwrap_or_else(|| "BumpSpec.canonical".to_string());
         // `seeds::program` override → the third `Constraint.seeds` field. Present ⇒ the schematic
         // placeholder `(some Pubkey.zero)` (the soundness theorem is ∀ over the pubkey, exactly
         // like `owner`/`address`); absent ⇒ `none` (derive against this program's id).
-        let prog_str = if spec.constraints.iter().any(|c| matches!(c, Constraint::SeedsProgram(_))) {
+        let prog_str = if spec
+            .constraints
+            .iter()
+            .any(|c| matches!(c, Constraint::SeedsProgram(_)))
+        {
             "(some Pubkey.zero)"
         } else {
             "none"
@@ -1344,15 +1525,18 @@ fn lean_spec_string(specs: &[FieldSpec], instr_args: &[InstrArg]) -> (String, Ve
             // is joined at RUNTIME: an entry that resolves to `""` must vanish along with its
             // separator, or the literal would come out as `[Constraint.mut, ]` and not parse.
             let mut conds = cs_cond.into_iter();
-            let pieces: Vec<TokenStream2> = cs.iter().map(|e| {
-                match e.as_str() {
+            let pieces: Vec<TokenStream2> = cs
+                .iter()
+                .map(|e| match e.as_str() {
                     "@@COND@@" => conds.next().expect("one hole per conditional entry"),
                     lit => {
-                        let lit = lit.replace("@@BUMP@@", &bump_str).replace("@@PROG@@", prog_str);
+                        let lit = lit
+                            .replace("@@BUMP@@", &bump_str)
+                            .replace("@@PROG@@", prog_str);
                         quote! { #lit }
                     }
-                }
-            }).collect();
+                })
+                .collect();
             let hole = args.len();
             args.push(quote! {
                 {
@@ -1368,10 +1552,14 @@ fn lean_spec_string(specs: &[FieldSpec], instr_args: &[InstrArg]) -> (String, Ve
         };
         // `allow_duplicate = <field>` opt-outs → the field's `allowDuplicate` list. Emitted
         // ONLY when non-empty so existing literals keep relying on the Lean field default `[]`.
-        let allows: Vec<String> = spec.constraints.iter().filter_map(|c| match c {
-            Constraint::AllowDuplicate(t) => Some(format!("\"{}\"", t)),
-            _ => None,
-        }).collect();
+        let allows: Vec<String> = spec
+            .constraints
+            .iter()
+            .filter_map(|c| match c {
+                Constraint::AllowDuplicate(t) => Some(format!("\"{}\"", t)),
+                _ => None,
+            })
+            .collect();
         let allow_str = if allows.is_empty() {
             String::new()
         } else {
@@ -1379,10 +1567,7 @@ fn lean_spec_string(specs: &[FieldSpec], instr_args: &[InstrArg]) -> (String, Ve
         };
         fields.push(format!(
             "{{ name := \"{}\", ty := {}, constraints := [{}]{} }}",
-            spec.name,
-            ty,
-            cs_joined,
-            allow_str
+            spec.name, ty, cs_joined, allow_str
         ));
     }
     let body = if fields.is_empty() {
@@ -1404,13 +1589,17 @@ fn lean_spec_string(specs: &[FieldSpec], instr_args: &[InstrArg]) -> (String, Ve
     } else {
         format!(
             ", instrArgs := [{}]",
-            instr_args.iter()
+            instr_args
+                .iter()
                 .map(|a| format!("(\"{}\", {})", a.name, a.lean))
                 .collect::<Vec<_>>()
                 .join(", ")
         )
     };
-    let raw = format!("{{ programId := Pubkey.zero{}, fields :={} }}", instr_args_str, body);
+    let raw = format!(
+        "{{ programId := Pubkey.zero{}, fields :={} }}",
+        instr_args_str, body
+    );
     // Escape LITERAL braces first (the record syntax `{ name := .. }` is not a format hole),
     // then turn the sentinels into holes. Doing it in this order is load-bearing: escaping
     // after substitution would double up the `{}` we just introduced. The `@@` delimiters make
@@ -1451,9 +1640,15 @@ fn validate_body(specs: &[FieldSpec], instr_args: &[InstrArg]) -> TokenStream2 {
         // already-initialized account) is re-established in execute_lifecycle's iin ELSE
         // branch, matching the proven Lean `applyInitIfNeeded`. Explicit seeds/address/etc.
         // constraints are KEPT — they identify the account and hold on fresh AND existing.
-        let has_iin = spec.constraints.iter().any(|c| matches!(c, Constraint::InitIfNeeded));
-        let effective: Vec<Constraint> = implied.into_iter()
-            .filter(|c| !(has_iin && matches!(c, Constraint::Owner(_) | Constraint::Discriminator(_))))
+        let has_iin = spec
+            .constraints
+            .iter()
+            .any(|c| matches!(c, Constraint::InitIfNeeded));
+        let effective: Vec<Constraint> = implied
+            .into_iter()
+            .filter(|c| {
+                !(has_iin && matches!(c, Constraint::Owner(_) | Constraint::Discriminator(_)))
+            })
             .chain(spec.constraints.iter().cloned())
             .collect();
         for c in &effective {
@@ -1475,8 +1670,9 @@ fn validate_body(specs: &[FieldSpec], instr_args: &[InstrArg]) -> TokenStream2 {
                 },
                 Constraint::HasOne(target) => {
                     let tname = target.to_string();
-                    let tidx = *index_of.get(&tname)
-                        .unwrap_or_else(|| panic!("has_one target `{tname}` is not a field of this struct"));
+                    let tidx = *index_of.get(&tname).unwrap_or_else(|| {
+                        panic!("has_one target `{tname}` is not a field of this struct")
+                    });
                     let fname = name;
                     // Only `Account<'info, T>` carries a layout; anything else has no modelled
                     // fields and must fail closed rather than silently reading offset 8 (the
@@ -1547,7 +1743,7 @@ fn validate_body(specs: &[FieldSpec], instr_args: &[InstrArg]) -> TokenStream2 {
                             }
                         }
                     }
-                },
+                }
                 Constraint::Discriminator(disc) => {
                     let fname = name;
                     let bs: Vec<u8> = disc.to_vec();
@@ -1561,7 +1757,7 @@ fn validate_body(specs: &[FieldSpec], instr_args: &[InstrArg]) -> TokenStream2 {
                             }
                         }
                     }
-                },
+                }
                 Constraint::Address(expr) => quote! {
                     if accounts[#i].key != &(#expr) {
                         return Err(::verified_anchor::VAError::WrongAddress { field: #name });
@@ -1583,7 +1779,7 @@ fn validate_body(specs: &[FieldSpec], instr_args: &[InstrArg]) -> TokenStream2 {
                             return Err(::verified_anchor::VAError::WrongOwner { field: #fname });
                         }
                     }
-                },
+                }
                 Constraint::RentExemptEnforce => {
                     let fname = name;
                     quote! {
@@ -1598,12 +1794,18 @@ fn validate_body(specs: &[FieldSpec], instr_args: &[InstrArg]) -> TokenStream2 {
                     }
                 }
                 // Lifecycle markers are handled in execute_lifecycle, not validate.
-                Constraint::InitMarker | Constraint::Payer(_) | Constraint::Space(_) | Constraint::Close(_) => {
+                Constraint::InitMarker
+                | Constraint::Payer(_)
+                | Constraint::Space(_)
+                | Constraint::Close(_) => {
                     continue;
                 }
                 // Seeds/bump/seeds::program are handled in the per-field PDA block below.
-                Constraint::Seeds(_) | Constraint::SeedsProgram(_) | Constraint::BumpCanonical
-                | Constraint::BumpDeclared(_) | Constraint::BumpStored(_) => {
+                Constraint::Seeds(_)
+                | Constraint::SeedsProgram(_)
+                | Constraint::BumpCanonical
+                | Constraint::BumpDeclared(_)
+                | Constraint::BumpStored(_) => {
                     continue;
                 }
                 // The opt-out tunes the struct-level pairwise check below, not a per-field check.
@@ -1615,7 +1817,9 @@ fn validate_body(specs: &[FieldSpec], instr_args: &[InstrArg]) -> TokenStream2 {
                     continue;
                 }
                 // Lifecycle markers (handled in execute_lifecycle, not validate).
-                Constraint::Realloc(_) | Constraint::ReallocPayer(_) | Constraint::ReallocZero(_)
+                Constraint::Realloc(_)
+                | Constraint::ReallocPayer(_)
+                | Constraint::ReallocZero(_)
                 | Constraint::InitIfNeeded => {
                     continue;
                 }
@@ -1664,7 +1868,9 @@ fn validate_body(specs: &[FieldSpec], instr_args: &[InstrArg]) -> TokenStream2 {
         }
 
         // seeds/bump: emit one PDA check per field that declares `seeds`.
-        if let Some(Constraint::Seeds(elems)) = spec.constraints.iter()
+        if let Some(Constraint::Seeds(elems)) = spec
+            .constraints
+            .iter()
             .find(|c| matches!(c, Constraint::Seeds(_)))
         {
             let fname = name;
@@ -1759,19 +1965,28 @@ fn validate_body(specs: &[FieldSpec], instr_args: &[InstrArg]) -> TokenStream2 {
     // `distinctMutKeys` (mut = `Constraint::Mut` in implied++explicit; exempt = either field
     // lists the other in `allow_duplicate`).
     let is_mut = |spec: &FieldSpec| -> bool {
-        wrapper_implied(&spec.kind).iter().chain(spec.constraints.iter())
+        wrapper_implied(&spec.kind)
+            .iter()
+            .chain(spec.constraints.iter())
             .any(|c| matches!(c, Constraint::Mut))
     };
     let allows = |spec: &FieldSpec, other: &str| -> bool {
-        spec.constraints.iter().any(|c|
-            matches!(c, Constraint::AllowDuplicate(t) if t == other))
+        spec.constraints
+            .iter()
+            .any(|c| matches!(c, Constraint::AllowDuplicate(t) if t == other))
     };
-    let mut_indices: Vec<usize> = specs.iter().enumerate()
-        .filter(|(_, s)| is_mut(s)).map(|(i, _)| i).collect();
+    let mut_indices: Vec<usize> = specs
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| is_mut(s))
+        .map(|(i, _)| i)
+        .collect();
     for (a, &i) in mut_indices.iter().enumerate() {
         for &j in &mut_indices[a + 1..] {
             let exempt = allows(&specs[i], &specs[j].name) || allows(&specs[j], &specs[i].name);
-            if exempt { continue; }
+            if exempt {
+                continue;
+            }
             let fa = &specs[i].name;
             let fb = &specs[j].name;
             checks.push(quote! {
@@ -1811,8 +2026,11 @@ fn validate_body(specs: &[FieldSpec], instr_args: &[InstrArg]) -> TokenStream2 {
 fn lifecycle_body(specs: &[FieldSpec]) -> TokenStream2 {
     let n = specs.len();
     // Build name→index map for resolving payer/dest references.
-    let index_of: std::collections::HashMap<String, usize> =
-        specs.iter().enumerate().map(|(i, s)| (s.name.clone(), i)).collect();
+    let index_of: std::collections::HashMap<String, usize> = specs
+        .iter()
+        .enumerate()
+        .map(|(i, s)| (s.name.clone(), i))
+        .collect();
 
     let mut lifecycle_steps: Vec<TokenStream2> = Vec::new();
 
@@ -1820,17 +2038,29 @@ fn lifecycle_body(specs: &[FieldSpec]) -> TokenStream2 {
         let fname = &spec.name;
 
         // Detect init: requires InitMarker + Payer + Space all present.
-        let has_init = spec.constraints.iter().any(|c| matches!(c, Constraint::InitMarker));
+        let has_init = spec
+            .constraints
+            .iter()
+            .any(|c| matches!(c, Constraint::InitMarker));
         if has_init {
             let payer_ident = spec.constraints.iter().find_map(|c| {
-                if let Constraint::Payer(p) = c { Some(p.to_string()) } else { None }
+                if let Constraint::Payer(p) = c {
+                    Some(p.to_string())
+                } else {
+                    None
+                }
             });
             let space_val = spec.constraints.iter().find_map(|c| {
-                if let Constraint::Space(n) = c { Some(*n) } else { None }
+                if let Constraint::Space(n) = c {
+                    Some(*n)
+                } else {
+                    None
+                }
             });
             if let (Some(payer_name), Some(n)) = (payer_ident, space_val) {
-                let pi = *index_of.get(&payer_name)
-                    .unwrap_or_else(|| panic!("init payer `{payer_name}` is not a field of this struct"));
+                let pi = *index_of.get(&payer_name).unwrap_or_else(|| {
+                    panic!("init payer `{payer_name}` is not a field of this struct")
+                });
                 lifecycle_steps.push(quote! {
                     {
                         let space_total: usize = #n + 8;
@@ -1848,11 +2078,16 @@ fn lifecycle_body(specs: &[FieldSpec]) -> TokenStream2 {
 
         // Detect close: requires Close(dest).
         let close_dest = spec.constraints.iter().find_map(|c| {
-            if let Constraint::Close(dest) = c { Some(dest.to_string()) } else { None }
+            if let Constraint::Close(dest) = c {
+                Some(dest.to_string())
+            } else {
+                None
+            }
         });
         if let Some(dest_name) = close_dest {
-            let di = *index_of.get(&dest_name)
-                .unwrap_or_else(|| panic!("close destination `{dest_name}` is not a field of this struct"));
+            let di = *index_of.get(&dest_name).unwrap_or_else(|| {
+                panic!("close destination `{dest_name}` is not a field of this struct")
+            });
             lifecycle_steps.push(quote! {
                 {
                     let bal = accounts[#i].lamports();
@@ -1868,15 +2103,32 @@ fn lifecycle_body(specs: &[FieldSpec]) -> TokenStream2 {
         }
 
         // realloc
-        let realloc_newlen = spec.constraints.iter().find_map(|c|
-            if let Constraint::Realloc(n) = c { Some(*n) } else { None });
+        let realloc_newlen = spec.constraints.iter().find_map(|c| {
+            if let Constraint::Realloc(n) = c {
+                Some(*n)
+            } else {
+                None
+            }
+        });
         if let Some(newlen) = realloc_newlen {
-            let payer_name = spec.constraints.iter().find_map(|c|
-                if let Constraint::ReallocPayer(p) = c { Some(p.to_string()) } else { None })
+            let payer_name = spec
+                .constraints
+                .iter()
+                .find_map(|c| {
+                    if let Constraint::ReallocPayer(p) = c {
+                        Some(p.to_string())
+                    } else {
+                        None
+                    }
+                })
                 .unwrap_or_else(|| panic!("realloc on `{}` needs realloc::payer", fname));
-            let pi = *index_of.get(&payer_name)
-                .unwrap_or_else(|| panic!("realloc::payer `{payer_name}` is not a field of this struct"));
-            let zero_flag = spec.constraints.iter().any(|c| matches!(c, Constraint::ReallocZero(true)));
+            let pi = *index_of.get(&payer_name).unwrap_or_else(|| {
+                panic!("realloc::payer `{payer_name}` is not a field of this struct")
+            });
+            let zero_flag = spec
+                .constraints
+                .iter()
+                .any(|c| matches!(c, Constraint::ReallocZero(true)));
             lifecycle_steps.push(quote! {
                 {
                     use ::verified_anchor::solana_program::sysvar::Sysvar as _;
@@ -1899,15 +2151,35 @@ fn lifecycle_body(specs: &[FieldSpec]) -> TokenStream2 {
         }
 
         // init_if_needed
-        let has_iin = spec.constraints.iter().any(|c| matches!(c, Constraint::InitIfNeeded));
+        let has_iin = spec
+            .constraints
+            .iter()
+            .any(|c| matches!(c, Constraint::InitIfNeeded));
         if has_iin {
-            let payer_name = spec.constraints.iter().find_map(|c|
-                if let Constraint::Payer(p) = c { Some(p.to_string()) } else { None })
+            let payer_name = spec
+                .constraints
+                .iter()
+                .find_map(|c| {
+                    if let Constraint::Payer(p) = c {
+                        Some(p.to_string())
+                    } else {
+                        None
+                    }
+                })
                 .unwrap_or_else(|| panic!("init_if_needed on `{}` needs payer", fname));
-            let pi = *index_of.get(&payer_name)
+            let pi = *index_of
+                .get(&payer_name)
                 .unwrap_or_else(|| panic!("init_if_needed payer `{payer_name}` is not a field"));
-            let n = spec.constraints.iter().find_map(|c|
-                if let Constraint::Space(n) = c { Some(*n) } else { None })
+            let n = spec
+                .constraints
+                .iter()
+                .find_map(|c| {
+                    if let Constraint::Space(n) = c {
+                        Some(*n)
+                    } else {
+                        None
+                    }
+                })
                 .unwrap_or_else(|| panic!("init_if_needed on `{}` needs space", fname));
             // The Task 6 struct-level guard requires an iin field to be a typed
             // `Account<'info, T>`; extract T so we can stamp its real Anchor discriminator
@@ -1915,31 +2187,51 @@ fn lifecycle_body(specs: &[FieldSpec]) -> TokenStream2 {
             // reject a wrong-owner/undersized existing account in the ELSE branch.
             let t = match &spec.kind {
                 WrapperKind::Account(t) => t.clone(),
-                _ => panic!("init_if_needed on `{}` must be a typed Account (Task 6 guard)", fname),
+                _ => panic!(
+                    "init_if_needed on `{}` must be a typed Account (Task 6 guard)",
+                    fname
+                ),
             };
             // Seeded-PDA iin fields must be created with `invoke_signed` (the PDA is off-curve
             // and cannot sign as a tx signer). Re-derive the canonical bump inside
             // `execute_lifecycle` from the field's seed literals/field-keys and pass the signer
             // seeds. `arg(..)` seeds are NOT supported here — execute_lifecycle has no instr_data
             // — so reject them at compile time with a clear message.
-            let seeds_for_signed: Option<Vec<TokenStream2>> = spec.constraints.iter()
-                .find_map(|c| if let Constraint::Seeds(elems) = c { Some(elems) } else { None })
-                .map(|elems| elems.iter().map(|se| match se {
-                    SeedElem::Literal(b) => quote! { &#b[..] },
-                    SeedElem::FieldKey(id) => {
-                        // Guarded with a span in `derive_verified_accounts`, which runs first.
-                        let fi = *index_of.get(&id.to_string())
-                            .unwrap_or_else(|| unreachable!("seed field `{id}` reached codegen"));
-                        quote! { accounts[#fi].key.as_ref() }
+            let seeds_for_signed: Option<Vec<TokenStream2>> = spec
+                .constraints
+                .iter()
+                .find_map(|c| {
+                    if let Constraint::Seeds(elems) = c {
+                        Some(elems)
+                    } else {
+                        None
                     }
-                    SeedElem::InstrArg(off, len) => unreachable!(
+                })
+                .map(|elems| {
+                    elems
+                        .iter()
+                        .map(|se| match se {
+                            SeedElem::Literal(b) => quote! { &#b[..] },
+                            SeedElem::FieldKey(id) => {
+                                // Guarded with a span in `derive_verified_accounts`, which runs first.
+                                let fi = *index_of.get(&id.to_string()).unwrap_or_else(|| {
+                                    unreachable!("seed field `{id}` reached codegen")
+                                });
+                                quote! { accounts[#fi].key.as_ref() }
+                            }
+                            SeedElem::InstrArg(off, len) => unreachable!(
                         "init_if_needed + `arg({off}, {len})` seed on `{fname}` reached codegen"),
-                    SeedElem::Unresolved(id) => unreachable!("unresolved seed `{id}` reached codegen"),
-                    // Both instruction-data seed kinds are rejected with a span by the
-                    // init_if_needed guard in `derive_verified_accounts`, which runs first.
-                    SeedElem::ArgField(id, _) => unreachable!(
-                        "init_if_needed + `{id}` arg seed on `{fname}` reached codegen"),
-                }).collect());
+                            SeedElem::Unresolved(id) => {
+                                unreachable!("unresolved seed `{id}` reached codegen")
+                            }
+                            // Both instruction-data seed kinds are rejected with a span by the
+                            // init_if_needed guard in `derive_verified_accounts`, which runs first.
+                            SeedElem::ArgField(id, _) => unreachable!(
+                                "init_if_needed + `{id}` arg seed on `{fname}` reached codegen"
+                            ),
+                        })
+                        .collect()
+                });
             let init_create = match &seeds_for_signed {
                 Some(seed_exprs) => quote! {
                     // Seeded PDA: derive the canonical bump, then invoke_signed so the PDA can
@@ -2056,9 +2348,13 @@ pub fn derive_verified_accounts(input: TokenStream) -> TokenStream {
         for spec in &mut specs {
             let field = spec.name.clone();
             for c in &mut spec.constraints {
-                let Constraint::Seeds(elems) = c else { continue };
+                let Constraint::Seeds(elems) = c else {
+                    continue;
+                };
                 for e in elems {
-                    let SeedElem::Unresolved(id) = e else { continue };
+                    let SeedElem::Unresolved(id) = e else {
+                        continue;
+                    };
                     let n = id.to_string();
                     let is_arg = instr_args.mappable.iter().any(|a| a.name == n);
                     let is_field = field_names.contains(&n);
@@ -2070,32 +2366,50 @@ pub fn derive_verified_accounts(input: TokenStream) -> TokenStream {
                     // both agree with the wrong answer. `#[instruction(params: SomeStruct,
                     // authority: Pubkey)]` next to an `authority` account is ordinary Anchor.
                     if !is_arg && instr_args.declared.contains(&n) {
-                        return syn::Error::new_spanned(&*id, format!(
+                        return syn::Error::new_spanned(
+                            &*id,
+                            format!(
                             "seed `{id}.as_ref()` on field `{field}` names the #[instruction(...)] \
                              argument `{id}`, which verified-anchor had to drop: its type, or the \
                              type of an argument declared before it, is not one verified-anchor \
                              can locate yet, and every argument at or after the first such type \
                              has a Borsh offset that cannot be computed. Give those arguments \
-                             mappable types, or move `{id}` ahead of them"))
-                            .to_compile_error().into();
+                             mappable types, or move `{id}` ahead of them"),
+                        )
+                        .to_compile_error()
+                        .into();
                     }
                     *e = match (is_arg, is_field) {
-                        (true, true) => return syn::Error::new_spanned(&*id, format!(
+                        (true, true) => {
+                            return syn::Error::new_spanned(
+                                &*id,
+                                format!(
                             "seed `{id}.as_ref()` on field `{field}` is ambiguous: `{id}` is both \
                              a declared #[instruction(...)] argument and an account field of this \
                              struct. Rename one of them — guessing would derive a different \
-                             address than the one you meant"))
-                            .to_compile_error().into(),
+                             address than the one you meant"),
+                            )
+                            .to_compile_error()
+                            .into()
+                        }
                         (true, false) => SeedElem::ArgField(id.clone(), ArgSeedForm::Bare),
                         (false, true) => SeedElem::FieldKey(id.clone()),
                         (false, false) => {
-                            let args: Vec<&str> = instr_args.mappable.iter().map(|a| a.name.as_str()).collect();
-                            return syn::Error::new_spanned(&*id, format!(
+                            let args: Vec<&str> = instr_args
+                                .mappable
+                                .iter()
+                                .map(|a| a.name.as_str())
+                                .collect();
+                            return syn::Error::new_spanned(
+                                &*id,
+                                format!(
                                 "seed `{id}.as_ref()` on field `{field}` names neither a declared \
                                  #[instruction(...)] argument (declared and mappable: [{}]) nor an \
                                  account field of this struct ([{}])",
-                                args.join(", "), field_names.join(", ")))
-                                .to_compile_error().into();
+                                args.join(", "), field_names.join(", ")),
+                            )
+                            .to_compile_error()
+                            .into();
                         }
                     };
                 }
@@ -2110,12 +2424,23 @@ pub fn derive_verified_accounts(input: TokenStream) -> TokenStream {
     // here too, which is correct: its offset is genuinely uncomputable.
     for spec in &specs {
         for c in &spec.constraints {
-            let Constraint::Seeds(elems) = c else { continue };
+            let Constraint::Seeds(elems) = c else {
+                continue;
+            };
             for e in elems {
-                let SeedElem::ArgField(id, form) = e else { continue };
-                let Some(arg) = instr_args.mappable.iter().find(|a| a.name == id.to_string()) else {
-                    let mappable: Vec<&str> =
-                        instr_args.mappable.iter().map(|a| a.name.as_str()).collect();
+                let SeedElem::ArgField(id, form) = e else {
+                    continue;
+                };
+                let Some(arg) = instr_args
+                    .mappable
+                    .iter()
+                    .find(|a| a.name == id.to_string())
+                else {
+                    let mappable: Vec<&str> = instr_args
+                        .mappable
+                        .iter()
+                        .map(|a| a.name.as_str())
+                        .collect();
                     let why = if instr_args.declared.contains(&id.to_string()) {
                         // Declared, but at or after the unmappable-type cutoff. Saying "not
                         // declared" here would be actively misleading — the developer DID
@@ -2127,11 +2452,15 @@ pub fn derive_verified_accounts(input: TokenStream) -> TokenStream {
                     } else {
                         "is not declared there; add it to `#[instruction(...)]`"
                     };
-                    return syn::Error::new_spanned(id, format!(
+                    return syn::Error::new_spanned(
+                        id,
+                        format!(
                         "seed `{id}.{}` on field `{}` names an #[instruction(...)] argument that \
                          {why} (declared and mappable: [{}])",
-                        form.spelling(), spec.name, mappable.join(", ")))
-                        .to_compile_error().into();
+                        form.spelling(), spec.name, mappable.join(", ")),
+                    )
+                    .to_compile_error()
+                    .into();
                 };
                 // The bytes come from the DECLARED TYPE, never from the method name, so a
                 // mismatch would silently succeed with bytes the spelling does not describe
@@ -2148,20 +2477,29 @@ pub fn derive_verified_accounts(input: TokenStream) -> TokenStream {
                 };
                 if !ok {
                     let expected = match arg.kind {
-                        ArgTyKind::Prefixed => "`as_bytes()` or `as_ref()` (String/Vec<u8> are length-prefixed)",
+                        ArgTyKind::Prefixed => {
+                            "`as_bytes()` or `as_ref()` (String/Vec<u8> are length-prefixed)"
+                        }
                         ArgTyKind::Numeric => "`to_le_bytes()` (Borsh integers are little-endian)",
                         ArgTyKind::Key => "`as_ref()` (a Pubkey is already byte-shaped)",
-                        ArgTyKind::Other =>
+                        ArgTyKind::Other => {
                             "no seed spelling yet — seeds can be String/Vec<u8> (`as_bytes()` \
                              or `as_ref()`), an integer (`to_le_bytes()`) or a Pubkey \
                              (`as_ref()`). Note a `Vec<T>` with a wider element is NOT \
-                             byte-shaped: its 4-byte prefix counts ELEMENTS, not bytes",
+                             byte-shaped: its 4-byte prefix counts ELEMENTS, not bytes"
+                        }
                     };
-                    return syn::Error::new_spanned(id, format!(
-                        "seed `{id}.{}` on field `{}` does not match the declared type of \
+                    return syn::Error::new_spanned(
+                        id,
+                        format!(
+                            "seed `{id}.{}` on field `{}` does not match the declared type of \
                          `{id}` in #[instruction(...)]; expected {expected}",
-                        form.spelling(), spec.name))
-                        .to_compile_error().into();
+                            form.spelling(),
+                            spec.name
+                        ),
+                    )
+                    .to_compile_error()
+                    .into();
                 }
             }
         }
@@ -2173,16 +2511,24 @@ pub fn derive_verified_accounts(input: TokenStream) -> TokenStream {
     // source location at all. Two lookup sites share this one guard.
     for spec in &specs {
         for c in &spec.constraints {
-            let Constraint::Seeds(elems) = c else { continue };
+            let Constraint::Seeds(elems) = c else {
+                continue;
+            };
             for e in elems {
                 let SeedElem::FieldKey(id) = e else { continue };
                 if !specs.iter().any(|s| s.name == id.to_string()) {
                     let fields: Vec<&str> = specs.iter().map(|s| s.name.as_str()).collect();
-                    return syn::Error::new_spanned(id, format!(
-                        "seed `{id}.key()` on field `{}` is not a field of this struct \
+                    return syn::Error::new_spanned(
+                        id,
+                        format!(
+                            "seed `{id}.key()` on field `{}` is not a field of this struct \
                          (fields: [{}])",
-                        spec.name, fields.join(", ")))
-                        .to_compile_error().into();
+                            spec.name,
+                            fields.join(", ")
+                        ),
+                    )
+                    .to_compile_error()
+                    .into();
                 }
             }
         }
@@ -2193,25 +2539,35 @@ pub fn derive_verified_accounts(input: TokenStream) -> TokenStream {
     // This is VALID Anchor source, so it must fail as a spanned compile error explaining the
     // limitation — not as the `panic!` inside `lifecycle_body`, which loses the span entirely.
     for spec in &specs {
-        if !spec.constraints.iter().any(|c| matches!(c, Constraint::InitIfNeeded)) {
+        if !spec
+            .constraints
+            .iter()
+            .any(|c| matches!(c, Constraint::InitIfNeeded))
+        {
             continue;
         }
         for c in &spec.constraints {
-            let Constraint::Seeds(elems) = c else { continue };
+            let Constraint::Seeds(elems) = c else {
+                continue;
+            };
             let bad = elems.iter().find_map(|e| match e {
                 SeedElem::ArgField(id, form) => Some(format!("{id}.{}", form.spelling())),
                 SeedElem::InstrArg(off, len) => Some(format!("arg({off}, {len})")),
                 _ => None,
             });
             if let Some(bad) = bad {
-                return syn::Error::new_spanned(name, format!(
+                return syn::Error::new_spanned(
+                    name,
+                    format!(
                     "field `{}` combines `init_if_needed` with the instruction-data seed `{bad}`, \
                      which verified-anchor cannot support: the account is created in \
                      `execute_lifecycle`, which receives no instruction data and so cannot \
                      rebuild the PDA's signer seeds. Use literal or `<field>.key()` seeds, or \
                      create the account with an explicit `init`",
-                    spec.name))
-                    .to_compile_error().into();
+                    spec.name),
+                )
+                .to_compile_error()
+                .into();
             }
         }
     }
@@ -2220,15 +2576,31 @@ pub fn derive_verified_accounts(input: TokenStream) -> TokenStream {
     // Guard: `init_if_needed` requires a typed `Account<'info, T>` — the wrapper's
     //        owner+discriminator checks are the reinit guard (prevents reuse attacks).
     for spec in &specs {
-        let has_realloc = spec.constraints.iter().any(|c| matches!(c, Constraint::Realloc(_)));
-        let has_mut = spec.constraints.iter().any(|c| matches!(c, Constraint::Mut));
+        let has_realloc = spec
+            .constraints
+            .iter()
+            .any(|c| matches!(c, Constraint::Realloc(_)));
+        let has_mut = spec
+            .constraints
+            .iter()
+            .any(|c| matches!(c, Constraint::Mut));
         if has_realloc && !has_mut {
-            return syn::Error::new_spanned(name,
-                format!("field `{}` uses `realloc` but is not `mut`; realloc mutates the account", spec.name))
-                .to_compile_error().into();
+            return syn::Error::new_spanned(
+                name,
+                format!(
+                    "field `{}` uses `realloc` but is not `mut`; realloc mutates the account",
+                    spec.name
+                ),
+            )
+            .to_compile_error()
+            .into();
         }
-        if spec.constraints.iter().any(|c| matches!(c, Constraint::InitIfNeeded))
-            && !matches!(spec.kind, WrapperKind::Account(_)) {
+        if spec
+            .constraints
+            .iter()
+            .any(|c| matches!(c, Constraint::InitIfNeeded))
+            && !matches!(spec.kind, WrapperKind::Account(_))
+        {
             return syn::Error::new_spanned(name,
                 format!("field `{}` uses `init_if_needed` but is not a typed `Account<'info, T>`; the wrapper's owner+discriminator checks are the reinit guard", spec.name))
                 .to_compile_error().into();
@@ -2239,8 +2611,12 @@ pub fn derive_verified_accounts(input: TokenStream) -> TokenStream {
         // cascade from the missing `Validate::validate`. (`has_one` on an `UncheckedAccount`
         // is not valid stock Anchor either, and Lean's `AccountType.locateField` returns
         // `none` for non-account wrappers, so the model cannot express it.)
-        if spec.constraints.iter().any(|c| matches!(c, Constraint::HasOne(_)))
-            && !matches!(spec.kind, WrapperKind::Account(_)) {
+        if spec
+            .constraints
+            .iter()
+            .any(|c| matches!(c, Constraint::HasOne(_)))
+            && !matches!(spec.kind, WrapperKind::Account(_))
+        {
             return syn::Error::new_spanned(name,
                 format!("field `{}` uses `has_one` but is not a typed `Account<'info, T>`; the target's Borsh offset comes from `T::LAYOUT`", spec.name))
                 .to_compile_error().into();
@@ -2260,8 +2636,7 @@ pub fn derive_verified_accounts(input: TokenStream) -> TokenStream {
     // ("verified-anchor never accepts an account set the contract rejects") is untouched, only
     // completeness is.
     let (hatch_index_of, hatch_inner_ty) = expr_maps(&specs);
-    let hatch_arg_names: Vec<String> =
-        instr_args.mappable.iter().map(|a| a.name.clone()).collect();
+    let hatch_arg_names: Vec<String> = instr_args.mappable.iter().map(|a| a.name.clone()).collect();
     let hatch_ctx = crate::expr::ExprCtx {
         index_of: &hatch_index_of,
         inner_ty: &hatch_inner_ty,
@@ -2274,13 +2649,16 @@ pub fn derive_verified_accounts(input: TokenStream) -> TokenStream {
     // `UNPROVEN_CHECKS` entries. A conditionally proven expression contributes `""` in the
     // builds where the proof does cover it; the empties are filtered out below so the reported
     // list is exactly the set of checks running outside the proof in THIS build.
-    let unproven_srcs: Vec<TokenStream2> = unproven.iter().map(|u| {
-        let src = &u.src;
-        match &u.proven_if {
-            Some((cond, _)) => quote! { if #cond { "" } else { #src } },
-            None => quote! { #src },
-        }
-    }).collect();
+    let unproven_srcs: Vec<TokenStream2> = unproven
+        .iter()
+        .map(|u| {
+            let src = &u.src;
+            match &u.proven_if {
+                Some((cond, _)) => quote! { if #cond { "" } else { #src } },
+                None => quote! { #src },
+            }
+        })
+        .collect();
 
     let hatch_ctx_deser = crate::expr::ExprCtx {
         index_of: &hatch_index_of,
@@ -2298,16 +2676,25 @@ pub fn derive_verified_accounts(input: TokenStream) -> TokenStream {
         // `Account<'info, T>` derefs to the deserialised `T`, the untyped wrappers
         // deref to `AccountInfo`. Only the names actually used are bound — an unused
         // binding would warn in the user's crate, which they cannot silence.
-        let binds: Vec<TokenStream2> = specs.iter().filter(|sp| used.contains(&sp.name))
+        let binds: Vec<TokenStream2> = specs
+            .iter()
+            .filter(|sp| used.contains(&sp.name))
             .map(|sp| {
                 let id = syn::Ident::new(&sp.name, name.span());
                 // Same reasoning as the argument bindings below: `idents_in` may over-report
                 // (an account field name reached only through a non-value position), and the
                 // resulting warning would be unsilenceable in the user's crate.
                 quote! { #[allow(unused_variables)] let #id = &__self.#id; }
-            }).collect();
+            })
+            .collect();
         let arg_binds = instr_arg_binds(
-            &instr_args.all, &used, &field_names, field, src, name.span());
+            &instr_args.all,
+            &used,
+            &field_names,
+            field,
+            src,
+            name.span(),
+        );
         quote! {
             {
                 #(#binds)*
@@ -2321,62 +2708,86 @@ pub fn derive_verified_accounts(input: TokenStream) -> TokenStream {
         }
     };
 
-    let hatch_checks: Vec<TokenStream2> = unproven.iter().map(|u| {
-        let (field, src, e) = (&u.field, &u.src, u.expr);
-        match &u.proven_if {
-            // Const-selected fallback for a SUBLANGUAGE expression whose data fields the user's
-            // descriptor cannot read at the byte level. The proven check in `validate` is
-            // switched off by the SAME const, so exactly one of the two runs — never neither.
-            Some((cond, Some(v))) => {
-                let check = v.to_tokens_check(field, src, &hatch_ctx_deser);
-                // `Operand::instrArg` reads `instr_data` through this const, which
-                // `try_accounts` only emits for seeds. Shadowing it locally is harmless and
-                // keeps the fallback self-contained.
-                let args_decl = match v.uses_instr_arg() {
-                    true => instr_args_const(&instr_args.mappable),
-                    false => quote! {},
-                };
-                quote! { if !(#cond) { #args_decl #check } }
+    let hatch_checks: Vec<TokenStream2> = unproven
+        .iter()
+        .map(|u| {
+            let (field, src, e) = (&u.field, &u.src, u.expr);
+            match &u.proven_if {
+                // Const-selected fallback for a SUBLANGUAGE expression whose data fields the user's
+                // descriptor cannot read at the byte level. The proven check in `validate` is
+                // switched off by the SAME const, so exactly one of the two runs — never neither.
+                Some((cond, Some(v))) => {
+                    let check = v.to_tokens_check(field, src, &hatch_ctx_deser);
+                    // `Operand::instrArg` reads `instr_data` through this const, which
+                    // `try_accounts` only emits for seeds. Shadowing it locally is harmless and
+                    // keeps the fallback self-contained.
+                    let args_decl = match v.uses_instr_arg() {
+                        true => instr_args_const(&instr_args.mappable),
+                        false => quote! {},
+                    };
+                    quote! { if !(#cond) { #args_decl #check } }
+                }
+                // Same const selection, but the fallback is the developer's verbatim Rust — the only
+                // form that can read an AGGREGATE field (`[T; N]`, `String`, `Vec<T>`, `Option<T>`),
+                // which both `read_val` and `layout::FieldValue` refuse.
+                Some((cond, None)) => {
+                    let body = verbatim_check(field, src, e);
+                    quote! { if !(#cond) #body }
+                }
+                // Outside the sublanguage: the developer's Rust, verbatim, in every build.
+                None => verbatim_check(field, src, e),
             }
-            // Same const selection, but the fallback is the developer's verbatim Rust — the only
-            // form that can read an AGGREGATE field (`[T; N]`, `String`, `Vec<T>`, `Option<T>`),
-            // which both `read_val` and `layout::FieldValue` refuse.
-            Some((cond, None)) => {
-                let body = verbatim_check(field, src, e);
-                quote! { if !(#cond) #body }
-            }
-            // Outside the sublanguage: the developer's Rust, verbatim, in every build.
-            None => verbatim_check(field, src, e),
-        }
-    }).collect();
+        })
+        .collect();
 
     let lifecycle = lifecycle_body(&specs);
-    let has_lifecycle = specs.iter().any(|s| s.constraints.iter().any(|c|
-        matches!(c, Constraint::InitMarker | Constraint::Close(_)
-                  | Constraint::Realloc(_) | Constraint::InitIfNeeded)));
+    let has_lifecycle = specs.iter().any(|s| {
+        s.constraints.iter().any(|c| {
+            matches!(
+                c,
+                Constraint::InitMarker
+                    | Constraint::Close(_)
+                    | Constraint::Realloc(_)
+                    | Constraint::InitIfNeeded
+            )
+        })
+    });
     let name_str = name.to_string();
 
     let has_info = !specs.is_empty();
     let bumps_struct_name = syn::Ident::new(&format!("{}Bumps", name), name.span());
 
     // Identify seeded fields (those with a Constraint::Seeds), preserving order.
-    let seeded: Vec<(usize, &FieldSpec, &Vec<SeedElem>)> = specs.iter().enumerate()
-        .filter_map(|(i, s)| s.constraints.iter().find_map(|c| {
-            if let Constraint::Seeds(elems) = c { Some((i, s, elems)) } else { None }
-        }))
+    let seeded: Vec<(usize, &FieldSpec, &Vec<SeedElem>)> = specs
+        .iter()
+        .enumerate()
+        .filter_map(|(i, s)| {
+            s.constraints.iter().find_map(|c| {
+                if let Constraint::Seeds(elems) = c {
+                    Some((i, s, elems))
+                } else {
+                    None
+                }
+            })
+        })
         .collect();
 
     // Build name→index map for resolving `field.key()` seeds in Bumps init.
-    let bumps_index_of: std::collections::HashMap<String, usize> =
-        specs.iter().enumerate().map(|(i, s)| (s.name.clone(), i)).collect();
+    let bumps_index_of: std::collections::HashMap<String, usize> = specs
+        .iter()
+        .enumerate()
+        .map(|(i, s)| (s.name.clone(), i))
+        .collect();
 
     // Per-seeded-field: (Bumps-field Ident, seed slice exprs, derivation program-id token).
     // The `seeds::program` override applies here too so the canonical bump exposed in `Bumps`
     // is derived against the SAME foreign program id used by `validate`.
-    let bumps_fields: Vec<(syn::Ident, Vec<TokenStream2>, TokenStream2)> = seeded.iter().map(|(_, spec, elems)| {
-        let fname = syn::Ident::new(&spec.name, name.span());
-        let bumps_fname: &str = &spec.name;
-        let seed_exprs: Vec<TokenStream2> = elems.iter().map(|se| match se {
+    let bumps_fields: Vec<(syn::Ident, Vec<TokenStream2>, TokenStream2)> = seeded
+        .iter()
+        .map(|(_, spec, elems)| {
+            let fname = syn::Ident::new(&spec.name, name.span());
+            let bumps_fname: &str = &spec.name;
+            let seed_exprs: Vec<TokenStream2> = elems.iter().map(|se| match se {
             SeedElem::Literal(b) => quote! { &#b[..] },
             SeedElem::FieldKey(id) => {
                 // Guarded with a span in `derive_verified_accounts`, which runs first.
@@ -2396,15 +2807,16 @@ pub fn derive_verified_accounts(input: TokenStream) -> TokenStream {
             SeedElem::ArgField(id, _) => arg_field_seed_expr(id, bumps_fname),
             SeedElem::Unresolved(id) => unreachable!("unresolved seed `{id}` reached codegen"),
         }).collect();
-        let derive_pid: TokenStream2 = match spec.constraints.iter().find_map(|c| match c {
-            Constraint::SeedsProgram(e) => Some(e),
-            _ => None,
-        }) {
-            Some(expr) => quote! { &(#expr) },
-            None => quote! { program_id },
-        };
-        (fname, seed_exprs, derive_pid)
-    }).collect();
+            let derive_pid: TokenStream2 = match spec.constraints.iter().find_map(|c| match c {
+                Constraint::SeedsProgram(e) => Some(e),
+                _ => None,
+            }) {
+                Some(expr) => quote! { &(#expr) },
+                None => quote! { program_id },
+            };
+            (fname, seed_exprs, derive_pid)
+        })
+        .collect();
 
     let (bumps_struct_decl, bumps_struct_init) = if bumps_fields.is_empty() {
         (
@@ -2412,9 +2824,12 @@ pub fn derive_verified_accounts(input: TokenStream) -> TokenStream {
             quote! { #bumps_struct_name },
         )
     } else {
-        let decl_fields: Vec<TokenStream2> = bumps_fields.iter().map(|(fname, _, _)| {
-            quote! { pub #fname: u8 }
-        }).collect();
+        let decl_fields: Vec<TokenStream2> = bumps_fields
+            .iter()
+            .map(|(fname, _, _)| {
+                quote! { pub #fname: u8 }
+            })
+            .collect();
         let init_fields: Vec<TokenStream2> = bumps_fields.iter().map(|(fname, seed_exprs, derive_pid)| {
             quote! {
                 #fname: {
@@ -2465,8 +2880,16 @@ pub fn derive_verified_accounts(input: TokenStream) -> TokenStream {
     } else {
         quote! { impl ::verified_anchor::Validate for #name { #body } }
     };
-    let accounts_impl_target = if has_info { quote! { #name<'info> } } else { quote! { #name } };
-    let lean_spec_impl_target = if has_info { quote! { #name<'_> } } else { quote! { #name } };
+    let accounts_impl_target = if has_info {
+        quote! { #name<'info> }
+    } else {
+        quote! { #name }
+    };
+    let lean_spec_impl_target = if has_info {
+        quote! { #name<'_> }
+    } else {
+        quote! { #name }
+    };
     // `UNPROVEN_CHECKS`: the source text of every check running OUTSIDE the proof, reported by
     // `cargo verified-anchor check`. Host-only, like `lean_spec`: it is a development-time
     // report, and there is no reason to carry the strings in the on-chain `.so`.

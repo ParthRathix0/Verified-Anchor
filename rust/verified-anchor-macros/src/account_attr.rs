@@ -16,10 +16,14 @@ pub fn account(args: TokenStream, input: TokenStream) -> TokenStream {
     let item = parse_macro_input!(input as Item);
     let item_struct = match item {
         Item::Struct(s) => s,
-        _ => return syn::Error::new(
-            proc_macro2::Span::call_site(),
-            "verified-anchor: `#[account]` may only be applied to a named-fields struct"
-        ).to_compile_error().into(),
+        _ => {
+            return syn::Error::new(
+                proc_macro2::Span::call_site(),
+                "verified-anchor: `#[account]` may only be applied to a named-fields struct",
+            )
+            .to_compile_error()
+            .into()
+        }
     };
     // Route the borsh derives through verified-anchor's re-export so the user needs only the
     // `verified-anchor` dependency. `#[borsh(crate = ...)]` points borsh-derive's *generated*

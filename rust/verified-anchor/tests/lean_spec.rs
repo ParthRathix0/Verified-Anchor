@@ -89,8 +89,14 @@ struct InitClose<'info> {
 #[test]
 fn lean_spec_emits_lifecycle_constraints() {
     let s = InitClose::lean_spec();
-    assert!(s.contains("Constraint.init \"payer\" 0 Pubkey.zero"), "init missing: {s}");
-    assert!(s.contains("Constraint.close \"payer\""), "close missing: {s}");
+    assert!(
+        s.contains("Constraint.init \"payer\" 0 Pubkey.zero"),
+        "init missing: {s}"
+    );
+    assert!(
+        s.contains("Constraint.close \"payer\""),
+        "close missing: {s}"
+    );
 }
 
 fn disc(name: &str) -> [u8; 8] {
@@ -117,7 +123,10 @@ fn lean_spec_discriminator_bytes_match_anchor() {
         d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7]
     );
     let s = DiscSpec::lean_spec();
-    assert!(s.contains(&expected_constraint), "spec missing real-Anchor discriminator bytes:\n{s}");
+    assert!(
+        s.contains(&expected_constraint),
+        "spec missing real-Anchor discriminator bytes:\n{s}"
+    );
 }
 
 // ── M9 lifecycle constraint emission tests ────────────────────────────────────────────────
@@ -131,7 +140,10 @@ struct ZeroSpec<'info> {
 #[test]
 fn lean_spec_emits_zero_constraint() {
     let s = ZeroSpec::lean_spec();
-    assert!(s.contains("Constraint.zero"), "Constraint.zero missing: {s}");
+    assert!(
+        s.contains("Constraint.zero"),
+        "Constraint.zero missing: {s}"
+    );
 }
 
 #[derive(VerifiedAccounts)]
@@ -145,7 +157,10 @@ struct ReallocSpec<'info> {
 #[test]
 fn lean_spec_emits_realloc_constraint() {
     let s = ReallocSpec::lean_spec();
-    assert!(s.contains("Constraint.realloc \"payer\" 64 true"), "Constraint.realloc missing: {s}");
+    assert!(
+        s.contains("Constraint.realloc \"payer\" 64 true"),
+        "Constraint.realloc missing: {s}"
+    );
 }
 
 #[derive(VerifiedAccounts)]
@@ -159,7 +174,10 @@ struct InitIfNeededSpec<'info> {
 #[test]
 fn lean_spec_emits_init_if_needed_constraint() {
     let s = InitIfNeededSpec::lean_spec();
-    assert!(s.contains("Constraint.initIfNeeded \"payer\" 64 Pubkey.zero"), "Constraint.initIfNeeded missing: {s}");
+    assert!(
+        s.contains("Constraint.initIfNeeded \"payer\" 64 Pubkey.zero"),
+        "Constraint.initIfNeeded missing: {s}"
+    );
 }
 
 // ── M10 Task 7: the layout is spliced at runtime ──────────────────────────────────────────
@@ -230,7 +248,10 @@ struct SeedFromArg<'info> {
 #[test]
 fn lean_spec_emits_instr_args_and_arg_field_seeds() {
     let s = SeedFromArg::lean_spec();
-    assert!(s.contains("instrArgs := [(\"name\", Ty.string)]"), "spec was: {s}");
+    assert!(
+        s.contains("instrArgs := [(\"name\", Ty.string)]"),
+        "spec was: {s}"
+    );
     assert!(s.contains("SeedSpec.argField \"name\""), "spec was: {s}");
 }
 /// A numeric `to_le_bytes()` seed emits the SAME `SeedSpec.argField` as the `as_bytes()` form —
@@ -246,7 +267,10 @@ struct NumericSeedFromArg<'info> {
 #[test]
 fn lean_spec_emits_numeric_instr_arg_seeds() {
     let s = NumericSeedFromArg::lean_spec();
-    assert!(s.contains("instrArgs := [(\"amount\", Ty.u64)]"), "spec was: {s}");
+    assert!(
+        s.contains("instrArgs := [(\"amount\", Ty.u64)]"),
+        "spec was: {s}"
+    );
     assert!(s.contains("SeedSpec.argField \"amount\""), "spec was: {s}");
 }
 
@@ -264,8 +288,14 @@ struct AsRefSeeds<'info> {
 #[test]
 fn lean_spec_emits_as_ref_seed_spellings() {
     let s = AsRefSeeds::lean_spec();
-    assert!(s.contains("instrArgs := [(\"authority\", Ty.pubkey)]"), "spec was: {s}");
-    assert!(s.contains("SeedSpec.argField \"authority\""), "spec was: {s}");
+    assert!(
+        s.contains("instrArgs := [(\"authority\", Ty.pubkey)]"),
+        "spec was: {s}"
+    );
+    assert!(
+        s.contains("SeedSpec.argField \"authority\""),
+        "spec was: {s}"
+    );
     assert!(s.contains("SeedSpec.fieldKey \"user\""), "spec was: {s}");
 }
 // ── M10 Task 12: `constraint = <expr>` emission ────────────────────────────────────────────
@@ -323,7 +353,9 @@ struct UncompilableExprSpec<'info> {
     user: UncheckedAccount<'info>,
 }
 
-fn some_helper() -> u64 { 0 }
+fn some_helper() -> u64 {
+    0
+}
 
 #[test]
 fn lean_spec_omits_expressions_outside_the_sublanguage() {

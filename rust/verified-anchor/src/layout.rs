@@ -9,8 +9,16 @@ use solana_program::pubkey::Pubkey;
 /// which is what lets `#[derive(AccountData)]` emit it as an associated const.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Ty {
-    U8, U16, U32, U64, U128,
-    I8, I16, I32, I64, I128,
+    U8,
+    U16,
+    U32,
+    U64,
+    U128,
+    I8,
+    I16,
+    I32,
+    I64,
+    I128,
     Bool,
     Pubkey,
     Array(&'static Ty, usize),
@@ -69,24 +77,36 @@ field_value_nat!(u8, u16, u32, u64, u128);
 field_value_int!(i8, i16, i32, i64, i128);
 
 impl FieldValue for bool {
-    fn field_value(&self) -> Option<Value<'static>> { Some(Value::Bool(*self)) }
+    fn field_value(&self) -> Option<Value<'static>> {
+        Some(Value::Bool(*self))
+    }
 }
 impl FieldValue for Pubkey {
-    fn field_value(&self) -> Option<Value<'static>> { Some(Value::Key(*self)) }
+    fn field_value(&self) -> Option<Value<'static>> {
+        Some(Value::Key(*self))
+    }
 }
 // The aggregates `read_val` refuses. Present so a constraint over one still COMPILES (real
 // Anchor accepts it) and still fails closed, exactly as the byte-level path does.
 impl<T> FieldValue for Option<T> {
-    fn field_value(&self) -> Option<Value<'static>> { None }
+    fn field_value(&self) -> Option<Value<'static>> {
+        None
+    }
 }
 impl<T> FieldValue for Vec<T> {
-    fn field_value(&self) -> Option<Value<'static>> { None }
+    fn field_value(&self) -> Option<Value<'static>> {
+        None
+    }
 }
 impl FieldValue for String {
-    fn field_value(&self) -> Option<Value<'static>> { None }
+    fn field_value(&self) -> Option<Value<'static>> {
+        None
+    }
 }
 impl<T, const N: usize> FieldValue for [T; N] {
-    fn field_value(&self) -> Option<Value<'static>> { None }
+    fn field_value(&self) -> Option<Value<'static>> {
+        None
+    }
 }
 
 impl Ty {
@@ -157,7 +177,11 @@ pub fn encoded_width(ty: &Ty, data: &[u8], off: usize) -> Option<usize> {
         Ty::String => {
             let n = read_uint_le(data, off, 4)? as usize;
             let end = off.checked_add(4)?.checked_add(n)?;
-            if end <= data.len() { Some(4 + n) } else { None }
+            if end <= data.len() {
+                Some(4 + n)
+            } else {
+                None
+            }
         }
         Ty::Vec(e) => {
             let count = read_uint_le(data, off, 4)? as usize;
@@ -337,9 +361,18 @@ pub const fn has_top_level_pubkey_field(ty: Ty, name: &str) -> bool {
 ///   `Array String Vec Option Struct`                      -> false
 pub const fn is_readable_scalar(ty: Ty) -> bool {
     match ty {
-        Ty::U8 | Ty::U16 | Ty::U32 | Ty::U64 | Ty::U128
-        | Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 | Ty::I128
-        | Ty::Bool | Ty::Pubkey => true,
+        Ty::U8
+        | Ty::U16
+        | Ty::U32
+        | Ty::U64
+        | Ty::U128
+        | Ty::I8
+        | Ty::I16
+        | Ty::I32
+        | Ty::I64
+        | Ty::I128
+        | Ty::Bool
+        | Ty::Pubkey => true,
         Ty::Array(_, _) | Ty::String | Ty::Vec(_) | Ty::Option(_) | Ty::Struct(_) => false,
     }
 }
@@ -377,10 +410,23 @@ pub const fn has_top_level_scalar_field(ty: Ty, name: &str) -> bool {
 /// `Value`s, so equality over them stays answerable — only the four orderings do not.
 pub const fn is_orderable_scalar(ty: Ty) -> bool {
     match ty {
-        Ty::U8 | Ty::U16 | Ty::U32 | Ty::U64 | Ty::U128
-        | Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 | Ty::I128 => true,
-        Ty::Bool | Ty::Pubkey
-        | Ty::Array(_, _) | Ty::String | Ty::Vec(_) | Ty::Option(_) | Ty::Struct(_) => false,
+        Ty::U8
+        | Ty::U16
+        | Ty::U32
+        | Ty::U64
+        | Ty::U128
+        | Ty::I8
+        | Ty::I16
+        | Ty::I32
+        | Ty::I64
+        | Ty::I128 => true,
+        Ty::Bool
+        | Ty::Pubkey
+        | Ty::Array(_, _)
+        | Ty::String
+        | Ty::Vec(_)
+        | Ty::Option(_)
+        | Ty::Struct(_) => false,
     }
 }
 
@@ -450,8 +496,14 @@ mod tests {
     #[test]
     fn reads_scalars_little_endian() {
         assert_eq!(read_val(&Ty::U8, &vault_bytes(), 8), Some(Value::Nat(7)));
-        assert_eq!(read_val(&Ty::U64, &[1, 0, 0, 0, 0, 0, 0, 0], 0), Some(Value::Nat(1)));
-        assert_eq!(read_val(&Ty::U64, &[0, 1, 0, 0, 0, 0, 0, 0], 0), Some(Value::Nat(256)));
+        assert_eq!(
+            read_val(&Ty::U64, &[1, 0, 0, 0, 0, 0, 0, 0], 0),
+            Some(Value::Nat(1))
+        );
+        assert_eq!(
+            read_val(&Ty::U64, &[0, 1, 0, 0, 0, 0, 0, 0], 0),
+            Some(Value::Nat(256))
+        );
         assert_eq!(read_val(&Ty::Bool, &[0], 0), Some(Value::Bool(false)));
         assert_eq!(read_val(&Ty::Bool, &[1], 0), Some(Value::Bool(true)));
     }
@@ -470,7 +522,10 @@ mod tests {
         // in `read_val`, as the assertion above demonstrates. See also
         // `locate_may_return_past_end_of_buffer`. Adding a bounds check here to make this
         // assert `None` would diverge from Lean and break the Tasks 6/10/11 agreement proofs.
-        assert_eq!(locate(&VAULT, &["authority"], &[0u8; 8], 8), Some((9, Ty::Pubkey)));
+        assert_eq!(
+            locate(&VAULT, &["authority"], &[0u8; 8], 8),
+            Some((9, Ty::Pubkey))
+        );
     }
 
     /// Carried-forward Task-2 finding: no fixture in either language exercised the signed
@@ -481,18 +536,48 @@ mod tests {
     fn signed_values_match_twos_complement() {
         // -1 in every width is all-0xFF bytes. Lean: n = 2^(w*8) - 1 >= 2^(w*8-1), so
         // int = n - 2^(w*8) = -1. Matches for every width.
-        assert_eq!(read_val(&Ty::I8, &(-1i8).to_le_bytes(), 0), Some(Value::Int(-1)));
-        assert_eq!(read_val(&Ty::I16, &(-1i16).to_le_bytes(), 0), Some(Value::Int(-1)));
-        assert_eq!(read_val(&Ty::I32, &(-1i32).to_le_bytes(), 0), Some(Value::Int(-1)));
-        assert_eq!(read_val(&Ty::I64, &(-1i64).to_le_bytes(), 0), Some(Value::Int(-1)));
-        assert_eq!(read_val(&Ty::I128, &(-1i128).to_le_bytes(), 0), Some(Value::Int(-1)));
+        assert_eq!(
+            read_val(&Ty::I8, &(-1i8).to_le_bytes(), 0),
+            Some(Value::Int(-1))
+        );
+        assert_eq!(
+            read_val(&Ty::I16, &(-1i16).to_le_bytes(), 0),
+            Some(Value::Int(-1))
+        );
+        assert_eq!(
+            read_val(&Ty::I32, &(-1i32).to_le_bytes(), 0),
+            Some(Value::Int(-1))
+        );
+        assert_eq!(
+            read_val(&Ty::I64, &(-1i64).to_le_bytes(), 0),
+            Some(Value::Int(-1))
+        );
+        assert_eq!(
+            read_val(&Ty::I128, &(-1i128).to_le_bytes(), 0),
+            Some(Value::Int(-1))
+        );
 
         // 0 in every width: n = 0 < 2^(w*8-1), so int = n = 0 unconditionally.
-        assert_eq!(read_val(&Ty::I8, &0i8.to_le_bytes(), 0), Some(Value::Int(0)));
-        assert_eq!(read_val(&Ty::I16, &0i16.to_le_bytes(), 0), Some(Value::Int(0)));
-        assert_eq!(read_val(&Ty::I32, &0i32.to_le_bytes(), 0), Some(Value::Int(0)));
-        assert_eq!(read_val(&Ty::I64, &0i64.to_le_bytes(), 0), Some(Value::Int(0)));
-        assert_eq!(read_val(&Ty::I128, &0i128.to_le_bytes(), 0), Some(Value::Int(0)));
+        assert_eq!(
+            read_val(&Ty::I8, &0i8.to_le_bytes(), 0),
+            Some(Value::Int(0))
+        );
+        assert_eq!(
+            read_val(&Ty::I16, &0i16.to_le_bytes(), 0),
+            Some(Value::Int(0))
+        );
+        assert_eq!(
+            read_val(&Ty::I32, &0i32.to_le_bytes(), 0),
+            Some(Value::Int(0))
+        );
+        assert_eq!(
+            read_val(&Ty::I64, &0i64.to_le_bytes(), 0),
+            Some(Value::Int(0))
+        );
+        assert_eq!(
+            read_val(&Ty::I128, &0i128.to_le_bytes(), 0),
+            Some(Value::Int(0))
+        );
 
         // i64::MIN: n = 2^63 (the top bit alone), which is NOT < 2^63, so
         // int = 2^63 - 2^64 = -2^63 = i64::MIN. This is the boundary where a naive
@@ -523,7 +608,10 @@ mod tests {
         // arithmetic, and the result correctly exceeds the buffer, but must NOT be computed by
         // looping 4 billion times (this test would time out if it were).
         let d2 = (u32::MAX).to_le_bytes();
-        assert_eq!(encoded_width(&Ty::Vec(&Ty::U64), &d2, 0), Some(4 + (u32::MAX as usize) * 8));
+        assert_eq!(
+            encoded_width(&Ty::Vec(&Ty::U64), &d2, 0),
+            Some(4 + (u32::MAX as usize) * 8)
+        );
 
         // Variable-width elements still loop (and fail closed on a short buffer).
         let d3 = 5u32.to_le_bytes(); // count = 5, but zero payload bytes follow
@@ -548,7 +636,10 @@ mod tests {
         // it happily returns Some(1) even for a completely empty buffer, none of authority's
         // 32 bytes present.
         let empty: &[u8] = &[];
-        assert_eq!(locate(&VAULT, &["authority"], empty, 0).map(|r| r.0), Some(1));
+        assert_eq!(
+            locate(&VAULT, &["authority"], empty, 0).map(|r| r.0),
+            Some(1)
+        );
         // The offset is real but the bytes are not: read_val on that offset must fail closed.
         assert_eq!(read_val(&Ty::Pubkey, empty, 1), None);
     }
@@ -594,7 +685,14 @@ mod const_lookup_tests {
 
     #[test]
     fn const_str_eq_matches_the_runtime_operator() {
-        for (a, b) in [("a", "a"), ("a", "b"), ("", ""), ("ab", "a"), ("a", "ab"), ("ab", "ab")] {
+        for (a, b) in [
+            ("a", "a"),
+            ("a", "b"),
+            ("", ""),
+            ("ab", "a"),
+            ("a", "ab"),
+            ("ab", "ab"),
+        ] {
             assert_eq!(const_str_eq(a, b), a == b, "{a:?} vs {b:?}");
         }
     }
@@ -607,9 +705,18 @@ mod const_lookup_tests {
     fn is_readable_scalar_mirrors_read_val_arm_for_arm() {
         let data = vec![0u8; 128];
         let scalars = [
-            Ty::U8, Ty::U16, Ty::U32, Ty::U64, Ty::U128,
-            Ty::I8, Ty::I16, Ty::I32, Ty::I64, Ty::I128,
-            Ty::Bool, Ty::Pubkey,
+            Ty::U8,
+            Ty::U16,
+            Ty::U32,
+            Ty::U64,
+            Ty::U128,
+            Ty::I8,
+            Ty::I16,
+            Ty::I32,
+            Ty::I64,
+            Ty::I128,
+            Ty::Bool,
+            Ty::Pubkey,
         ];
         let aggregates = [
             Ty::Array(&Ty::U8, 32),
@@ -622,11 +729,17 @@ mod const_lookup_tests {
             assert!(is_readable_scalar(ty), "{ty:?} must be readable");
             // …and the predicate is not merely asserting itself: `read_val` really does decode
             // it from a buffer large enough to hold it.
-            assert!(read_val(&ty, &data, 0).is_some(), "read_val refused scalar {ty:?}");
+            assert!(
+                read_val(&ty, &data, 0).is_some(),
+                "read_val refused scalar {ty:?}"
+            );
         }
         for ty in aggregates {
             assert!(!is_readable_scalar(ty), "{ty:?} must NOT be readable");
-            assert!(read_val(&ty, &data, 0).is_none(), "read_val decoded aggregate {ty:?}");
+            assert!(
+                read_val(&ty, &data, 0).is_none(),
+                "read_val decoded aggregate {ty:?}"
+            );
         }
     }
 
@@ -635,8 +748,7 @@ mod const_lookup_tests {
     /// readable, so a presence gate said "proven" and the check then rejected every account.
     #[test]
     fn scalar_field_predicate_separates_presence_from_readability() {
-        const ROOT_VAULT: Ty =
-            Ty::Struct(&[("root", Ty::Array(&Ty::U8, 32)), ("amount", Ty::U64)]);
+        const ROOT_VAULT: Ty = Ty::Struct(&[("root", Ty::Array(&Ty::U8, 32)), ("amount", Ty::U64)]);
 
         // Both fields are PRESENT — this is exactly why presence was the wrong question.
         assert!(has_top_level_field(ROOT_VAULT, "root"));
@@ -659,7 +771,9 @@ mod const_lookup_tests {
     // emits into the user's crate.
     const _: () = assert!(has_top_level_scalar_field(VAULT, "authority"));
     const _: () = assert!(!has_top_level_scalar_field(
-        Ty::Struct(&[("root", Ty::Array(&Ty::U8, 32))]), "root"));
+        Ty::Struct(&[("root", Ty::Array(&Ty::U8, 32))]),
+        "root"
+    ));
 
     /// C1's TWIN. `is_orderable_scalar` must be exactly "`read_val` yields a `.nat` or an
     /// `.int`" — Lean's `Value.toInt?` domain — because that is the only set `evalCmp`'s four
@@ -669,8 +783,16 @@ mod const_lookup_tests {
     fn is_orderable_scalar_is_exactly_the_numeric_values() {
         let data = vec![0u8; 128];
         let numeric = [
-            Ty::U8, Ty::U16, Ty::U32, Ty::U64, Ty::U128,
-            Ty::I8, Ty::I16, Ty::I32, Ty::I64, Ty::I128,
+            Ty::U8,
+            Ty::U16,
+            Ty::U32,
+            Ty::U64,
+            Ty::U128,
+            Ty::I8,
+            Ty::I16,
+            Ty::I32,
+            Ty::I64,
+            Ty::I128,
         ];
         // READABLE but NOT ORDERABLE — the gap that made the twin a silent always-reject.
         let readable_but_unorderable = [Ty::Bool, Ty::Pubkey];
@@ -705,7 +827,9 @@ mod const_lookup_tests {
     #[test]
     fn orderable_field_predicate_separates_readability_from_orderability() {
         const POOL: Ty = Ty::Struct(&[
-            ("mint_a", Ty::Pubkey), ("mint_b", Ty::Pubkey), ("fee_bps", Ty::U64),
+            ("mint_a", Ty::Pubkey),
+            ("mint_b", Ty::Pubkey),
+            ("fee_bps", Ty::U64),
         ]);
         // Readable — so `Pubkey` EQUALITY stays proven, which is the point of not
         // over-correcting.

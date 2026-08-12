@@ -19,7 +19,10 @@ pub(crate) fn map_ty(ty: &Type) -> Option<(TokenStream, String)> {
     if let Type::Array(arr) = ty {
         let (rt, lean) = map_ty(&arr.elem)?;
         let n: usize = match &arr.len {
-            syn::Expr::Lit(syn::ExprLit { lit: syn::Lit::Int(i), .. }) => i.base10_parse().ok()?,
+            syn::Expr::Lit(syn::ExprLit {
+                lit: syn::Lit::Int(i),
+                ..
+            }) => i.base10_parse().ok()?,
             // A const-generic or named-const length (`[u8; N]`) cannot be evaluated at macro
             // expansion time — only integer literals can. Returning `None` here preserves the
             // safe cutoff instead of guessing a width, which would silently mis-offset every
@@ -41,7 +44,10 @@ pub(crate) fn map_ty(ty: &Type) -> Option<(TokenStream, String)> {
 
     let simple = |rt: &str, lean: &str| {
         let id = syn::Ident::new(rt, proc_macro2::Span::call_site());
-        Some((quote! { ::verified_anchor::layout::Ty::#id }, lean.to_string()))
+        Some((
+            quote! { ::verified_anchor::layout::Ty::#id },
+            lean.to_string(),
+        ))
     };
 
     match name.as_str() {
@@ -69,11 +75,15 @@ pub(crate) fn map_ty(ty: &Type) -> Option<(TokenStream, String)> {
             })?;
             let (rt, lean) = map_ty(inner)?;
             if name == "Vec" {
-                Some((quote! { ::verified_anchor::layout::Ty::Vec(&#rt) },
-                      format!("(Ty.vec {lean})")))
+                Some((
+                    quote! { ::verified_anchor::layout::Ty::Vec(&#rt) },
+                    format!("(Ty.vec {lean})"),
+                ))
             } else {
-                Some((quote! { ::verified_anchor::layout::Ty::Option(&#rt) },
-                      format!("(Ty.option {lean})")))
+                Some((
+                    quote! { ::verified_anchor::layout::Ty::Option(&#rt) },
+                    format!("(Ty.option {lean})"),
+                ))
             }
         }
         _ => None,

@@ -12,7 +12,7 @@ pub mod account_data;
 pub use account_data::{AccountData, ProgramId, System};
 
 pub mod account;
-pub use account::{Account, Key, Signer, Program, SystemAccount, UncheckedAccount};
+pub use account::{Account, Key, Program, Signer, SystemAccount, UncheckedAccount};
 
 pub mod context;
 pub use context::Context;
@@ -22,42 +22,82 @@ pub mod prelude;
 pub mod layout;
 pub use layout::{locate, read_val, Ty, Value};
 
-pub use verified_anchor_macros::VerifiedAccounts;
-pub use verified_anchor_macros::AccountData as AccountData;
 pub use verified_anchor_macros::account;
+pub use verified_anchor_macros::AccountData;
+pub use verified_anchor_macros::VerifiedAccounts;
 
 /// Why account validation failed. `field` is the struct field name that failed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VAError {
-    MissingSigner { field: &'static str },
-    NotWritable { field: &'static str },
-    WrongOwner { field: &'static str },
+    MissingSigner {
+        field: &'static str,
+    },
+    NotWritable {
+        field: &'static str,
+    },
+    WrongOwner {
+        field: &'static str,
+    },
     /// Fewer accounts were supplied than the struct declares.
-    NotEnoughAccounts { expected: usize, got: usize },
-    WrongHasOne { field: &'static str, target: &'static str },
-    InitFailed { field: &'static str },
-    CloseFailed { field: &'static str },
-    WrongPda { field: &'static str },
-    WrongBump { field: &'static str },
-    WrongDiscriminator { field: &'static str },
-    BorshFailed { field: &'static str },
-    WrongAddress { field: &'static str },
-    NotExecutable { field: &'static str },
+    NotEnoughAccounts {
+        expected: usize,
+        got: usize,
+    },
+    WrongHasOne {
+        field: &'static str,
+        target: &'static str,
+    },
+    InitFailed {
+        field: &'static str,
+    },
+    CloseFailed {
+        field: &'static str,
+    },
+    WrongPda {
+        field: &'static str,
+    },
+    WrongBump {
+        field: &'static str,
+    },
+    WrongDiscriminator {
+        field: &'static str,
+    },
+    BorshFailed {
+        field: &'static str,
+    },
+    WrongAddress {
+        field: &'static str,
+    },
+    NotExecutable {
+        field: &'static str,
+    },
     /// Two `mut` accounts resolved to the SAME key (the "duplicate mutable accounts" vuln
     /// class). Rejected automatically unless the pair is explicitly opted out via
     /// `#[account(allow_duplicate = <other_field>)]`. `field_a`/`field_b` are the colliding
     /// struct field names (declaration order).
-    DuplicateAccount { field_a: &'static str, field_b: &'static str },
+    DuplicateAccount {
+        field_a: &'static str,
+        field_b: &'static str,
+    },
     /// Account does not hold enough lamports to be rent-exempt.
     /// Emitted by `rent_exempt = enforce`; accounts must satisfy `Rent::is_exempt`.
-    NotRentExempt { field: &'static str },
+    NotRentExempt {
+        field: &'static str,
+    },
     /// `realloc` failed (resize or rent top-up).
-    ReallocFailed { field: &'static str },
+    ReallocFailed {
+        field: &'static str,
+    },
     /// `zero` precondition failed: the account's 8-byte discriminator was not all-zero.
-    NotZeroed { field: &'static str },
+    NotZeroed {
+        field: &'static str,
+    },
     /// A `constraint = <expr>` evaluated to false, or could not be evaluated at all
     /// (out-of-bounds read, unknown field, type-confused comparison). Fails closed.
-    ConstraintViolated { field: &'static str, expr: &'static str },
+    ConstraintViolated {
+        field: &'static str,
+        expr: &'static str,
+    },
 }
 
 impl core::fmt::Display for VAError {
@@ -66,26 +106,34 @@ impl core::fmt::Display for VAError {
             VAError::MissingSigner { field } => write!(f, "account `{field}` must be a signer"),
             VAError::NotWritable { field } => write!(f, "account `{field}` must be writable"),
             VAError::WrongOwner { field } => write!(f, "account `{field}` has the wrong owner"),
-            VAError::NotEnoughAccounts { expected, got } =>
-                write!(f, "expected {expected} accounts, got {got}"),
-            VAError::WrongHasOne { field, target } =>
-                write!(f, "account `{field}` field does not match `{target}`"),
+            VAError::NotEnoughAccounts { expected, got } => {
+                write!(f, "expected {expected} accounts, got {got}")
+            }
+            VAError::WrongHasOne { field, target } => {
+                write!(f, "account `{field}` field does not match `{target}`")
+            }
             VAError::InitFailed { field } => write!(f, "init failed for `{field}`"),
             VAError::CloseFailed { field } => write!(f, "close failed for `{field}`"),
             VAError::WrongPda { field } => write!(f, "account `{field}` is not the expected PDA"),
             VAError::WrongBump { field } => write!(f, "account `{field}` has a non-canonical bump"),
-            VAError::WrongDiscriminator { field } => write!(f, "account `{field}` has the wrong 8-byte discriminator"),
-            VAError::BorshFailed { field } => write!(f, "Borsh deserialization failed for `{field}`"),
+            VAError::WrongDiscriminator { field } => {
+                write!(f, "account `{field}` has the wrong 8-byte discriminator")
+            }
+            VAError::BorshFailed { field } => {
+                write!(f, "Borsh deserialization failed for `{field}`")
+            }
             VAError::WrongAddress { field } => write!(f, "account `{field}` has the wrong address"),
             VAError::NotExecutable { field } => write!(f, "account `{field}` is not executable"),
-            VAError::DuplicateAccount { field_a, field_b } =>
-                write!(f, "mutable accounts `{field_a}` and `{field_b}` are the same account"),
-            VAError::NotRentExempt { field } =>
-                write!(f, "account `{field}` is not rent-exempt"),
+            VAError::DuplicateAccount { field_a, field_b } => write!(
+                f,
+                "mutable accounts `{field_a}` and `{field_b}` are the same account"
+            ),
+            VAError::NotRentExempt { field } => write!(f, "account `{field}` is not rent-exempt"),
             VAError::ReallocFailed { field } => write!(f, "realloc failed for `{field}`"),
             VAError::NotZeroed { field } => write!(f, "account `{field}` is not zero-initialized"),
-            VAError::ConstraintViolated { field, expr } =>
-                write!(f, "account `{field}` violates constraint `{expr}`"),
+            VAError::ConstraintViolated { field, expr } => {
+                write!(f, "account `{field}` violates constraint `{expr}`")
+            }
         }
     }
 }
@@ -200,10 +248,17 @@ pub fn collect_specs() -> Vec<&'static SpecEntry> {
 pub fn write_spec_files(dir: &std::path::Path) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)?;
     for e in collect_specs() {
-        let kind = if e.has_lifecycle { "lifecycle" } else { "validation" };
+        let kind = if e.has_lifecycle {
+            "lifecycle"
+        } else {
+            "validation"
+        };
         std::fs::write(dir.join(format!("{}.{}", e.name, kind)), (e.lean_spec)())?;
         if !e.unproven.is_empty() {
-            std::fs::write(dir.join(format!("{}.unproven", e.name)), e.unproven.join("\n"))?;
+            std::fs::write(
+                dir.join(format!("{}.unproven", e.name)),
+                e.unproven.join("\n"),
+            )?;
         }
     }
     Ok(())

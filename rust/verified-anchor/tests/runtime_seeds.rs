@@ -84,7 +84,9 @@ fn non_canonical_stored_bump(program_id: &Pubkey) -> (u8, Pubkey, Pubkey) {
             return (b, pk, canon_key);
         }
     }
-    panic!("no non-canonical off-curve bump found below canonical bump {canon_bump} for b\"vault\"");
+    panic!(
+        "no non-canonical off-curve bump found below canonical bump {canon_bump} for b\"vault\""
+    );
 }
 
 /// The opt-in `bump = arg(0)` (stored, non-canonical) check accepts the address derived with
@@ -94,7 +96,10 @@ fn non_canonical_stored_bump(program_id: &Pubkey) -> (u8, Pubkey, Pubkey) {
 fn seeds_stored_bump_good_accepted_onchain() {
     let (mut svm, program_id, payer) = setup();
     let (stored_bump, pda, canon_key) = non_canonical_stored_bump(&program_id);
-    assert_ne!(pda, canon_key, "non-canonical PDA must differ from canonical PDA");
+    assert_ne!(
+        pda, canon_key,
+        "non-canonical PDA must differ from canonical PDA"
+    );
 
     let data = vec![3u8, stored_bump]; // tag 3 + stored bump byte at offset 0
 
@@ -168,7 +173,10 @@ fn seeds_program_own_program_pda_rejected_onchain() {
     let (mut svm, program_id, payer) = setup();
     let (own_pda, _bump) = Pubkey::find_program_address(&[b"vault"], &program_id);
     let (foreign_pda, _fb) = Pubkey::find_program_address(&[b"vault"], &FOREIGN_PROGRAM);
-    assert_ne!(own_pda, foreign_pda, "own-program PDA must differ from the foreign one");
+    assert_ne!(
+        own_pda, foreign_pda,
+        "own-program PDA must differ from the foreign one"
+    );
 
     let ix = Instruction {
         program_id,
