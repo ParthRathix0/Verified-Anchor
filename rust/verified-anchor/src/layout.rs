@@ -365,6 +365,46 @@ pub const fn has_top_level_scalar_field(ty: Ty, name: &str) -> bool {
     }
 }
 
+/// True when `evalCmp` can ORDER a value of this type — i.e. Lean's `Value.toInt?` yields
+/// `some`, which is exactly the integer scalars. MUST stay in step with `Value.toInt?`
+/// (`lean/VerifiedAnchor/Constraints/Expr.lean`) and with `Cmp::apply`'s numeric arms.
+///
+///   `U8 U16 U32 U64 U128 I8 I16 I32 I64 I128`      -> true
+///   `Bool Pubkey Array String Vec Option Struct`   -> false
+///
+/// STRICTLY STRONGER THAN `is_readable_scalar`, and that gap is the whole point: `Pubkey` and
+/// `bool` DECODE fine but cannot be ORDERED. `evalCmp`'s `eq`/`ne` arms are total over any two
+/// `Value`s, so equality over them stays answerable — only the four orderings do not.
+pub const fn is_orderable_scalar(ty: Ty) -> bool {
+    match ty {
+        Ty::U8 | Ty::U16 | Ty::U32 | Ty::U64 | Ty::U128
+        | Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 | Ty::I128 => true,
+        Ty::Bool | Ty::Pubkey
+        | Ty::Array(_, _) | Ty::String | Ty::Vec(_) | Ty::Option(_) | Ty::Struct(_) => false,
+    }
+}
+
+/// True when `name` is a top-level field of `ty` AND `evalCmp` can ORDER it.
+///
+/// THE PREDICATE AN ORDERING (`<` `<=` `>` `>=`) NEEDS, and C1's TWIN is what it exists to
+/// stop. `has_top_level_scalar_field` asks "can `read_val` DECODE this field?"; `Pubkey`
+/// decodes, so `constraint = pool.mint_a < pool.mint_b` — the canonical AMM mint-ordering
+/// idiom — passed that gate, was reported PROVEN, entered the Lean spec, discharged its
+/// obligation honestly (Lean's `evalCmp` returns `none` for a non-numeric ordering, so the
+/// contract faithfully says "reject everything") — and then rejected EVERY account, including
+/// pools whose mints really are ordered. Identical shape to C1, one question deeper: the gate
+/// must ask what `evalCmp` can ANSWER, not merely what `read_val` can READ.
+///
+/// Deliberately NOT applied to `eq`/`ne`: `constraint = vault.authority == authority.key()` is
+/// one of the most common constraints in Anchor and `evalCmp`'s equality arms are total over
+/// `Value`, so demoting it to the escape hatch would gut the proof's coverage for nothing.
+pub const fn has_top_level_orderable_field(ty: Ty, name: &str) -> bool {
+    match top_level_field(ty, name) {
+        Some(t) => is_orderable_scalar(t),
+        None => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -620,6 +660,68 @@ mod const_lookup_tests {
     const _: () = assert!(has_top_level_scalar_field(VAULT, "authority"));
     const _: () = assert!(!has_top_level_scalar_field(
         Ty::Struct(&[("root", Ty::Array(&Ty::U8, 32))]), "root"));
+
+    /// C1's TWIN. `is_orderable_scalar` must be exactly "`read_val` yields a `.nat` or an
+    /// `.int`" — Lean's `Value.toInt?` domain — because that is the only set `evalCmp`'s four
+    /// ordering arms answer for. Checked against `read_val`'s actual output rather than
+    /// restating the match, so the two cannot drift.
+    #[test]
+    fn is_orderable_scalar_is_exactly_the_numeric_values() {
+        let data = vec![0u8; 128];
+        let numeric = [
+            Ty::U8, Ty::U16, Ty::U32, Ty::U64, Ty::U128,
+            Ty::I8, Ty::I16, Ty::I32, Ty::I64, Ty::I128,
+        ];
+        // READABLE but NOT ORDERABLE — the gap that made the twin a silent always-reject.
+        let readable_but_unorderable = [Ty::Bool, Ty::Pubkey];
+        let aggregates = [
+            Ty::Array(&Ty::U8, 32),
+            Ty::String,
+            Ty::Vec(&Ty::U8),
+            Ty::Option(&Ty::U64),
+            Ty::Struct(&[("a", Ty::U8)]),
+        ];
+        for ty in numeric {
+            assert!(is_orderable_scalar(ty), "{ty:?} must be orderable");
+            assert!(
+                matches!(read_val(&ty, &data, 0), Some(Value::Nat(_) | Value::Int(_))),
+                "read_val did not yield a numeric Value for {ty:?}"
+            );
+        }
+        for ty in readable_but_unorderable {
+            assert!(is_readable_scalar(ty), "{ty:?} must still be readable");
+            assert!(!is_orderable_scalar(ty), "{ty:?} must NOT be orderable");
+            assert!(
+                !matches!(read_val(&ty, &data, 0), Some(Value::Nat(_) | Value::Int(_))),
+                "read_val yielded a numeric Value for {ty:?}"
+            );
+        }
+        for ty in aggregates {
+            assert!(!is_orderable_scalar(ty), "{ty:?} must NOT be orderable");
+        }
+    }
+
+    /// The predicate the ordering gate actually emits, on the canonical AMM shape.
+    #[test]
+    fn orderable_field_predicate_separates_readability_from_orderability() {
+        const POOL: Ty = Ty::Struct(&[
+            ("mint_a", Ty::Pubkey), ("mint_b", Ty::Pubkey), ("fee_bps", Ty::U64),
+        ]);
+        // Readable — so `Pubkey` EQUALITY stays proven, which is the point of not
+        // over-correcting.
+        assert!(has_top_level_scalar_field(POOL, "mint_a"));
+        assert!(has_top_level_scalar_field(POOL, "mint_b"));
+        // …but not orderable, so `mint_a < mint_b` goes to the escape hatch.
+        assert!(!has_top_level_orderable_field(POOL, "mint_a"));
+        assert!(!has_top_level_orderable_field(POOL, "mint_b"));
+        // A numeric field on the same struct keeps its proof for orderings too.
+        assert!(has_top_level_orderable_field(POOL, "fee_bps"));
+        // Absent stays false.
+        assert!(!has_top_level_orderable_field(POOL, "nope"));
+    }
+
+    const _: () = assert!(has_top_level_orderable_field(VAULT, "bump"));
+    const _: () = assert!(!has_top_level_orderable_field(VAULT, "authority"));
 
     /// The const predicate must agree with the runtime `locate` it is guarding: whenever it says
     /// "absent", `locate` must genuinely fail for every buffer, not just some.

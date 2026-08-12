@@ -958,12 +958,12 @@ fn inner_ty_at(i: usize, ctx: &crate::expr::ExprCtx) -> syn::Type {
 /// matching root included. The gate is therefore `has_top_level_scalar_field`, and the same
 /// change applies to `String`/`Vec<T>`/`Option<T>`/`Struct` comparisons, all of which real
 /// Anchor compiles and enforces.
-fn locatability_cond(v: &crate::expr::VExpr, ctx: &crate::expr::ExprCtx) -> Option<TokenStream2> {
-    let ops = v.field_operands();
-    if ops.is_empty() {
-        return None;
-    }
-    let terms: Vec<TokenStream2> = ops.iter().map(|(i, seg)| {
+fn locatability_cond(
+    v: &crate::expr::VExpr,
+    ctx: &crate::expr::ExprCtx,
+    instr_args: &[InstrArg],
+) -> Option<TokenStream2> {
+    let mut terms: Vec<TokenStream2> = v.field_operands().iter().map(|(i, seg)| {
         let inner = inner_ty_at(*i, ctx);
         // SCALAR-READABLE, not merely PRESENT. See `layout::has_top_level_scalar_field`: a
         // present-but-aggregate field (`[u8; 32]`, `String`, `Vec<T>`, `Option<T>`) is one
@@ -973,6 +973,40 @@ fn locatability_cond(v: &crate::expr::VExpr, ctx: &crate::expr::ExprCtx) -> Opti
                 <#inner as ::verified_anchor::AccountData>::LAYOUT, #seg)
         }
     }).collect();
+
+    // ORDERABILITY — C1's twin. Readability is necessary but NOT sufficient for `<`/`<=`/`>`/
+    // `>=`: `evalCmp` orders only what `Value.toInt?` accepts, so a `Pubkey` or `bool` operand
+    // makes the ordering `none` — provable, and provably always-rejecting. Equality asks
+    // nothing here; `VExpr::ordering_operands` only reports the four orderings.
+    for o in v.ordering_operands() {
+        match o {
+            crate::expr::Orderable::Always => {}
+            // Statically non-numeric (`a.key() < b.key()`, `a.is_signer < true`): no descriptor
+            // can rescue it, so the whole expression is unprovable in every build.
+            crate::expr::Orderable::Never => return Some(quote! { false }),
+            // Known at macro time from the declared `#[instruction(..)]` type. `operand()` only
+            // builds `InstrArg` for a name in `ctx.instr_args`, which is built from this same
+            // list, so a miss here means "declared but not numeric" and is treated as such.
+            crate::expr::Orderable::InstrArg(n) => {
+                let numeric = instr_args.iter()
+                    .any(|a| a.name == n && a.kind == ArgTyKind::Numeric);
+                if !numeric {
+                    return Some(quote! { false });
+                }
+            }
+            crate::expr::Orderable::Field(i, seg) => {
+                let inner = inner_ty_at(i, ctx);
+                terms.push(quote! {
+                    ::verified_anchor::layout::has_top_level_orderable_field(
+                        <#inner as ::verified_anchor::AccountData>::LAYOUT, #seg)
+                });
+            }
+        }
+    }
+
+    if terms.is_empty() {
+        return None;
+    }
     Some(quote! { #(#terms)&&* })
 }
 
@@ -1014,7 +1048,11 @@ struct UnprovenCheck<'a> {
 /// This is the FULL complement of `validate_body`'s expression arm: an expression is either
 /// compiled into the proven core there, or it lands here. Nothing may fall between the two —
 /// that gap is precisely the silent no-op M10 Task 13 exists to close.
-fn unproven_checks<'a>(specs: &'a [FieldSpec], ctx: &crate::expr::ExprCtx) -> Vec<UnprovenCheck<'a>> {
+fn unproven_checks<'a>(
+    specs: &'a [FieldSpec],
+    ctx: &crate::expr::ExprCtx,
+    instr_args: &[InstrArg],
+) -> Vec<UnprovenCheck<'a>> {
     let mut out = Vec::new();
     for spec in specs {
         for c in &spec.constraints {
@@ -1023,7 +1061,7 @@ fn unproven_checks<'a>(specs: &'a [FieldSpec], ctx: &crate::expr::ExprCtx) -> Ve
                 // Outside the sublanguage (a call, a macro, a module-qualified path, …).
                 None => None,
                 // Inside it, but its provability depends on the user's descriptor.
-                Some(v) => match locatability_cond(&v, ctx) {
+                Some(v) => match locatability_cond(&v, ctx, instr_args) {
                     Some(cond) => {
                         let form = match v.fallback_needs_value_form() {
                             true => Some(v),
@@ -1053,15 +1091,27 @@ fn unproven_checks<'a>(specs: &'a [FieldSpec], ctx: &crate::expr::ExprCtx) -> Ve
 /// two error directions are not symmetric: binding a name the expression does not use is a
 /// warning, while failing to bind one it does use is a hard build failure on valid Anchor.
 ///
-/// The one refinement it does make is dropping identifiers that directly follow a `.`, i.e.
-/// field and method names. That is what stops `constraint = at_least(vault.amount)` from
-/// claiming to use an `#[instruction(amount: u64)]` argument it never mentions; see
-/// `instr_arg_binds`. It cannot introduce a miss, because nothing after a `.` is ever a name
-/// this function's callers would bind: a field name resolves against the receiver, a method
-/// name against its impl, and a tuple index is not an `Ident` at all.
+/// The one refinement it does make is dropping identifiers that directly follow an ISOLATED
+/// `.`, i.e. field and method names. That is what stops `constraint = at_least(vault.amount)`
+/// from claiming to use an `#[instruction(amount: u64)]` argument it never mentions; see
+/// `instr_arg_binds`. It cannot introduce a miss, because nothing after a field-separating `.`
+/// is ever a name this function's callers would bind: a field name resolves against the
+/// receiver, a method name against its impl, and a tuple index is not an `Ident` at all.
+///
+/// "ISOLATED" IS LOAD-BEARING, and the first cut of this filter got it wrong. A `.` whose
+/// PREDECESSOR is also a `.` is the second half of a RANGE (`lo..hi`, `lo..=hi`) or of
+/// STRUCT-UPDATE syntax (`Foo { ..base }`), and what follows it is a value-position identifier
+/// like any other. Setting the flag on both dots dropped `hi`/`base` from the used set, so the
+/// verbatim hatch never bound it and a program REAL ANCHOR COMPILES failed with
+/// `error[E0425]: cannot find value `hi` in this scope` — the exact class of build failure this
+/// function exists to prevent. (`..=` was already safe by accident: the `=` clears the flag.)
+/// `tests/ui/pass/constraint_hatch_range_and_struct_update.rs` is the tripwire.
 fn idents_in(e: &Expr) -> std::collections::HashSet<String> {
     fn walk(ts: TokenStream2, out: &mut std::collections::HashSet<String>) {
         let mut after_dot = false;
+        // Was the IMMEDIATELY preceding token a `.`? Distinguishes the field-separating `.`
+        // from the second dot of `..`/`..=`.
+        let mut prev_dot = false;
         for tt in ts {
             match tt {
                 proc_macro2::TokenTree::Ident(i) => {
@@ -1069,15 +1119,24 @@ fn idents_in(e: &Expr) -> std::collections::HashSet<String> {
                         out.insert(i.to_string());
                     }
                     after_dot = false;
+                    prev_dot = false;
                 }
                 proc_macro2::TokenTree::Group(g) => {
                     // A delimited group is never the field/method name of a preceding `.`
                     // (`a.(b)` is not an expression), so the flag does not carry into it.
                     walk(g.stream(), out);
                     after_dot = false;
+                    prev_dot = false;
                 }
-                proc_macro2::TokenTree::Punct(p) => after_dot = p.as_char() == '.',
-                proc_macro2::TokenTree::Literal(_) => after_dot = false,
+                proc_macro2::TokenTree::Punct(p) => {
+                    let dot = p.as_char() == '.';
+                    after_dot = dot && !prev_dot;
+                    prev_dot = dot;
+                }
+                proc_macro2::TokenTree::Literal(_) => {
+                    after_dot = false;
+                    prev_dot = false;
+                }
             }
         }
     }
@@ -1190,7 +1249,7 @@ fn lean_spec_string(specs: &[FieldSpec], instr_args: &[InstrArg]) -> (String, Ve
                 if let Constraint::Expr(e) = c {
                     if !s.is_empty() {
                         if let Some(v) = crate::expr::compile_expr(e, &expr_ctx) {
-                            if let Some(cond) = locatability_cond(&v, &expr_ctx) {
+                            if let Some(cond) = locatability_cond(&v, &expr_ctx, instr_args) {
                                 cs_cond.push(quote! { if #cond { #s } else { "" } });
                                 // Placeholder: spliced back in below as a runtime hole.
                                 return "@@COND@@".to_string();
@@ -1579,7 +1638,7 @@ fn validate_body(specs: &[FieldSpec], instr_args: &[InstrArg]) -> TokenStream2 {
                             // would reject every account, so it is switched OFF here and the
                             // developer's verbatim Rust runs in `try_accounts` instead. See
                             // `locatability_cond`.
-                            match locatability_cond(&v, &expr_ctx) {
+                            match locatability_cond(&v, &expr_ctx, instr_args) {
                                 Some(cond) => quote! { if #cond { #check } },
                                 None => check,
                             }
@@ -2209,7 +2268,7 @@ pub fn derive_verified_accounts(input: TokenStream) -> TokenStream {
         instr_args: &hatch_arg_names,
         deser: false,
     };
-    let unproven = unproven_checks(&specs, &hatch_ctx);
+    let unproven = unproven_checks(&specs, &hatch_ctx, &instr_args.mappable);
     let field_names: Vec<String> = specs.iter().map(|s| s.name.clone()).collect();
 
     // `UNPROVEN_CHECKS` entries. A conditionally proven expression contributes `""` in the

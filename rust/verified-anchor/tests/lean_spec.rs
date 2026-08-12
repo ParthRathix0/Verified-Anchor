@@ -293,8 +293,13 @@ fn lean_spec_emits_the_expression_constraint() {
 }
 
 #[derive(VerifiedAccounts)]
+#[instruction(threshold: u64)]
 struct StrictOrSpec<'info> {
-    #[account(constraint = user.is_signer || user.key() < 1)]
+    // `threshold < 1` rather than the `user.key() < 1` this fixture used to carry: the
+    // provability gate now diverts every NON-NUMERIC ordering to the escape hatch (see
+    // `layout::has_top_level_orderable_field`), which would leave this spec empty and pin
+    // nothing. The `Expr.or` structure under test is unchanged.
+    #[account(constraint = user.is_signer || threshold < 1)]
     user: UncheckedAccount<'info>,
 }
 
@@ -304,7 +309,7 @@ struct StrictOrSpec<'info> {
 fn lean_spec_emits_strict_boolean_structure() {
     let s = StrictOrSpec::lean_spec();
     assert!(
-        s.contains("Constraint.expr (Expr.or (Expr.truthy (Operand.isSigner 0)) (Expr.cmp Cmp.lt (Operand.key 0) (Operand.lit (Value.nat 1))))"),
+        s.contains("Constraint.expr (Expr.or (Expr.truthy (Operand.isSigner 0)) (Expr.cmp Cmp.lt (Operand.instrArg \"threshold\") (Operand.lit (Value.nat 1))))"),
         "spec was: {s}"
     );
 }

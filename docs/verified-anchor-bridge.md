@@ -325,6 +325,7 @@ entry below).
 | `nat`/`int` operands compared via a widened numeric comparison (so `delta < 0` on an `i64` field and `count > 0` on a `u64` field both type-check against a signed/unsigned literal) | `Value.toInt?` widens `nat`/`int` to `Int` before `evalCmp` orders them | same |
 | target unlocatable in `T::LAYOUT` → `compile_error!` at macro expansion (`has_one`), or the field falls out of the sublanguage into the escape hatch (`constraint = <expr>`) | `AccountType.locateField`/`locateField'` returning `none` | — (build-time / escape-hatch routing, not a runtime check) |
 | `constraint = <expr>` data field present in `T::LAYOUT` but NOT decodable by `read_val` (an aggregate: `Ty::{Array,String,Vec,Option,Struct}`) → escape hatch, via the const `layout::has_top_level_scalar_field` | `readVal` has no aggregate arm — every one of them is `none` | — (escape-hatch routing; see "readability, not merely presence" below) |
+| an ORDERING (`<` `<=` `>` `>=`) whose operands are readable but NOT numeric (`Pubkey`, `bool`) → escape hatch, via the const `layout::has_top_level_orderable_field` | `Value.toInt?` is `none` outside `.nat`/`.int`, so `evalCmp`'s four ordering arms are `none` | — (escape-hatch routing; see "orderability, not merely readability" below) |
 
 **What is not modelled.** `Ty` has no float and no Borsh-enum variant. A `has_one` target (or
 a `constraint = <expr>` data-field operand) behind — or itself — a float, an enum, a nested
@@ -355,6 +356,32 @@ type-check — a negative literal against an unsigned field, or an ordering betw
 operands of possibly-different signedness — where the sublanguage is deliberately more
 permissive than Rust. Both arms of the selection are type-checked whether or not the const picks
 them, which is why that choice is made at macro-expansion time rather than in the user's crate.
+
+**Orderability, not merely readability (v0.4.0).** Readability is necessary but not sufficient
+for the four ORDERING comparisons. `Pubkey` and `bool` decode fine, so `read_val` answers for
+them — but `Value.toInt?` does not, and `evalCmp`'s `lt`/`le`/`gt`/`ge` arms are therefore
+`none`. A readability-only gate reported `constraint = pool.mint_a < pool.mint_b` — the
+canonical AMM mint ordering — as *proven*, wrote it into the spec, discharged the obligation
+honestly, and then rejected every pool, including correctly ordered ones: C1's exact shape one
+question deeper. The gate an ordering must pass is therefore
+`layout::has_top_level_orderable_field` (`true` for the ten integer types only), conjoined with
+the readability terms; operands whose type is fixed at macro time (`key()`, `owner`,
+`is_signer`, a `bool` literal, a non-numeric `#[instruction(..)]` argument) fail it statically.
+
+`eq`/`ne` are deliberately EXEMPT: their `evalCmp` arms are total over `Value`, so
+`constraint = vault.authority == authority.key()` — among the most common constraints in
+Anchor — stays fully proven, as does `bool` equality. Only orderings narrow.
+
+**Declared divergence: ordering inside the escape hatch.** The recompiled `layout::FieldValue`
+fallback (`ExprCtx::deser`, one call site) orders same-constructor `Key`/`Bool` values where
+Lean's `evalCmp` yields `none`. It is confined to constraints the gate has just REMOVED from
+`lean_spec` and listed in `UNPROVEN_CHECKS`, so the contract makes no claim about them and
+there is no `evalExpr` to disagree with; the hatch's obligation is parity with real Anchor's
+verbatim Rust, which does order `Pubkey`s. It exists because the two fallback forms are chosen
+at macro-expansion time, before field types are known, and the one syntactic shape "ordering
+between two runtime operands" has to serve both `pool.mint_a < pool.mint_b` (needs `Key`
+ordering) and `vault.delta < vault.amount` (needs the sublanguage's cross-signedness widening,
+which Rust's type checker refuses). The proven path never sets `deser`.
 
 ## The constraint expression sublanguage (`constraint = <expr>`)
 

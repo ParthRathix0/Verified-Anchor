@@ -1427,19 +1427,26 @@ fn constraint_expr_compares_keys() {
 // ── STRICTNESS: `&&`/`||` must NOT lower to Rust's short-circuiting operators ──────────────
 //
 // Lean's `evalExpr` binds BOTH operands through the `Option` monad before combining, so an
-// unevaluable operand poisons the whole expression regardless of the other side. `key() < 1`
-// is unevaluable BY CONSTRUCTION (`evalCmp` has no ordering arm for `key`/`nat`, deliberately —
-// see the type-confusion guarantee in `Codegen/ExampleGenerated.lean`), so these fixtures pin
-// the semantics without depending on any particular account bytes.
+// unevaluable operand poisons the whole expression regardless of the other side.
+//
+// The unevaluable operand here is `threshold < 1` read from an EMPTY `instr_data`: `locate`
+// finds the argument's offset, `read_val` runs off the end of the buffer, and the operand is
+// `None`. (These fixtures used to spell it `user.key() < 1` — a TYPE-CONFUSED ordering, which
+// `evalCmp` also refuses. That spelling is gone because the provability gate now diverts every
+// non-numeric ordering to the escape hatch, where the developer's Rust runs verbatim and
+// `Pubkey < 1` does not type-check — exactly as it does not under real Anchor. A RUNTIME-
+// unevaluable operand pins the same strictness property without depending on a comparison no
+// Anchor program could contain.)
 
 #[derive(VerifiedAccounts)]
+#[instruction(threshold: u64)]
 struct StrictOr<'info> {
     // `true || <unevaluable>`. Under Rust's native `||` this SHORT-CIRCUITS to `true` and the
     // account set is ACCEPTED — while the Lean contract says `none`, i.e. REJECT. That gap is
     // precisely "verified-anchor accepts an account set the contract rejects", the milestone's
     // headline guarantee. If a future refactor swaps the strict combinator for native `||`,
     // `strict_or_rejects_when_right_operand_is_unevaluable` below turns red.
-    #[account(constraint = user.is_signer || user.key() < 1)]
+    #[account(constraint = user.is_signer || threshold < 1)]
     user: UncheckedAccount<'info>,
 }
 
@@ -1447,6 +1454,7 @@ struct StrictOr<'info> {
 fn strict_or_rejects_when_right_operand_is_unevaluable() {
     let mut u = acct(true, false); // is_signer = true → the left operand is `Some(true)`
     let accts = [u.info()];
+    // EMPTY instruction data → `threshold` cannot be read → the right operand is `None`.
     assert!(
         matches!(
             StrictOr::validate(&accts, &[], &any_pid()),
@@ -1457,12 +1465,22 @@ fn strict_or_rejects_when_right_operand_is_unevaluable() {
     );
 }
 
+/// The control for the fixture above: once `threshold` IS readable, the same `or` accepts
+/// normally. Without it, "reject everything" would satisfy the strictness assertion.
+#[test]
+fn strict_or_accepts_once_the_right_operand_is_readable() {
+    let mut u = acct(true, false);
+    let accts = [u.info()];
+    assert_eq!(StrictOr::validate(&accts, &7u64.to_le_bytes(), &any_pid()), Ok(()));
+}
+
 #[derive(VerifiedAccounts)]
+#[instruction(threshold: u64)]
 struct StrictAnd<'info> {
     // `false && <unevaluable>`: rejects under both semantics, so this is not a safety
     // difference — it is here so the `and` arm is exercised at all, and so the pair documents
     // exactly where the asymmetry lies.
-    #[account(constraint = user.is_signer && user.key() < 1)]
+    #[account(constraint = user.is_signer && threshold < 1)]
     user: UncheckedAccount<'info>,
 }
 
@@ -2142,5 +2160,180 @@ fn a_scalar_field_after_an_array_is_enforced_by_the_proven_core() {
     assert!(matches!(
         ScalarStillProven::validate(&[bad.info()], &[], &any_pid()),
         Err(VAError::ConstraintViolated { field: "vault", .. })
+    ));
+}
+
+// ── C1's TWIN: an ORDERING over a non-numeric field ─────────────────────────────────────────
+//
+// The C1 fix asked the gate "can `read_val` DECODE this field?". `Pubkey` decodes, so a
+// `Pubkey` ordering passed the gate — but `evalCmp` (and `Cmp::apply`, its Rust mirror) only
+// ORDERS numeric `Value`s; for any other pair the four orderings yield `none`. So
+// `constraint = pool.mint_a < pool.mint_b` — the canonical AMM mint-ordering idiom — was
+// reported PROVEN, entered the Lean spec, discharged honestly, and then rejected EVERY account,
+// including ones whose mints really are ordered. Same silent always-reject as C1, one question
+// deeper: the gate must ask "can `evalCmp` ORDER it?", not merely "can `read_val` read it?".
+
+#[verified_anchor::account]
+struct Pool {
+    mint_a: Pubkey,
+    mint_b: Pubkey,
+    fee_bps: u64,
+    frozen: bool,
+}
+
+fn pool_data(mint_a: Pubkey, mint_b: Pubkey, fee_bps: u64, frozen: bool) -> Vec<u8> {
+    let mut d = <Pool as verified_anchor::AccountData>::DISCRIMINATOR.to_vec();
+    d.extend_from_slice(mint_a.as_ref());
+    d.extend_from_slice(mint_b.as_ref());
+    d.extend_from_slice(&fee_bps.to_le_bytes());
+    d.push(frozen as u8);
+    d
+}
+
+/// Two `Pubkey`s that really are ordered, so "accepts when the ordering holds" is testable.
+fn ordered_mints() -> (Pubkey, Pubkey) {
+    let lo = Pubkey::new_from_array([1u8; 32]);
+    let hi = Pubkey::new_from_array([2u8; 32]);
+    (lo, hi)
+}
+
+#[derive(VerifiedAccounts)]
+struct MintOrder<'info> {
+    #[account(constraint = pool.mint_a < pool.mint_b)]
+    pool: verified_anchor::Account<'info, Pool>,
+}
+
+#[test]
+fn pubkey_ordering_is_reported_unproven() {
+    assert_eq!(MintOrder::UNPROVEN_CHECKS, &["pool.mint_a < pool.mint_b"]);
+}
+
+#[test]
+fn pubkey_ordering_omits_the_check_from_the_lean_spec() {
+    let s = MintOrder::lean_spec();
+    assert!(!s.contains("Constraint.expr"), "unorderable check leaked into the spec: {s}");
+}
+
+/// The heart of the twin: still ENFORCED, both ways. Before the fix the accepting direction
+/// returned `Err(ConstraintViolated)` even though `mint_a < mint_b` held.
+#[test]
+fn pubkey_ordering_is_enforced_through_try_accounts() {
+    use verified_anchor::Accounts;
+    let (lo, hi) = ordered_mints();
+
+    let mut good = acct_with_data(Pubkey::new_unique(), pool_data(lo, hi, 30, false));
+    good.owner = crate::ID;
+    assert!(MintOrder::try_accounts(&any_pid(), &[good.info()], &[]).is_ok());
+
+    let mut bad = acct_with_data(Pubkey::new_unique(), pool_data(hi, lo, 30, false));
+    bad.owner = crate::ID;
+    assert!(matches!(
+        MintOrder::try_accounts(&any_pid(), &[bad.info()], &[]),
+        Err(VAError::ConstraintViolated { field: "pool", expr: "pool.mint_a < pool.mint_b" })
+    ));
+}
+
+/// THE OVER-CORRECTION TRIPWIRE. `constraint = vault.authority == authority.key()` is one of
+/// the most common constraints in all of Anchor, and `evalCmp`'s `eq`/`ne` arms are TOTAL over
+/// any two `Value`s — so `Pubkey` EQUALITY must stay PROVEN. A fix that demoted every
+/// non-numeric comparison would pass every assertion above and gut the milestone.
+#[derive(VerifiedAccounts)]
+struct PubkeyEqStillProven<'info> {
+    #[account(constraint = vault.authority == authority.key())]
+    vault: verified_anchor::Account<'info, OwnerVault>,
+    authority: UncheckedAccount<'info>,
+}
+
+#[test]
+fn pubkey_equality_is_still_proven() {
+    assert!(
+        PubkeyEqStillProven::UNPROVEN_CHECKS.is_empty(),
+        "the ordering fix over-corrected and demoted Pubkey EQUALITY to the hatch: {:?}",
+        PubkeyEqStillProven::UNPROVEN_CHECKS
+    );
+    let s = PubkeyEqStillProven::lean_spec();
+    assert!(s.contains("Constraint.expr"), "proven Pubkey equality missing from the spec: {s}");
+}
+
+#[test]
+fn pubkey_equality_is_enforced_by_the_proven_core() {
+    let auth = Pubkey::new_unique();
+    let mut vault = acct_with_data(Pubkey::new_unique(), owner_vault_data(auth));
+    vault.owner = crate::ID;
+    let mut authority = acct_with_data(auth, vec![]);
+    assert_eq!(
+        PubkeyEqStillProven::validate(&[vault.info(), authority.info()], &[], &any_pid()),
+        Ok(())
+    );
+
+    let mut vault = acct_with_data(Pubkey::new_unique(), owner_vault_data(Pubkey::new_unique()));
+    vault.owner = crate::ID;
+    let mut other = acct_with_data(Pubkey::new_unique(), vec![]);
+    assert!(matches!(
+        PubkeyEqStillProven::validate(&[vault.info(), other.info()], &[], &any_pid()),
+        Err(VAError::ConstraintViolated { field: "vault", .. })
+    ));
+}
+
+/// `bool` equality is the other total-over-`Value` case and must likewise stay proven, and a
+/// NUMERIC ordering on the same struct must stay proven too — the fix narrows orderings by
+/// OPERAND TYPE, not by operator.
+#[derive(VerifiedAccounts)]
+struct PoolScalarsStillProven<'info> {
+    #[account(constraint = pool.frozen == false)]
+    #[account(constraint = pool.fee_bps <= 10000)]
+    pool: verified_anchor::Account<'info, Pool>,
+}
+
+#[test]
+fn bool_equality_and_numeric_ordering_are_still_proven() {
+    assert!(
+        PoolScalarsStillProven::UNPROVEN_CHECKS.is_empty(),
+        "the ordering fix over-corrected: {:?}",
+        PoolScalarsStillProven::UNPROVEN_CHECKS
+    );
+}
+
+#[test]
+fn numeric_ordering_on_the_pool_is_enforced_by_the_proven_core() {
+    let (lo, hi) = ordered_mints();
+    let mut good = acct_with_data(Pubkey::new_unique(), pool_data(lo, hi, 10000, false));
+    good.owner = crate::ID;
+    assert_eq!(PoolScalarsStillProven::validate(&[good.info()], &[], &any_pid()), Ok(()));
+
+    let mut bad = acct_with_data(Pubkey::new_unique(), pool_data(lo, hi, 10001, false));
+    bad.owner = crate::ID;
+    assert!(matches!(
+        PoolScalarsStillProven::validate(&[bad.info()], &[], &any_pid()),
+        Err(VAError::ConstraintViolated { field: "pool", .. })
+    ));
+}
+
+/// The STATIC half of the orderability gate: `a.key() < b.key()` carries no data-field operand
+/// at all, so the readability gate never looked at it — yet `evalCmp` refuses it just the same,
+/// and it was reported proven and rejected every account. `Orderable::Never` decides this one at
+/// macro-expansion time; no descriptor can rescue it.
+#[derive(VerifiedAccounts)]
+struct KeyOrder<'info> {
+    #[account(constraint = a.key() < b.key())]
+    a: UncheckedAccount<'info>,
+    b: UncheckedAccount<'info>,
+}
+
+#[test]
+fn key_ordering_between_two_accounts_is_unproven_but_enforced() {
+    use verified_anchor::Accounts;
+    assert_eq!(KeyOrder::UNPROVEN_CHECKS, &["a.key() < b.key()"]);
+    assert!(!KeyOrder::lean_spec().contains("Constraint.expr"));
+
+    let lo = Pubkey::new_from_array([1u8; 32]);
+    let hi = Pubkey::new_from_array([2u8; 32]);
+    let (mut x, mut y) = (acct_with_data(lo, vec![]), acct_with_data(hi, vec![]));
+    assert!(KeyOrder::try_accounts(&any_pid(), &[x.info(), y.info()], &[]).is_ok());
+
+    let (mut x, mut y) = (acct_with_data(hi, vec![]), acct_with_data(lo, vec![]));
+    assert!(matches!(
+        KeyOrder::try_accounts(&any_pid(), &[x.info(), y.info()], &[]),
+        Err(VAError::ConstraintViolated { field: "a", expr: "a.key() < b.key()" })
     ));
 }

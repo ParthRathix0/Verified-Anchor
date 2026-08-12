@@ -513,6 +513,38 @@ impl Operand {
             _ => None,
         }
     }
+
+    /// What `evalCmp`'s ORDERING arms can do with this operand. See `Orderable`.
+    fn orderable(&self) -> Orderable<'_> {
+        match self {
+            // `Value.nat` / `Value.int` in every build.
+            Operand::LitNat(_) | Operand::LitInt(_)
+            | Operand::Lamports(_) | Operand::DataLen(_) => Orderable::Always,
+            // `Value.key` / `Value.bool` in every build — `Value.toInt?` is `none`.
+            Operand::LitBool(_) | Operand::Key(_) | Operand::Owner(_)
+            | Operand::IsSigner(_) | Operand::IsWritable(_) | Operand::Executable(_) =>
+                Orderable::Never,
+            Operand::Field(i, path) => Orderable::Field(*i, path[0].as_str()),
+            Operand::InstrArg(n) => Orderable::InstrArg(n.as_str()),
+        }
+    }
+}
+
+/// What `evalCmp`'s ORDERING arms (`lt`/`le`/`gt`/`ge`) can do with an operand — the question
+/// `locatability_cond` asks of every operand of an ordering, on top of readability. `eq`/`ne`
+/// never ask it: those arms are TOTAL over `Value`.
+pub(crate) enum Orderable<'a> {
+    /// Numeric whatever the user's crate looks like.
+    Always,
+    /// Non-numeric whatever the user's crate looks like, so `evalCmp` yields `none` and a proof
+    /// over it would prove "reject everything". Statically unprovable — the escape hatch owns it.
+    Never,
+    /// A data field: only the user's Borsh descriptor knows its type, so this becomes a const
+    /// term (`layout::has_top_level_orderable_field`) evaluated there. `(account index, field)`.
+    Field(usize, &'a str),
+    /// A named `#[instruction(..)]` argument. Its declared Rust type decides and is known at
+    /// macro time, but only to `lib.rs`, which holds the `InstrArg` list.
+    InstrArg(&'a str),
 }
 
 impl VExpr {
@@ -540,6 +572,43 @@ impl VExpr {
     }
 }
 
+impl VExpr {
+    /// Every operand this expression needs `evalCmp` to be able to ORDER — the operands of its
+    /// `lt`/`le`/`gt`/`ge` nodes, and nothing else. `Orderable::Always` entries are dropped:
+    /// they impose no condition.
+    ///
+    /// EMPTY means the expression has no ordering, or none whose operands could be non-numeric,
+    /// so orderability imposes nothing on its provability. `eq`/`ne` contribute nothing here BY
+    /// DESIGN — see `Orderable`.
+    pub(crate) fn ordering_operands(&self) -> Vec<Orderable<'_>> {
+        let mut out = Vec::new();
+        self.walk_ordering_operands(&mut out);
+        out
+    }
+
+    fn walk_ordering_operands<'a>(&'a self, out: &mut Vec<Orderable<'a>>) {
+        match self {
+            VExpr::Cmp(op, l, r) => {
+                if matches!(op, Cmp::Lt | Cmp::Le | Cmp::Gt | Cmp::Ge) {
+                    for o in [l.orderable(), r.orderable()] {
+                        if !matches!(o, Orderable::Always) {
+                            out.push(o);
+                        }
+                    }
+                }
+            }
+            VExpr::And(l, r) | VExpr::Or(l, r) => {
+                l.walk_ordering_operands(out);
+                r.walk_ordering_operands(out);
+            }
+            VExpr::Not(e) => e.walk_ordering_operands(out),
+            // `Truthy` needs a BOOL, not an ordering: it goes through `evalCmp .eq` against
+            // `true`, which is total over `Value`.
+            VExpr::Truthy(_) => {}
+        }
+    }
+}
+
 impl Cmp {
     /// The `evalCmp` arms for THIS operator, over two already-evaluated `Value`s.
     ///
@@ -558,7 +627,44 @@ impl Cmp {
     /// NON-numeric pairs are unchanged: `eq`/`ne` stay TOTAL over `Value` (Rust's derived
     /// `PartialEq` matches Lean's derived `DecidableEq` for those), the four orderings yield
     /// `None`, so `key < nat` REJECTS rather than silently passing.
-    fn apply(&self, l: TokenStream2, r: TokenStream2) -> TokenStream2 {
+    ///
+    /// `deser` — THE ONE PLACE THE EMITTED RUST DELIBERATELY OUTRUNS LEAN, AND WHY IT IS SOUND.
+    /// `deser` is set only for the escape hatch's recompiled fallback (`ExprCtx::deser`, used
+    /// by exactly one call site in `lib.rs`), which the macro const-selects for a constraint
+    /// the readability/orderability gate has REMOVED from the Lean spec and listed in
+    /// `UNPROVEN_CHECKS`. In that build the contract makes no claim about this constraint at
+    /// all, so there is no `evalExpr` to agree with; the hatch's only obligation is to enforce
+    /// what REAL ANCHOR enforces, i.e. plain Rust `<` on the deserialised fields.
+    ///
+    /// It exists because `pool.mint_a < pool.mint_b` — the canonical AMM mint ordering — must
+    /// still be ENFORCED once the gate stops proving it. The verbatim-Rust fallback cannot take
+    /// that job: the same syntactic shape (an ordering between two runtime operands) also
+    /// covers `vault.delta < vault.amount` across signedness, which the sublanguage answers and
+    /// Rust's type checker does not, and the form is chosen at macro time, before the field
+    /// types are known. So the recompiled form has to answer BOTH, and same-constructor
+    /// `Key`/`Bool` ordering is exactly Rust's own answer.
+    ///
+    /// NEVER set `deser` on the proven path. In `validate` this would order values Lean's
+    /// `evalCmp` refuses, which is the milestone's forbidden direction — accepting where the
+    /// contract yields `none`.
+    fn apply(&self, deser: bool, l: TokenStream2, r: TokenStream2) -> TokenStream2 {
+        // Hatch-only, and only for the two SAME-CONSTRUCTOR non-numeric pairs Rust itself
+        // orders. Cross-constructor pairs stay `None` in both modes: real Anchor could not
+        // compile such a comparison either, so there is nothing to be parity with. See the
+        // `deser` paragraphs above before touching this.
+        let hatch_ord = match deser {
+            false => quote! {},
+            true => quote! {
+                (
+                    ::core::option::Option::Some(::verified_anchor::layout::Value::Key(__a)),
+                    ::core::option::Option::Some(::verified_anchor::layout::Value::Key(__b)),
+                ) => ::core::option::Option::Some(::core::cmp::Ord::cmp(&__a, &__b)),
+                (
+                    ::core::option::Option::Some(::verified_anchor::layout::Value::Bool(__a)),
+                    ::core::option::Option::Some(::verified_anchor::layout::Value::Bool(__b)),
+                ) => ::core::option::Option::Some(::core::cmp::Ord::cmp(&__a, &__b)),
+            },
+        };
         // The one place Rust needs a guard Lean does not: `Int` is unbounded in Lean, but
         // `u128` and `i128` do not share a range, so a `Nat` above `i128::MAX` cannot be cast.
         // It is also unambiguously larger than any `i128`, hence `Greater`/`Less` directly.
@@ -593,6 +699,7 @@ impl Cmp {
                         ::core::cmp::Ord::cmp(&__a, &(__b as i128))
                     }
                 ),
+                #hatch_ord
                 // Non-numeric on at least one side: Lean's `Value.toInt?` is `none` here too.
                 _ => ::core::option::Option::None,
             }
@@ -640,7 +747,7 @@ impl VExpr {
     /// An `Option<bool>` expression mirroring Lean `evalExpr`.
     fn to_tokens(&self, ctx: &ExprCtx) -> TokenStream2 {
         match self {
-            VExpr::Cmp(op, l, r) => op.apply(l.to_tokens(ctx), r.to_tokens(ctx)),
+            VExpr::Cmp(op, l, r) => op.apply(ctx.deser, l.to_tokens(ctx), r.to_tokens(ctx)),
             // ── STRICT `and`/`or`. READ BEFORE CHANGING. ──────────────────────────────────
             //
             // Both operands are bound to `let` STATEMENTS, which run unconditionally, and only
