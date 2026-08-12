@@ -606,9 +606,9 @@
 <section class="hero">
   <div class="container">
     <div class="hero-inner">
-      <span class="badge">v0.1.2 · on crates.io · zero sorry</span>
+      <span class="badge">v0.4.0 · on crates.io · zero sorry</span>
       <h1>Formally verified account validation for&nbsp;<span class="accent">Solana</span>.<br/>Checked by Lean&nbsp;4, not&nbsp;by&nbsp;hope.</h1>
-      <p class="lede">Verified Anchor is a formally verified, drop-in replacement for Anchor's <code>#[derive(Accounts)]</code> &mdash; the macro that gates account validation on nearly every Solana program. Every macro expansion ships with a build-time Lean 4 proof that the generated Rust validator implements a precise validation contract (signer, mut, owner, has_one, seeds/bump, discriminator, init/close), so the build fails unless the validation is proven. This eliminates the macro-level account-validation bug class &mdash; Cashio, Crema, type confusion, PDA misuse &mdash; by construction, with a single dependency: <code>cargo add verified-anchor</code>.</p>
+      <p class="lede">Verified Anchor is a formally verified, drop-in replacement for Anchor's <code>#[derive(Accounts)]</code> &mdash; the macro that gates account validation on nearly every Solana program. Every macro expansion ships with a build-time Lean 4 proof that the generated Rust validator implements a precise validation contract (signer, mut, owner, has_one, seeds/bump, discriminator, address, executable, rent_exempt, distinct mutable keys, init/close/realloc/zero/init_if_needed, and a relational <code>constraint = &lt;expr&gt;</code> sublanguage), so the build fails unless the validation is proven. This eliminates the macro-level account-validation bug class &mdash; Cashio, Crema, type confusion, PDA misuse &mdash; by construction, with a single dependency: <code>cargo add verified-anchor</code>.</p>
 
       <div class="cta">
         <a class="btn btn-primary" href="#use">Get started →</a>
@@ -864,7 +864,11 @@ $ cargo verified-anchor check          <span class="out"># discharges every stru
       <div class="row"><div class="c">has_one = &lt;field&gt;</div><div class="t">genValidate_sound (relational)</div></div>
       <div class="row"><div class="c">seeds = […], bump</div><div class="t">genValidate_sound (canonical-only PDA)</div></div>
       <div class="row"><div class="c">discriminator = "…"</div><div class="t">genValidate_sound</div></div>
-      <div class="row"><div class="c">init / close</div><div class="t">lifecycle_sound (Hoare-style)</div></div>
+      <div class="row"><div class="c">address = &lt;pubkey&gt; / executable</div><div class="t">genValidate_sound</div></div>
+      <div class="row"><div class="c">rent_exempt = enforce</div><div class="t">genValidate_sound (opaque rent minimum)</div></div>
+      <div class="row"><div class="c">distinct mutable keys</div><div class="t">genValidate_sound (struct-level)</div></div>
+      <div class="row"><div class="c">constraint = &lt;expr&gt;</div><div class="t">genValidate_sound (relational sublanguage, fail-closed)</div></div>
+      <div class="row"><div class="c">init / close / realloc / zero / init_if_needed</div><div class="t">lifecycle_sound (Hoare-style)</div></div>
     </div>
   </div>
 </section>
@@ -896,7 +900,7 @@ $ lake env lean Audit.lean</pre>
     <div class="boundary">
       <div class="in">
         <div class="h">In the proof</div>
-        <p><code>signer</code>, <code>mut</code>, <code>owner</code>, <code>has_one</code>, <code>seeds</code> + <code>bump</code>, <code>discriminator</code>. Plus the <code>init</code> / <code>close</code> lifecycle as a Hoare theorem.</p>
+        <p><code>signer</code>, <code>mut</code>, <code>owner</code>, <code>has_one</code> (located at its real Borsh offset), <code>seeds</code> + <code>bump</code> (incl. <code>seeds::program</code> and opt-in stored bump), <code>discriminator</code>, <code>address</code>, <code>executable</code>, <code>rent_exempt</code>, automatic distinct-mutable-key checking, and a relational <code>constraint = &lt;expr&gt;</code> sublanguage over account metadata, Borsh-located data fields and <code>#[instruction(…)]</code> arguments. Plus <code>init</code> / <code>close</code> / <code>realloc</code> / <code>zero</code> / <code>init_if_needed</code> as Hoare theorems.</p>
       </div>
       <div class="out">
         <div class="h">Outside the proof</div>
@@ -904,11 +908,11 @@ $ lake env lean Audit.lean</pre>
       </div>
       <div class="out">
         <div class="h">Constraints not modelled</div>
-        <p><code>realloc</code>, <code>zero</code>, token / mint / associated-token, custom <code>constraint = expr</code>. The macro emits a <code>compile_error!</code> with a migration-guide pointer.</p>
+        <p>SPL <code>token::*</code> / <code>mint::*</code> / <code>associated_token::*</code> (planned for v0.5) — these still emit a <code>compile_error!</code> with a migration-guide pointer. A <code>constraint = &lt;expr&gt;</code> outside the proven sublanguage is <em>not</em> rejected: it compiles, runs verbatim after deserialisation, and is reported by <code>cargo verified-anchor check</code> as an unproven check. Unproven checks are additional conjuncts, so they can only reject more — verified-anchor never accepts an account set the contract rejects.</p>
       </div>
       <div class="in">
         <div class="h">Empirically validated</div>
-        <p>Four real Solana mainnet CVE classes are reproduced as <code>litesvm</code> before-and-after tests. Naive version: attacker wins. Verified version: attacker rejected on chain.</p>
+        <p>Real Solana mainnet CVE classes — plus the wrong-offset <code>has_one</code> privilege escalation this project found and fixed in its own code — are reproduced as <code>litesvm</code> before-and-after tests. Naive version: attacker wins. Verified version: attacker rejected on chain.</p>
       </div>
     </div>
   </div>
