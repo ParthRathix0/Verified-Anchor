@@ -19,7 +19,96 @@ Contributions are welcome at every level, from a typo to a new Lean soundness th
 | Something behaves incorrectly | [Bug report](../../issues/new?template=bug_report.yml) |
 | The validator accepts what the contract rejects, or a check runs unproven | [Soundness gap](../../issues/new?template=soundness_gap.yml) — read [SECURITY.md](SECURITY.md) first if it is exploitable |
 | Real Anchor code that will not compile under `#[derive(VerifiedAccounts)]` | [Drop-in gap](../../issues/new?template=drop_in_gap.yml) |
-| Docs, tests, exploit case studies, code | Open a PR, or an issue first for anything large |
+| Docs, tests, exploit case studies, code | [Send a pull request](#how-to-get-a-change-merged) — open an issue first for anything large |
+
+## How to get a change merged
+
+**Every contribution lands through a pull request.** You will not have push access to this
+repository, so you cannot commit to `master` — that is normal and expected. You work on a copy
+(a *fork*), then ask for your work to be pulled in. A maintainer reviews it and merges.
+
+If you have found a bug but do not want to fix it yourself, just open an issue and stop there.
+That is a real contribution on its own.
+
+### If you want to fix an issue
+
+**1. Say so on the issue first.** Leave a comment such as *"I'd like to take this."* This costs
+you nothing and prevents two people quietly doing the same work. For anything larger than a
+one-file change, sketch your approach in that comment and wait for a reply before writing code —
+it is much cheaper to redirect an approach in a comment than in a finished pull request.
+
+**2. Fork the repository.** Press **Fork** at the top-right of the GitHub page, or:
+
+```bash
+gh repo fork ParthRathix0/Verified-Anchor --clone
+cd Verified-Anchor
+```
+
+**3. Create a branch.** Never work on `master`, even in your own fork — it makes later updates
+painful.
+
+```bash
+git checkout -b fix-json-escaping
+```
+
+**4. Make your change, then run the gate.** The full gate is in
+[The mandatory gate](#the-mandatory-gate) below. Run it before you push, not after.
+
+**5. Commit.** One logical change per commit; explain *why* in the body.
+
+```bash
+git commit -m "fix: escape struct names in the --json report
+
+Closes #2."
+```
+
+Writing `Closes #2` in the body makes GitHub close that issue automatically when the pull
+request is merged.
+
+**6. Push to your fork.**
+
+```bash
+git push -u origin fix-json-escaping
+```
+
+**7. Open the pull request.** GitHub prints a link when you push, or:
+
+```bash
+gh pr create --base master --fill
+```
+
+Fill in the template: what changed, the issue it closes, its soundness impact, and the gate
+checklist. If you could not run part of the gate — no SBF toolchain, for instance — tick what
+you ran and say plainly what you skipped. An honest gap is fine; a silently skipped step is not.
+
+**8. Sign the CLA.** On your first pull request only, a bot comments asking you to sign. Reply
+with a single comment containing exactly the sentence it gives you. It is recorded once and never
+asked again. You keep the copyright in your work — see [CLA.md](CLA.md).
+
+**9. Wait for CI.** Every pull request runs the full gate automatically: Lean build, zero
+`sorry`, the axiom audit, the SBF build, the litesvm runtime suites, and the proof obligations.
+Expect roughly 15–25 minutes. If something fails, read the log, push a fix to the same branch,
+and CI re-runs on its own — there is no need to close and reopen anything.
+
+**10. Respond to review.** Push more commits to the same branch; they appear on the pull request
+automatically. Please do not force-push during review, as it makes already-posted comments hard
+to follow.
+
+**11. A maintainer merges it.** You do not need merge rights, and you should not need to do
+anything further.
+
+### Keeping your branch current
+
+If `master` moves while your pull request is open:
+
+```bash
+git remote add upstream https://github.com/ParthRathix0/Verified-Anchor.git
+git fetch upstream
+git rebase upstream/master
+git push --force-with-lease
+```
+
+This is the one time force-pushing is expected.
 
 ## The two directives
 
@@ -186,7 +275,10 @@ conjunct** on the proven core, so it can only reject *more*, never accept more. 
 unconditionally; only completeness is affected. That said, an unproven check is a place where
 the tool is not helping you, so shrinking that list is always a welcome contribution.
 
-## Commits and pull requests
+## Commit and pull request conventions
+
+The mechanics are in [How to get a change merged](#how-to-get-a-change-merged) above.
+These are the conventions that section assumes:
 
 * Conventional-commit prefixes, matching the existing history: `feat:`, `fix:`, `docs:`,
   `chore:`, `ci:`, `test:`, `release:`.
