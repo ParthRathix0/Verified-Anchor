@@ -5,6 +5,7 @@
 use core::marker::PhantomData;
 use core::ops::{Deref, DerefMut};
 use solana_program::account_info::AccountInfo;
+use solana_program::pubkey::Pubkey;
 
 use crate::account_data::{AccountData, ProgramId};
 
@@ -54,3 +55,57 @@ pub struct UncheckedAccount<'info> {
 
 // `AccountInfo<'info>` is the raw Solana type — re-exported from prelude as-is
 // (Task L3); no wrapper struct here.
+
+// ── Anchor-parity surface for the escape hatch (M10 Task 13) ───────────────────────────────
+//
+// An out-of-sublanguage `constraint = <expr>` runs VERBATIM as Rust against these wrappers, so
+// the idioms real Anchor code is written in have to resolve here or a valid Anchor program
+// would stop compiling — the one thing the prime directive forbids. Anchor gives every wrapper
+// `Deref<Target = AccountInfo>` (so `a.owner`, `a.is_signer`, `a.lamports()` read the account
+// meta) and a `key()` method through its `Key` trait; these impls are that surface, nothing
+// more. `Account<'info, T>` deliberately keeps its `Deref<Target = T>` above: on a TYPED
+// account `vault.owner` means `T::owner` under real Anchor, and diverging from that would make
+// the hatch check a different thing than the developer wrote.
+
+impl<'info> Deref for Signer<'info> {
+    type Target = AccountInfo<'info>;
+    fn deref(&self) -> &AccountInfo<'info> { self.info }
+}
+impl<'info> Deref for SystemAccount<'info> {
+    type Target = AccountInfo<'info>;
+    fn deref(&self) -> &AccountInfo<'info> { self.info }
+}
+impl<'info> Deref for UncheckedAccount<'info> {
+    type Target = AccountInfo<'info>;
+    fn deref(&self) -> &AccountInfo<'info> { self.info }
+}
+impl<'info, P: ProgramId> Deref for Program<'info, P> {
+    type Target = AccountInfo<'info>;
+    fn deref(&self) -> &AccountInfo<'info> { self.info }
+}
+
+/// `a.key()` — Anchor's `Key` trait, the single most common spelling in real constraints
+/// (`a.key() == crate::ID`). Mirrors the `Operand::Key` the proven sublanguage compiles the
+/// same source to, so a check that moves between the two paths reads the same value.
+pub trait Key {
+    fn key(&self) -> Pubkey;
+}
+
+impl Key for AccountInfo<'_> {
+    fn key(&self) -> Pubkey { *self.key }
+}
+impl<T: AccountData> Key for Account<'_, T> {
+    fn key(&self) -> Pubkey { *self.info.key }
+}
+impl Key for Signer<'_> {
+    fn key(&self) -> Pubkey { *self.info.key }
+}
+impl Key for SystemAccount<'_> {
+    fn key(&self) -> Pubkey { *self.info.key }
+}
+impl Key for UncheckedAccount<'_> {
+    fn key(&self) -> Pubkey { *self.info.key }
+}
+impl<P: ProgramId> Key for Program<'_, P> {
+    fn key(&self) -> Pubkey { *self.info.key }
+}

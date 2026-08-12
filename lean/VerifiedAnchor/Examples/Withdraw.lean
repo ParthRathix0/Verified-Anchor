@@ -33,7 +33,7 @@ def progId : Pubkey := Pubkey.ofBytes (List.replicate 32 7)
 def vaultDisc : ByteArray := (⟨#[1, 2, 3, 4, 5, 6, 7, 8]⟩ : ByteArray)
 
 /-- Vault layout: `authority : Pubkey` stored right after the 8-byte discriminator. -/
-def vaultLayout : FieldLayout := [("authority", 8)]
+def vaultLayout : Ty := .struct [("authority", .pubkey)]
 
 /-- The authority key used in the good contexts. -/
 def authKey : Pubkey := Pubkey.ofBytes (List.replicate 32 9)

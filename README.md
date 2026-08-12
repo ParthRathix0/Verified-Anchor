@@ -25,10 +25,12 @@ Verified Anchor closes the gap. Every macro expansion ships with a Lean 4 theore
 
 ## Status
 
+* `v0.4.0` — M10 constraint-expression sublanguage: `constraint = <expr>` is compiled into a proven relational sublanguage where possible, with an honest, reported escape hatch for the rest; `#[instruction(...)]` named argument binding; a byte-level Borsh field model (`Ty`/`locate`/`readVal`) that gives `has_one` its real field offset instead of a hardcoded one.
 * `v0.3.0` — M9 lifecycle parity: `realloc` (+`realloc::payer`/`realloc::zero`, top-up-only and surplus-preserving), `zero` reinit guard, `init_if_needed` (drop-in on a typed `Account<'info, T>`).
 * `v0.2.0` — M8 constraint-surface completion: `address`/`executable` explicit annotations, stored/non-canonical bump opt-in, `seeds::program`, automatic distinct-mut-key checking, `rent_exempt = enforce/skip`.
 * Lean theorems' axioms: `[propext, Quot.sound]` only. Zero `sorry` / `admit`.
-* Out of scope: token / mint / associated-token constraints. Custom `constraint = ...` expressions.
+* Out of scope: token / mint / associated-token constraints. Floats and Borsh enums in the constraint sublanguage (fall to the escape hatch).
+* Known drop-in gap: **an unlocatable `has_one` target is a build error.** `has_one` needs the target field's real Borsh offset from `T::LAYOUT`, and `#[derive(AccountData)]` truncates that descriptor at the first field it cannot map — a non-literal-length array (`[u8; N]` with `N` a named const), a nested struct, or an enum. A `has_one` target at or behind such a field is rejected at compile time. Unlike `constraint = <expr>`, `has_one` is declarative: there is no developer expression to fall back to. This is the release's largest known departure from "anything Anchor compiles, we compile"; see [`docs/migrating-from-anchor.md`](docs/migrating-from-anchor.md#limitations).
 
 ## Packages
 
@@ -141,18 +143,18 @@ The `#[derive(VerifiedAccounts)]` macro emits two artefacts from a single source
 
 A Lean function `genValidate : AccountsStruct → Ctx → Bool` recursively interprets the constraint list. By construction, the Rust validator and `genValidate` examine the same constraints in the same order and return the same answer on the same input. Equivalence is by construction; the proof side proves equivalence to the *contract*, not to the Rust.
 
-The contract `validates : AccountsStruct → Ctx → Prop` is defined declaratively in Lean. It says exactly what each constraint kind means — `signer` means the slot is a signer, `has_one = f` means the 32 bytes at offset 8 of the account data equal the key of the named field, `seeds = […], bump` means the account key is the canonical PDA for those seeds under `program_id`, and so on.
+The contract `validates : AccountsStruct → Ctx → Prop` is defined declaratively in Lean. It says exactly what each constraint kind means — `signer` means the slot is a signer, `has_one = f` means the bytes at the named field's real Borsh offset (located via the field's `Ty` descriptor, not a hardcoded offset) equal the key of the named field, `seeds = […], bump` means the account key is the canonical PDA for those seeds under `program_id`, and so on.
 
 The headline theorem ties the two together:
 
 ```
-theorem genValidate_sound (s : AccountsStruct) (c : Ctx) (h : M4Subset s) :
+theorem genValidate_sound (s : AccountsStruct) (c : Ctx) (h : M10Subset s) :
   genValidate s c = true ↔ validates s c
 ```
 
-For every struct in the supported subset (called `M4Subset` in Lean — see the table below), `genValidate` returns `true` precisely when the declarative contract holds. The two sides cannot disagree. The lifecycle theorem `lifecycle_sound` discharges analogous Hoare obligations for `init` and `close`.
+For every struct in the supported subset (called `M10Subset` in Lean — see the table below), `genValidate` returns `true` precisely when the declarative contract holds. The two sides cannot disagree. The lifecycle theorem `lifecycle_sound` discharges analogous Hoare obligations for `init` and `close`.
 
-Per-program proof obligations are discharged by `cargo verified-anchor check`. For each user struct the cargo tool generates a one-line Lean obligation `decide (M4Subset s)`, then invokes `lake env lean`. If the obligation fails, the build fails.
+Per-program proof obligations are discharged by `cargo verified-anchor check`. For each user struct the cargo tool generates a one-line Lean obligation `decide (M10Subset s)`, then invokes `lake env lean`. If the obligation fails, the build fails.
 
 ### Proof scope
 
@@ -170,9 +172,12 @@ Per-program proof obligations are discharged by `cargo verified-anchor check`. F
 | `rent_exempt = enforce` | `genValidate_sound` (opaque `rentExemptMinimum` wall; cross-checked by litesvm) |
 | distinct-mut-key check  | `genValidate_sound` (automatic; `allow_duplicate` opt-out) |
 | `discriminator = "..."` | `genValidate_sound`                        |
+| `zero`                  | `genValidate_sound`                        |
+| `constraint = <expr>`   | `genValidate_sound` (relational sublanguage; honest escape hatch otherwise — see below) |
 | `SystemAccount` base: `owner`               | `genValidate_sound`    |
 | `Program<P>` base: `executable` + `address` | `genValidate_sound`    |
 | `init`/`close`          | `lifecycle_sound` (Hoare-style)            |
+| `realloc`/`init_if_needed` | `lifecycle_sound` (Hoare-style)         |
 
 ### What is proven, what is not
 
@@ -180,7 +185,7 @@ Per-program proof obligations are discharged by `cargo verified-anchor check`. F
 |---|---|
 | The constraint kinds above. The contract is in `lean/VerifiedAnchor/Contract/`; the proofs are in `lean/VerifiedAnchor/Codegen/`. | Borsh deserialisation of typed account payloads. `BorshFailed` is an honest runtime error, not a silent gap. |
 | Concrete Solana primitives — real `findProgramAddress`, lamports, rent, owner / executable flags. Modelled under `VerifiedAnchor.Solana`. | CPI effects beyond `init` / `close`. Token transfers, custom program calls. |
-| The init/close lifecycle modelled as state transformers with Hoare pre/post-conditions. | Anchor constraints not modelled in v0.1.0: `realloc`, `zero`, token / mint / associated-token, custom `constraint = expr`. The macro emits a `compile_error!` with a migration-guide pointer. |
+| The init/close lifecycle modelled as state transformers with Hoare pre/post-conditions. `constraint = <expr>` compiled into the proven relational sublanguage. | Token / mint / associated-token constraints (planned M11). `constraint = <expr>` outside the sublanguage (a function call, a multi-segment data path, a float or Borsh-enum field) — routed to an honest, reported escape hatch that still runs, never a `compile_error!` and never a silent gap. |
 | Empirical validation: four real Solana mainnet CVE classes are reproduced in `rust/verified-anchor-exploits/` as litesvm before/after. The verified version rejects the attacker on chain in every case. | The Solana runtime contract itself — we trust the runtime to enforce account ownership, signer flags, and writable flags as documented. |
 
 The library's claim is not "your Solana program is now bug-free". The claim is that the macro-level account-validation bug class is eliminated at the framework level for the supported constraint subset. Full discussion in [`docs/verified-anchor-bridge.md`](docs/verified-anchor-bridge.md).

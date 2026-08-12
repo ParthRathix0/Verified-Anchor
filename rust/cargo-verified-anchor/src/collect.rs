@@ -26,11 +26,23 @@ pub fn collect(crate_name: Option<&str>, spec_dir: &Path) -> Result<Vec<Spec>, S
         let kind = match path.extension().and_then(|s| s.to_str()) {
             Some("validation") => Kind::Validation,
             Some("lifecycle") => Kind::Lifecycle,
+            // Read alongside its `.validation`/`.lifecycle` sibling below, not as its own spec.
+            Some("unproven") => continue,
             _ => continue,
         };
         let name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("?").to_string();
         let lean_spec = std::fs::read_to_string(&path).map_err(|e| format!("read {path:?}: {e}"))?;
-        specs.push(Spec { name, kind, lean_spec });
+        // `<name>.unproven` is written only when the struct has an escape-hatch surface
+        // (`verified_anchor::write_spec_files`); absent means fully proven.
+        let unproven_path = spec_dir.join(format!("{name}.unproven"));
+        let unproven = if unproven_path.exists() {
+            std::fs::read_to_string(&unproven_path)
+                .map_err(|e| format!("read {unproven_path:?}: {e}"))?
+                .lines().map(|l| l.to_string()).collect()
+        } else {
+            Vec::new()
+        };
+        specs.push(Spec { name, kind, lean_spec, unproven });
     }
     Ok(specs)
 }

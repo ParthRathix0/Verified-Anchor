@@ -1,4 +1,5 @@
 import VerifiedAnchor.Constraints.Context
+import VerifiedAnchor.Constraints.Expr
 import VerifiedAnchor.Solana.Crypto
 import VerifiedAnchor.Solana.Rent
 
@@ -56,6 +57,10 @@ def resolveSeeds (s : AccountsStruct) (c : Ctx) : List SeedSpec → List ByteArr
        | none => ByteArray.empty) :: resolveSeeds s c rest
   | .instrArg off len :: rest =>
       c.instrData.extract off (off + len) :: resolveSeeds s c rest
+  | .argField name :: rest =>
+      (match AccountsStruct.argBytes s c name with
+       | some b => b
+       | none => ByteArray.empty) :: resolveSeeds s c rest
 
 /-- Anchor's `CLOSED_ACCOUNT_DISCRIMINATOR`: 8 bytes of `0xff` written to a closed
     account's data so it can never be re-deserialized as a live account. -/
@@ -78,9 +83,9 @@ def satisfies (s : AccountsStruct) (c : Ctx) (idx : Nat) (f : AccountField) :
   | .discriminator d => (Ctx.atField s c idx).satisfiesSome (fun a => hasDiscriminator a d)
   | .hasOne field =>
       (Ctx.atField s c idx).satisfiesSome (fun a =>
-        (f.ty.layoutOffsetOf field).satisfiesSome (fun off =>
-          (readPubkey a.data off).satisfiesSome (fun val =>
-            (Ctx.lookup s c field).satisfiesSome (fun target => val = target.key))))
+        (f.ty.locateField field a.data).satisfiesSome (fun r =>
+          (readVal r.2 a.data r.1).satisfiesSome (fun val =>
+            (Ctx.lookup s c field).satisfiesSome (fun target => val = Value.key target.key))))
   | .seeds ss b program =>
       -- `seeds::program` override: derive against the FOREIGN id `program` if given, else the
       -- struct's own `s.programId`. `getD` is definitional, so the soundness proof is unchanged.
@@ -116,6 +121,12 @@ def satisfies (s : AccountsStruct) (c : Ctx) (idx : Nat) (f : AccountField) :
       (Ctx.atField s c idx).satisfiesSome (fun a =>
         (Ctx.lookup s c payer).satisfiesSome (fun p =>
           a.owner = owner ∧ p.isSigner = true ∧ p.isWritable = true ∧ space + 8 ≤ a.data.size))
+  | .expr e =>
+      -- Fail closed: `evalExpr` returning `none` is NOT `some false` but it is likewise not
+      -- satisfied, and `satisfiesSome` collapses both to "unsatisfied". `genConstraint` uses
+      -- `allB`, which collapses them identically — that identity is what makes the M10
+      -- soundness lemma a one-liner.
+      (evalExpr s c e).satisfiesSome (fun b => b = true)
 
 /-- The contract is decidable, constraint by constraint. Load-bearing for `validatesBool`.
     The `.seeds` case must also split on the `BumpSpec` so the inner `match b with` reduces to

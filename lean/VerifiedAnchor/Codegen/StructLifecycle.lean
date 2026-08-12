@@ -92,6 +92,9 @@ theorem lifecycle_sound (s : AccountsStruct) (h : StructLifecycleWF s) :
     simp only [lifecycleClauseWF, hpayer] at hwf
     have hne : p.2 ≠ payerIdx := of_decide_eq_true hwf
     exact initIfNeeded_establishes_post p.2 payerIdx space owner initDisc rent c c' hne (by decide) heff
+  -- `constraint = <expr>` is a pure VALIDATION constraint: it never mutates the context, so its
+  -- `lifecyclePost` is the `True` catch-all, discharged by `trivial` like the other validators.
+  | expr e => trivial
 
 /-- Sanity: a struct whose `init` payer resolves to a different field is well-formed; one
     whose payer resolves to itself is not. (Crypto-free, so `decide` reduces.) -/

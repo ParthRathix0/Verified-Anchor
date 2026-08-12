@@ -12,12 +12,15 @@ pub mod account_data;
 pub use account_data::{AccountData, ProgramId, System};
 
 pub mod account;
-pub use account::{Account, Signer, Program, SystemAccount, UncheckedAccount};
+pub use account::{Account, Key, Signer, Program, SystemAccount, UncheckedAccount};
 
 pub mod context;
 pub use context::Context;
 
 pub mod prelude;
+
+pub mod layout;
+pub use layout::{locate, read_val, Ty, Value};
 
 pub use verified_anchor_macros::VerifiedAccounts;
 pub use verified_anchor_macros::AccountData as AccountData;
@@ -52,6 +55,9 @@ pub enum VAError {
     ReallocFailed { field: &'static str },
     /// `zero` precondition failed: the account's 8-byte discriminator was not all-zero.
     NotZeroed { field: &'static str },
+    /// A `constraint = <expr>` evaluated to false, or could not be evaluated at all
+    /// (out-of-bounds read, unknown field, type-confused comparison). Fails closed.
+    ConstraintViolated { field: &'static str, expr: &'static str },
 }
 
 impl core::fmt::Display for VAError {
@@ -78,6 +84,8 @@ impl core::fmt::Display for VAError {
                 write!(f, "account `{field}` is not rent-exempt"),
             VAError::ReallocFailed { field } => write!(f, "realloc failed for `{field}`"),
             VAError::NotZeroed { field } => write!(f, "account `{field}` is not zero-initialized"),
+            VAError::ConstraintViolated { field, expr } =>
+                write!(f, "account `{field}` violates constraint `{expr}`"),
         }
     }
 }
@@ -106,6 +114,7 @@ impl From<VAError> for solana_program::program_error::ProgramError {
             VAError::NotRentExempt { .. } => 15,
             VAError::ReallocFailed { .. } => 16,
             VAError::NotZeroed { .. } => 17,
+            VAError::ConstraintViolated { .. } => 18,
         };
         solana_program::program_error::ProgramError::Custom(code)
     }
@@ -113,6 +122,22 @@ impl From<VAError> for solana_program::program_error::ProgramError {
 
 /// Implemented by `#[derive(VerifiedAccounts)]`. Validation is positional over the
 /// runtime account slice (index = field declaration order), matching the Lean `Ctx`.
+///
+/// **THE PROVEN CORE ONLY (M10 Task 13).** `validate` runs before Borsh deserialisation, so it
+/// can enforce nothing that reads a deserialised account's fields as Rust — that rules out
+/// EVERY `constraint = <expr>` the macro could not compile into the byte-level sublanguage:
+/// an out-of-sublanguage expression (a function call, a macro, `a.key() == crate::ID`, ...)
+/// and a sublanguage expression whose target field is not locatable in the user's Borsh
+/// descriptor. Those checks still run, just not here — see `Accounts::try_accounts` below.
+///
+/// Call `validate` directly only when you specifically want the proven core alone (e.g. a
+/// byte-level pre-check before deserialising). For a struct that may carry such a check, that
+/// is an intentional narrowing of enforcement, not a superset of what `try_accounts` does — a
+/// caller that adds an unproven `constraint` to a struct validated this way gets NO enforcement
+/// of it. For everyday use, prefer `Accounts::try_accounts`, which runs `validate` and then the
+/// unproven checks against the deserialised bindings. `<Struct>::UNPROVEN_CHECKS` (host-only)
+/// lists exactly what a given struct defers past `validate`; empty means the two are equivalent
+/// for that struct.
 pub trait Validate {
     fn validate(
         accounts: &[AccountInfo],
@@ -150,6 +175,8 @@ pub struct SpecEntry {
     pub lean_spec: fn() -> String,
     /// True if any field carries an `init`/`close` constraint (selects the obligation kind).
     pub has_lifecycle: bool,
+    /// Source text of the constraints that run outside the proof. Empty when fully proven.
+    pub unproven: &'static [&'static str],
 }
 
 #[cfg(not(target_os = "solana"))]
@@ -164,12 +191,20 @@ pub fn collect_specs() -> Vec<&'static SpecEntry> {
 /// Write one spec file per registered struct into `dir`. Filename is `<name>.<kind>` where
 /// kind is `lifecycle` or `validation`; the file content is the `lean_spec()` literal.
 /// (No JSON — the literal is the whole content, so there's nothing to escape.)
+///
+/// When a struct carries escape-hatch checks, also write a sibling `<name>.unproven` file —
+/// one expression per line — so `cargo verified-anchor check` can report them without
+/// re-running the crate. Omitted (not written empty) when the struct is fully proven, so its
+/// mere presence on disk is the "this struct has an unproven surface" signal.
 #[cfg(not(target_os = "solana"))]
 pub fn write_spec_files(dir: &std::path::Path) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)?;
     for e in collect_specs() {
         let kind = if e.has_lifecycle { "lifecycle" } else { "validation" };
         std::fs::write(dir.join(format!("{}.{}", e.name, kind)), (e.lean_spec)())?;
+        if !e.unproven.is_empty() {
+            std::fs::write(dir.join(format!("{}.unproven", e.name)), e.unproven.join("\n"))?;
+        }
     }
     Ok(())
 }
@@ -196,7 +231,7 @@ mod spec_collection_tests {
     use super::*;
 
     // A manually-registered entry (same crate → inventory sees it).
-    inventory::submit! { SpecEntry { name: "FakeStruct", lean_spec: || "FAKE-SPEC".to_string(), has_lifecycle: false } }
+    inventory::submit! { SpecEntry { name: "FakeStruct", lean_spec: || "FAKE-SPEC".to_string(), has_lifecycle: false, unproven: &[] } }
 
     #[test]
     fn write_spec_files_emits_one_file_per_entry() {

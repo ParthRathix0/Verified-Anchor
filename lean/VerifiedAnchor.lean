@@ -3,9 +3,11 @@ import VerifiedAnchor.Solana.Account
 import VerifiedAnchor.Solana.Crypto
 import VerifiedAnchor.Solana.Rent
 import VerifiedAnchor.Solana.Discriminator
-import VerifiedAnchor.Solana.Layout
+import VerifiedAnchor.Solana.Borsh.Ty
+import VerifiedAnchor.Solana.Borsh.Locate
 import VerifiedAnchor.Constraints.Ast
 import VerifiedAnchor.Constraints.Context
+import VerifiedAnchor.Constraints.Expr
 import VerifiedAnchor.Contract.Satisfies
 import VerifiedAnchor.Contract.Validates
 import VerifiedAnchor.Decision.Check

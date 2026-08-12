@@ -56,7 +56,7 @@ so the per-constraint `checkConstraint` reduces on concrete data — demonstrati
 relational check biting on a matching vs forged authority. (The full `genValidate` for a
 typed account would also evaluate the implied `discriminator`, which is opaque under
 `sha256`; the soundness proof covers it symbolically, à la M1's Withdraw.) -/
-def vaultLayoutE : FieldLayout := [("authority", 8)]
+def vaultLayoutE : Ty := .struct [("authority", .pubkey)]
 def authKeyE : Pubkey := Pubkey.ofBytes (List.replicate 32 5)
 def vaultFieldE : AccountField :=
   { name := "vault", ty := AccountType.account "Vault" vaultLayoutE Pubkey.zero,
@@ -286,7 +286,7 @@ theorem dupStruct_sound (c : Ctx) : genValidate dupStruct c = true ↔ validates
 check compares `accounts[i].lamports` against the opaque `rentExemptMinimum accounts[i].data.size`
 — an uninterpreted wall, exactly like `sha256`. We therefore demonstrate the two honest halves:
 
-* `M4Subset rentExemptStruct` reduces under `decide` (it only inspects `isM4Constraint`, which
+* `M10Subset rentExemptStruct` reduces under `decide` (it only inspects `isM10Constraint`, which
   is a concrete Bool match on the constructor — fully decidable, no opaque call).
 * The symbolic soundness arrow `genValidate_sound` instantiated at `rentExemptStruct` — valid
   for ALL contexts, schematic over `rentExemptMinimum`.
@@ -302,7 +302,7 @@ def rentExemptStruct : AccountsStruct :=
   , fields := [ { name := "vault", ty := AccountType.uncheckedAccount,
                   constraints := [Constraint.rentExempt] } ] }
 
-/-- `rentExemptStruct` is in the M4 subset (`isM4Constraint .rentExempt = true` is decidable). -/
+/-- `rentExemptStruct` is in the M10 subset (`isM10Constraint .rentExempt = true` is decidable). -/
 theorem rentExemptStruct_M4 : M4Subset rentExemptStruct := by decide
 
 /-- THE rent_exempt CLOSED LOOP (symbolic): for any context, the generated rent-exemption
@@ -357,5 +357,457 @@ theorem zeroStruct_good_validates : validates zeroStruct (Ctx.ofAccounts [zeroAc
 
 -- `decide (M4Subset zeroStruct)` reduces to `true` — the subset check is crypto-free.
 #guard decide (M4Subset zeroStruct) = true
+
+/-! ## M10: `has_one` reads the named field, not a hardcoded offset.
+
+    `hasOneVaultTy` places `authority` AFTER a `u8`, so the target sits at offset 9, not 8.
+    Before M10 the model read offset 8 and this `#guard` would fail. -/
+
+private def hasOneVaultTy : Ty := .struct [("bump", .u8), ("authority", .pubkey)]
+
+private def authKey : Pubkey := Pubkey.ofBytes (List.replicate 32 (5 : UInt8))
+
+/-- 8 disc bytes, then bump = 7, then 32 bytes of `authKey`. -/
+private def hasOneVaultData : ByteArray :=
+  ⟨(Array.replicate 8 (0 : UInt8)) ++ #[(7 : UInt8)] ++ (Array.replicate 32 (5 : UInt8))⟩
+
+private def hasOneStruct : AccountsStruct :=
+  { programId := Pubkey.zero
+  , fields :=
+    [ { name := "vault"
+      , ty := AccountType.account "Vault" hasOneVaultTy Pubkey.zero
+      , constraints := [Constraint.hasOne "authority"] }
+    , { name := "authority", ty := AccountType.uncheckedAccount, constraints := [] } ] }
+
+private def hasOneVaultAcct : AccountInfo :=
+  { key := Pubkey.zero, lamports := 1, data := hasOneVaultData, owner := Pubkey.zero
+  , rentEpoch := 0, isSigner := false, isWritable := false, executable := false }
+
+private def hasOneAuthAcct : AccountInfo :=
+  { key := authKey, lamports := 1, data := ByteArray.empty, owner := Pubkey.zero
+  , rentEpoch := 0, isSigner := false, isWritable := false, executable := false }
+
+private def hasOneCtx : Ctx :=
+  Ctx.ofAccounts [hasOneVaultAcct, hasOneAuthAcct]
+
+-- the offset-9 field is found and matches
+#guard genConstraint hasOneStruct hasOneCtx 0 hasOneStruct.fields[0]!
+        (Constraint.hasOne "authority") == true
+
+-- a mismatched authority is rejected
+private def hasOneWrongCtx : Ctx :=
+  Ctx.ofAccounts [hasOneVaultAcct, { hasOneAuthAcct with key := Pubkey.zero }]
+
+#guard genConstraint hasOneStruct hasOneWrongCtx 0 hasOneStruct.fields[0]!
+        (Constraint.hasOne "authority") == false
+
+/- The `#guard`s above run in the elaborator, which evaluates via the compiler and is happy to
+   step through definitions the *kernel* refuses to unfold. The `by decide`s below are the
+   stronger claim: the whole `has_one` path — `locateField`, the `encodedWidth` walk over the
+   leading `u8`, and `readVal`'s `.pubkey` decode — reduces in the kernel. That is not free.
+   `readVal` originally gathered its 32 bytes with `ByteArray.toList`, which core defines by
+   well-founded recursion; it passed every `#guard` while being kernel-opaque, and these
+   examples are what surface that class of regression. -/
+
+/-- The located offset is 9, not 8: `bump : u8` sits in front of `authority`. This single
+    number is the entire defect M10 fixes. -/
+example :
+    (hasOneStruct.fields[0]!.ty.locateField "authority" hasOneVaultData).map (·.1) = some 9 := by
+  decide
+
+example :
+    genConstraint hasOneStruct hasOneCtx 0 hasOneStruct.fields[0]!
+      (Constraint.hasOne "authority") = true := by
+  decide
+
+example :
+    genConstraint hasOneStruct hasOneWrongCtx 0 hasOneStruct.fields[0]!
+      (Constraint.hasOne "authority") = false := by
+  decide
+
+/-- The model side reduces too, so the `iff` below is not bridging a stuck term to a stuck term. -/
+example : satisfies hasOneStruct hasOneCtx 0 hasOneStruct.fields[0]!
+    (Constraint.hasOne "authority") :=
+  (genConstraint_hasOne_iff hasOneStruct hasOneCtx 0 hasOneStruct.fields[0]! "authority").mp
+    (by decide)
+
+/-! ## M10: named instruction arguments resolve through the Borsh machinery. -/
+
+private def argStruct : AccountsStruct :=
+  { programId := Pubkey.zero
+  , instrArgs := [("amount", Ty.u64), ("label", Ty.string)]
+  , fields := [] }
+
+/-- amount = 1 (u64 LE), then label = "hi" (u32 len + utf8). -/
+private def argCtx : Ctx :=
+  { accounts := []
+  , instrData := ⟨#[1,0,0,0,0,0,0,0, 2,0,0,0, 104, 105]⟩ }
+
+#guard (argStruct.argBytes argCtx "amount").map (·.toList)
+         == some [1,0,0,0,0,0,0,0]
+#guard (argStruct.argBytes argCtx "label").map (·.toList) == some [104, 105]
+#guard (argStruct.argBytes argCtx "missing") == none
+
+/- As with `Locate.lean`, the `#guard`s above only prove the elaborator can step through
+   `argBytes`; they say nothing about the kernel. `argBytes` is Task 9's contract — the Rust
+   macro must mirror it byte-for-byte, especially the length-prefix stripping on `string`/`vec`
+   — so it gets the same `by decide` regression treatment as `locate`/`readVal`/`has_one`. -/
+
+/-- `u64` is fixed-size: `argBytes` returns the whole 8-byte encoding, no framing to strip. -/
+example : argStruct.argBytes argCtx "amount" = some (⟨#[1,0,0,0,0,0,0,0]⟩ : ByteArray) := by
+  decide
+
+/-- THE POINT: `string`'s 4-byte length prefix is stripped. `label`'s raw Borsh encoding is
+    6 bytes (`2,0,0,0,104,105`); `argBytes` returns only the 2 payload bytes `[104,105]` —
+    exactly what Anchor's `label.as_bytes()` would hand seed code. -/
+example : argStruct.argBytes argCtx "label" = some (⟨#[104, 105]⟩ : ByteArray) := by
+  decide
+
+example : argStruct.argBytes argCtx "missing" = none := by decide
+
+/-! ## M10: the `constraint = <expr>` sublanguage. -/
+
+private def exprVaultTy : Ty := .struct [("bump", .u8), ("amount", .u64)]
+
+/-- 8 disc + bump 3 + amount 1000 (u64 LE). -/
+private def exprVaultData : ByteArray :=
+  ⟨(Array.replicate 8 (0 : UInt8)) ++ #[(3 : UInt8)] ++ #[232, 3, 0, 0, 0, 0, 0, 0]⟩
+
+private def exprStruct : AccountsStruct :=
+  { programId := Pubkey.zero
+  , fields :=
+    [ { name := "vault"
+      , ty := AccountType.account "Vault" exprVaultTy Pubkey.zero
+      , constraints := [] }
+    , { name := "user", ty := AccountType.uncheckedAccount, constraints := [] } ] }
+
+private def exprVaultAcct : AccountInfo :=
+  { key := Pubkey.zero, lamports := 500, data := exprVaultData, owner := Pubkey.zero
+  , rentEpoch := 0, isSigner := false, isWritable := false, executable := false }
+
+private def exprUserAcct : AccountInfo :=
+  { key := Pubkey.zero, lamports := 10, data := ByteArray.empty, owner := Pubkey.zero
+  , rentEpoch := 0, isSigner := true, isWritable := false, executable := false }
+
+private def exprCtx : Ctx := Ctx.ofAccounts [exprVaultAcct, exprUserAcct]
+
+-- amount (1000) >= 1000
+#guard evalExpr exprStruct exprCtx
+        (.cmp .ge (.field 0 ["amount"]) (.lit (.nat 1000))) == some true
+-- amount (1000) > 1000 is false
+#guard evalExpr exprStruct exprCtx
+        (.cmp .gt (.field 0 ["amount"]) (.lit (.nat 1000))) == some false
+-- a missing field fails CLOSED (none, not false)
+#guard evalExpr exprStruct exprCtx
+        (.cmp .ge (.field 0 ["nope"]) (.lit (.nat 0))) == none
+-- comparing a key against a number fails closed
+#guard evalExpr exprStruct exprCtx
+        (.cmp .lt (.key 0) (.lit (.nat 1))) == none
+-- account metadata operands
+#guard evalExpr exprStruct exprCtx (.truthy (.isSigner 1)) == some true
+#guard evalExpr exprStruct exprCtx (.truthy (.isSigner 0)) == some false
+#guard evalExpr exprStruct exprCtx
+        (.cmp .eq (.key 0) (.key 1)) == some true
+-- boolean structure
+#guard evalExpr exprStruct exprCtx
+        (.and (.truthy (.isSigner 1))
+              (.cmp .ge (.field 0 ["amount"]) (.lit (.nat 1)))) == some true
+#guard evalExpr exprStruct exprCtx
+        (.not (.truthy (.isSigner 1))) == some false
+
+-- and the constraint arm agrees with the contract
+#guard genConstraint exprStruct exprCtx 0 exprStruct.fields[0]!
+        (Constraint.expr (.cmp .ge (.field 0 ["amount"]) (.lit (.nat 1000)))) == true
+#guard genConstraint exprStruct exprCtx 0 exprStruct.fields[0]!
+        (Constraint.expr (.cmp .gt (.field 0 ["amount"]) (.lit (.nat 1000)))) == false
+#guard genConstraint exprStruct exprCtx 0 exprStruct.fields[0]!
+        (Constraint.expr (.cmp .ge (.field 0 ["nope"]) (.lit (.nat 0)))) == false
+
+/- The `#guard`s above are elaborator-level only. `evalExpr` is what Task 11's soundness lemma
+   and Task 12's emitted specs both reduce through, so it gets the same KERNEL-level regression
+   treatment as `locate`/`readVal`/`argBytes`: every example below is `by decide`, which fails
+   the build if anyone reintroduces well-founded or `partial` recursion anywhere on the
+   `evalOperand` → `locateField'` → `locate` → `encodedWidth` → `readVal` path. -/
+
+/-- TRUE case: the located `u64` at offset 9 decodes to 1000 and clears the bound. -/
+example : evalExpr exprStruct exprCtx
+    (.cmp .ge (.field 0 ["amount"]) (.lit (.nat 1000))) = some true := by decide
+
+/-- FALSE case: evaluable, and the answer is genuinely `some false` — distinct from `none`. -/
+example : evalExpr exprStruct exprCtx
+    (.cmp .gt (.field 0 ["amount"]) (.lit (.nat 1000))) = some false := by decide
+
+/-- NONE case: an unknown field name is unevaluable, so the whole expression is `none`. -/
+example : evalExpr exprStruct exprCtx
+    (.cmp .ge (.field 0 ["nope"]) (.lit (.nat 0))) = none := by decide
+
+/-- THE TYPE-CONFUSION GUARANTEE: ordering a `key` against a `nat` is `none`, NOT `some false`.
+    Both reject, but only `none` says "this comparison is meaningless" — the distinction Task 12
+    relies on when it decides whether a Rust expression is compilable at all. -/
+example : evalExpr exprStruct exprCtx
+    (.cmp .lt (.key 0) (.lit (.nat 1))) = none := by decide
+
+/-- `eq`/`ne`, by contrast, are TOTAL over `Value`: mismatched constructors compare `false`
+    rather than failing, because "is this the same value" is always a meaningful question. -/
+example : evalExpr exprStruct exprCtx
+    (.cmp .eq (.key 0) (.lit (.nat 1))) = some false := by decide
+
+/-! ### Signed ordering, and the `nat`/`int` cross-pairing.
+
+    Signed comparison needs its own coverage: a `.int` comparison routes through `readVal`'s
+    sign-reconstruction (`n - 2^64`), so the unsigned examples above say nothing about it. The
+    cross-pairing block further down then covers `nat` against `int`, which `evalCmp` answers
+    numerically rather than refusing — see there for why the earlier refusal was wrong. -/
+
+private def signedTy : Ty := .struct [("delta", .i64)]
+
+/-- 8 disc + `delta = -1` (i64 LE: eight `0xff` bytes). Chosen negative on purpose — a value
+    whose raw bytes read as a huge `nat` if the sign is ever dropped. -/
+private def signedData : ByteArray :=
+  ⟨(Array.replicate 8 (0 : UInt8)) ++ (Array.replicate 8 (0xff : UInt8))⟩
+
+private def signedStruct : AccountsStruct :=
+  { programId := Pubkey.zero
+  , fields :=
+    [ { name := "vault"
+      , ty := AccountType.account "Signed" signedTy Pubkey.zero
+      , constraints := [] } ] }
+
+private def signedCtx : Ctx := Ctx.ofAccounts [{ exprVaultAcct with data := signedData }]
+
+/-- The decode really is signed: `-1`, not `2^64 - 1`. If `readVal`'s `.i64` arm ever lost its
+    sign reconstruction, this is the example that catches it. -/
+example : evalOperand signedStruct signedCtx (.field 0 ["delta"]) = some (.int (-1)) := by decide
+
+/-- `.int`/`.int` ordering, TRUE and FALSE. Both directions of each operator are exercised so a
+    transposed arm in `evalCmp` cannot hide. -/
+example : evalExpr signedStruct signedCtx
+    (.cmp .lt (.field 0 ["delta"]) (.lit (.int 0))) = some true := by decide
+example : evalExpr signedStruct signedCtx
+    (.cmp .ge (.field 0 ["delta"]) (.lit (.int 0))) = some false := by decide
+example : evalExpr signedStruct signedCtx
+    (.cmp .le (.field 0 ["delta"]) (.lit (.int (-1)))) = some true := by decide
+example : evalExpr signedStruct signedCtx
+    (.cmp .gt (.field 0 ["delta"]) (.lit (.int (-1)))) = some false := by decide
+example : evalExpr signedStruct signedCtx
+    (.cmp .gt (.lit (.int 1)) (.lit (.int (-1)))) = some true := by decide
+
+/-! ### The `nat`/`int` CROSS-PAIRING, and why `evalCmp` compares it numerically.
+
+    This block used to pin the opposite behaviour — a flat REFUSAL to compare a `nat` against an
+    `int`, justified by the fact that `-1 : i64` and `18446744073709551615 : u64` have identical
+    bytes, so "any coercion silently picks a sign convention".
+
+    **That justification confused decode time with comparison time.** `readVal` has already
+    consulted the declared `Ty` and picked the sign; `evalCmp` never sees bytes, only two
+    distinct mathematical integers. Comparing them in unbounded `Int` (via `Value.toInt?`) is
+    exact and picks nothing.
+
+    Refusing was also not the safe default it looked like, because `eq`/`ne` were TOTAL and
+    therefore did not refuse — they answered from CONSTRUCTOR equality:
+
+    * `delta == 0` on an `i64` field was `some false` for every `delta`, including `0` — a
+      brick, which at least dies in the first integration test;
+    * `delta != 0` was `some true` for every `delta`, including `0` — a TAUTOLOGY. The developer
+      wrote a non-zero guard and the model silently disabled it. That one passes every
+      happy-path test and surfaces only as an exploit, which is what settled the question. -/
+
+/-- Mixed ORDERING, both argument orders, now answered numerically. `delta = -1`. -/
+example : evalExpr signedStruct signedCtx
+    (.cmp .lt (.field 0 ["delta"]) (.lit (.nat 0))) = some true := by decide
+example : evalExpr signedStruct signedCtx
+    (.cmp .gt (.lit (.nat 1)) (.field 0 ["delta"])) = some true := by decide
+/-- …and it really is the VALUE being compared, not the constructor: the false direction too. -/
+example : evalExpr signedStruct signedCtx
+    (.cmp .gt (.field 0 ["delta"]) (.lit (.nat 0))) = some false := by decide
+
+/-- Mixed `eq`/`ne`: `nat 1` and `int 1` denote the SAME number, so they now compare equal. -/
+example : evalExpr exprStruct exprCtx
+    (.cmp .eq (.lit (.nat 1)) (.lit (.int 1))) = some true := by decide
+example : evalExpr exprStruct exprCtx
+    (.cmp .ne (.lit (.nat 1)) (.lit (.int 1))) = some false := by decide
+
+/-- THE TWO SHAPES THAT WERE BROKEN, pinned on the real signed fixture (`delta = -1`). -/
+example : evalExpr signedStruct signedCtx
+    (.cmp .eq (.field 0 ["delta"]) (.lit (.nat 0))) = some false := by decide
+example : evalExpr signedStruct signedCtx
+    (.cmp .ne (.field 0 ["delta"]) (.lit (.nat 0))) = some true := by decide
+
+/-- THE TAUTOLOGY, killed: on a ZERO `delta`, `delta != 0` is now `some false` (REJECT). Under
+    constructor equality it was `some true` — accept — for every `delta` whatsoever. -/
+private def zeroDeltaCtx : Ctx :=
+  Ctx.ofAccounts [{ exprVaultAcct with data := ⟨Array.replicate 16 (0 : UInt8)⟩ }]
+example : evalOperand signedStruct zeroDeltaCtx (.field 0 ["delta"]) = some (.int 0) := by decide
+example : evalExpr signedStruct zeroDeltaCtx
+    (.cmp .ne (.field 0 ["delta"]) (.lit (.nat 0))) = some false := by decide
+example : evalExpr signedStruct zeroDeltaCtx
+    (.cmp .eq (.field 0 ["delta"]) (.lit (.nat 0))) = some true := by decide
+
+/-- THE BOUNDARY the Rust mirror has to work for: a `nat` beyond `Int64`/`i128` range still
+    compares correctly against a negative `int`. Lean's `Int` is unbounded, so this is free
+    here; `expr.rs` needs an explicit `i128::MAX` guard to match, and this example is the
+    specification that guard is written against. -/
+example : evalCmp .gt (.nat 170141183460469231731687303715884105728) (.int (-1)) = some true := by
+  decide
+example : evalCmp .lt (.int (-1)) (.nat 170141183460469231731687303715884105728) = some true := by
+  decide
+
+/-- NON-numeric pairings are UNCHANGED by the widening: orderings still refuse, `eq`/`ne` are
+    still total. `Value.toInt?` is `none` for `key`/`bool`/`bytes`, so those fall to the old
+    arms verbatim. -/
+example : evalCmp .lt (.key Pubkey.zero) (.nat 1) = none := by decide
+example : evalCmp .eq (.key Pubkey.zero) (.nat 1) = some false := by decide
+example : evalCmp .ne (.bool true) (.nat 1) = some true := by decide
+example : evalCmp .ge (.bool true) (.bool false) = none := by decide
+
+/-- Metadata operands: `lamports` crosses `UInt64.toNat`, `dataLen` reads `ByteArray.size`. -/
+example : evalExpr exprStruct exprCtx
+    (.cmp .ge (.lamports 0) (.lit (.nat 500))) = some true := by decide
+example : evalExpr exprStruct exprCtx
+    (.cmp .eq (.dataLen 0) (.lit (.nat 17))) = some true := by decide
+example : evalExpr exprStruct exprCtx (.truthy (.isSigner 1)) = some true := by decide
+example : evalExpr exprStruct exprCtx (.truthy (.isSigner 0)) = some false := by decide
+
+/-- `truthy` of a non-`bool` operand is unevaluable, not false. -/
+example : evalExpr exprStruct exprCtx (.truthy (.lamports 0)) = none := by decide
+
+/-- An out-of-range account index fails closed at `Ctx.atField`. -/
+example : evalExpr exprStruct exprCtx (.truthy (.isSigner 7)) = none := by decide
+
+/-- Boolean structure reduces, including `or`/`not`. -/
+example : evalExpr exprStruct exprCtx
+    (.and (.truthy (.isSigner 1))
+          (.cmp .ge (.field 0 ["amount"]) (.lit (.nat 1)))) = some true := by decide
+example : evalExpr exprStruct exprCtx
+    (.or (.truthy (.isSigner 0)) (.truthy (.isSigner 1))) = some true := by decide
+example : evalExpr exprStruct exprCtx (.not (.truthy (.isSigner 1))) = some false := by decide
+
+/-- STRICTNESS, pinned deliberately: neither `and` nor `or` short-circuits. Both operands are
+    evaluated, so an unevaluable side makes the whole expression `none` no matter what the other
+    side says. The two connectives are NOT symmetric in what that buys, and the asymmetry is the
+    point:
+
+    * `and` — `false && <unevaluable>` is `none` here and would be `some false` under
+      short-circuit evaluation. Both REJECT, so for `and` this is genuinely not a safety
+      difference; strictness only buys the proof convenience below.
+
+    * `or` — `true || <unevaluable>` is `none` here (REJECT) but would be `some true` under
+      short-circuit evaluation (ACCEPT). That is the difference between rejecting and accepting
+      an account set, i.e. exactly the milestone's headline guarantee. **The strictness of `or`
+      is load-bearing safety, not a stylistic choice, and must not be "optimized" into a
+      short-circuit.** An unevaluable operand means the expression's meaning is unknown; an
+      unknown must never be resolved in the caller's favour just because a sibling happened to
+      be true.
+
+    Strictness also keeps Task 11's proof free of any reasoning about evaluation order, and
+    surfaces a bug on the right-hand side instead of masking it. Task 12's Rust codegen is
+    written against these semantics: it must not lower `constraint = a || b` to Rust's
+    short-circuiting `||` when `b` can fail to evaluate. -/
+example : evalExpr exprStruct exprCtx
+    (.and (.truthy (.isSigner 0)) (.cmp .ge (.field 0 ["nope"]) (.lit (.nat 0)))) = none := by
+  decide
+/-- THE SAFETY-CRITICAL ONE: a `true` left operand does NOT rescue an unevaluable right one.
+    `none` (reject), never `some true` (accept). -/
+example : evalExpr exprStruct exprCtx
+    (.or (.truthy (.isSigner 1)) (.cmp .ge (.field 0 ["nope"]) (.lit (.nat 0)))) = none := by
+  decide
+/-- And the corresponding `satisfies`/`genConstraint` consequence, stated where it bites: an
+    `or` whose right side is unevaluable is UNSATISFIED even though its left side is true. -/
+example : genConstraint exprStruct exprCtx 0 exprStruct.fields[0]!
+    (Constraint.expr (.or (.truthy (.isSigner 1))
+                          (.cmp .ge (.field 0 ["nope"]) (.lit (.nat 0))))) = false := by decide
+example : ¬ satisfies exprStruct exprCtx 0 exprStruct.fields[0]!
+    (Constraint.expr (.or (.truthy (.isSigner 1))
+                          (.cmp .ge (.field 0 ["nope"]) (.lit (.nat 0))))) := by decide
+
+/-- The `.pubkey` decode — the arm that once jammed the kernel via `ByteArray.toList` — reduces
+    through `evalOperand` too: the `authority` field at offset 9 equals account 1's key. -/
+example : evalExpr hasOneStruct hasOneCtx
+    (.cmp .eq (.field 0 ["authority"]) (.key 1)) = some true := by decide
+example : evalExpr hasOneStruct hasOneWrongCtx
+    (.cmp .eq (.field 0 ["authority"]) (.key 1)) = some false := by decide
+
+/-! ### `locateField'` really walks a PATH, not just a name. -/
+
+private def nestedTy : Ty :=
+  .struct [("bump", .u8), ("inner", .struct [("a", .u32), ("b", .u64)])]
+
+/-- 8 disc + bump 3 + inner.a = 7 (u32 LE) + inner.b = 42 (u64 LE). `inner.b` sits at 13. -/
+private def nestedData : ByteArray :=
+  ⟨(Array.replicate 8 (0 : UInt8)) ++ #[(3 : UInt8)]
+    ++ #[(7 : UInt8), 0, 0, 0] ++ #[(42 : UInt8), 0, 0, 0, 0, 0, 0, 0]⟩
+
+private def nestedStruct : AccountsStruct :=
+  { programId := Pubkey.zero
+  , fields :=
+    [ { name := "vault"
+      , ty := AccountType.account "Nested" nestedTy Pubkey.zero
+      , constraints := [] } ] }
+
+private def nestedCtx : Ctx :=
+  Ctx.ofAccounts [{ exprVaultAcct with data := nestedData }]
+
+example :
+    (nestedStruct.fields[0]!.ty.locateField' ["inner", "b"] nestedData) = some (13, Ty.u64) := by
+  decide
+
+example : evalExpr nestedStruct nestedCtx
+    (.cmp .eq (.field 0 ["inner", "b"]) (.lit (.nat 42))) = some true := by decide
+
+/-- A path through a scalar is not a path: `bump` has no `.x`, so it fails closed. -/
+example : evalExpr nestedStruct nestedCtx
+    (.cmp .eq (.field 0 ["bump", "x"]) (.lit (.nat 3))) = none := by decide
+
+/-- The single-name `locateField` is definitionally the one-element path. -/
+example : nestedStruct.fields[0]!.ty.locateField "bump" nestedData
+    = nestedStruct.fields[0]!.ty.locateField' ["bump"] nestedData := rfl
+
+/-! ### `instrArg` operands resolve through the same Borsh walk as seeds. -/
+
+example : evalExpr argStruct argCtx
+    (.cmp .eq (.instrArg "amount") (.lit (.nat 1))) = some true := by decide
+
+/-- An aggregate-typed argument is not a scalar `Value`: `readVal .string` is `none`, so a
+    `constraint = label == ...` fails closed rather than comparing framing bytes. -/
+example : evalExpr argStruct argCtx
+    (.cmp .eq (.instrArg "label") (.lit (.nat 2))) = none := by decide
+
+example : evalExpr argStruct argCtx
+    (.cmp .eq (.instrArg "missing") (.lit (.nat 0))) = none := by decide
+
+/-! ### The constraint arm: `genConstraint` and `satisfies` agree, and both fail closed. -/
+
+example : genConstraint exprStruct exprCtx 0 exprStruct.fields[0]!
+    (Constraint.expr (.cmp .ge (.field 0 ["amount"]) (.lit (.nat 1000)))) = true := by decide
+example : genConstraint exprStruct exprCtx 0 exprStruct.fields[0]!
+    (Constraint.expr (.cmp .gt (.field 0 ["amount"]) (.lit (.nat 1000)))) = false := by decide
+
+/-- BOTH kinds of rejection collapse to `false` operationally: `some false` and `none` alike. -/
+example : genConstraint exprStruct exprCtx 0 exprStruct.fields[0]!
+    (Constraint.expr (.cmp .ge (.field 0 ["nope"]) (.lit (.nat 0)))) = false := by decide
+example : genConstraint exprStruct exprCtx 0 exprStruct.fields[0]!
+    (Constraint.expr (.cmp .lt (.key 0) (.lit (.nat 1)))) = false := by decide
+
+/-- The MODEL side reduces too, so Task 11 will not be bridging a stuck term to a stuck term. -/
+example : satisfies exprStruct exprCtx 0 exprStruct.fields[0]!
+    (Constraint.expr (.cmp .ge (.field 0 ["amount"]) (.lit (.nat 1000)))) := by decide
+example : ¬ satisfies exprStruct exprCtx 0 exprStruct.fields[0]!
+    (Constraint.expr (.cmp .gt (.field 0 ["amount"]) (.lit (.nat 1000)))) := by decide
+/-- Fail-closed on the model side: an unevaluable expression is UNSATISFIED, not satisfied. -/
+example : ¬ satisfies exprStruct exprCtx 0 exprStruct.fields[0]!
+    (Constraint.expr (.cmp .ge (.field 0 ["nope"]) (.lit (.nat 0)))) := by decide
+
+/-- End to end: an `expr` constraint attached to a field flows through `genValidate`. -/
+private def exprStructWithConstraint : AccountsStruct :=
+  { exprStruct with
+    fields :=
+      [ { name := "vault"
+        , ty := AccountType.uncheckedAccount
+        , constraints := [Constraint.expr (.cmp .ge (.lamports 0) (.lit (.nat 500)))] }
+      , { name := "user", ty := AccountType.uncheckedAccount, constraints := [] } ] }
+
+example : genValidate exprStructWithConstraint exprCtx = true := by decide
+example : genValidate exprStructWithConstraint
+    (Ctx.ofAccounts [{ exprVaultAcct with lamports := 499 }, exprUserAcct]) = false := by decide
 
 end VerifiedAnchor.Codegen.Examples

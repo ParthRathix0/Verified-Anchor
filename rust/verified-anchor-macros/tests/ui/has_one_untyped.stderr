@@ -1,0 +1,5 @@
+error: field `vault` uses `has_one` but is not a typed `Account<'info, T>`; the target's Borsh offset comes from `T::LAYOUT`
+ --> tests/ui/has_one_untyped.rs:6:8
+  |
+6 | struct BadHasOne<'info> {
+  |        ^^^^^^^^^

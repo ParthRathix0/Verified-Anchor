@@ -10,13 +10,13 @@ def Option.allB {α} (o : Option α) (p : α → Bool) : Bool :=
 
 namespace VerifiedAnchor
 
-/-- Relational has_one check: the Pubkey at the field's layout offset in this account's data
-    equals the looked-up field account's key. None-safe. -/
+/-- Relational has_one check: the value at the field's LOCATED offset equals the looked-up
+    field account's key. None-safe; an unlocatable or non-Pubkey field fails closed. -/
 def genHasOne (s : AccountsStruct) (c : Ctx) (idx : Nat) (f : AccountField) (field : String) : Bool :=
   (Ctx.atField s c idx).allB (fun a =>
-    (f.ty.layoutOffsetOf field).allB (fun off =>
-      (readPubkey a.data off).allB (fun val =>
-        (Ctx.lookup s c field).allB (fun target => decide (val = target.key)))))
+    (f.ty.locateField field a.data).allB (fun r =>
+      (readVal r.2 a.data r.1).allB (fun val =>
+        (Ctx.lookup s c field).allB (fun target => decide (val = Value.key target.key)))))
 
 /-- Bool mirror of `bumpMatches`: declared bumps must match exactly; canonical accepts any.
     `.stored` does not go through `bumpMatchesB` (its derivation IS the check); the `true` here
@@ -62,6 +62,9 @@ def genConstraint (s : AccountsStruct) (c : Ctx) (idx : Nat) (f : AccountField) 
   | .hasOne field    => genHasOne s c idx f field
   | .seeds ss b program => genSeeds s c idx ss b program
   | .zero            => (Ctx.atField s c idx).allB (fun a => decide (isZeroDisc a))
+  -- `allB` sends `none` to `false`, mirroring `satisfies`' `satisfiesSome`: an expression that
+  -- cannot be evaluated is not satisfied. Fail closed on both sides of the bridge.
+  | .expr e          => (evalExpr s c e).allB (fun b => b)
   | _                => false
 
 def genFieldValidate (s : AccountsStruct) (c : Ctx) (idx : Nat) (f : AccountField) : Bool :=
@@ -87,7 +90,9 @@ def distinctMutKeysB (s : AccountsStruct) (c : Ctx) : Bool :=
           (Ctx.atField s c q.2).allB (fun b => decide (a.key ≠ b.key)))))
 
 def genValidate (s : AccountsStruct) (c : Ctx) : Bool :=
-  decide (c.length = s.fields.length) &&
+  -- Mirrors the generated Rust's `if accounts.len() < n { Err(NotEnoughAccounts) }` exactly.
+  -- See `WellFormed` for why this is a prefix condition and not an exact count.
+  decide (s.fields.length ≤ c.length) &&
     distinctMutKeysB s c &&
     s.fields.zipIdx.all (fun p => genFieldValidate s c p.2 p.1)
 

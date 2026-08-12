@@ -26,11 +26,43 @@ def Ctx.lookup (s : AccountsStruct) (c : Ctx) (name : String) : Option AccountIn
 def Ctx.atField (_s : AccountsStruct) (c : Ctx) (idx : Nat) : Option AccountInfo :=
   c.accounts[idx]?
 
-/-- Structural well-formedness: one account per declared field. -/
+/-- The raw bytes of a named `#[instruction(...)]` argument, as a seed would use them.
+    For `string`/`vec` the LENGTH PREFIX IS STRIPPED — `name.as_bytes()` in Anchor yields the
+    payload, not the Borsh framing (real Anchor never hands seed code a length prefix).
+    Fixed-size types return their whole encoding. Lives here (not in `Ast.lean`) because it
+    needs `Ctx`, and `Ctx` is defined in this file, which `Ast.lean` cannot import without a
+    cycle. -/
+def AccountsStruct.argBytes (s : AccountsStruct) (c : Ctx) (name : String) : Option ByteArray := do
+  let (off, t) ← locate (Ty.struct s.instrArgs) [name] c.instrData 0
+  match t with
+  | .string | .vec _ => do
+      let n ← readUIntLE c.instrData off 4
+      if off + 4 + n ≤ c.instrData.size then
+        pure (c.instrData.extract (off + 4) (off + 4 + n))
+      else none
+  | other => do
+      let w ← encodedWidth other c.instrData off
+      if off + w ≤ c.instrData.size then
+        pure (c.instrData.extract off (off + w))
+      else none
+
+/-- Structural well-formedness: at least one account per declared field.
+
+    A PREFIX condition, not an exact count, and deliberately so. Anchor passes surplus accounts
+    through to `ctx.remaining_accounts`, so a framework that rejected them would not be a
+    drop-in replacement; the generated Rust accordingly guards only `accounts.len() < n`. This
+    used to read `c.length = s.fields.length`, which made the contract claim something the
+    generated code does not enforce and forced the soundness statement to carry a caveat.
+
+    Nothing is weakened by the relaxation, because nothing ever looked at a surplus account:
+    every per-field check and the distinct-mut-key check range over `s.fields.zipIdx`, i.e. the
+    DECLARED prefix only. Accounts at index ≥ `s.fields.length` were unconstrained under the
+    equality too. The change is to what the contract CLAIMS, not to what it CHECKS — and it is
+    what makes the soundness guarantee unconditional rather than qualified. -/
 def WellFormed (s : AccountsStruct) (c : Ctx) : Prop :=
-  c.length = s.fields.length
+  s.fields.length ≤ c.length
 
 instance (s : AccountsStruct) (c : Ctx) : Decidable (WellFormed s c) :=
-  inferInstanceAs (Decidable (c.length = s.fields.length))
+  inferInstanceAs (Decidable (s.fields.length ≤ c.length))
 
 end VerifiedAnchor

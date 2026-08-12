@@ -3,6 +3,12 @@ use solana_program::account_info::AccountInfo;
 use solana_program::pubkey::Pubkey;
 use verified_anchor::{Validate, VAError, VerifiedAccounts};
 use verified_anchor::{Signer, UncheckedAccount};
+// Needed for `a.key() == crate::ID`-style hatch checks below: that idiom is OUTSIDE the
+// sublanguage (the RHS is a module-qualified path, not a single operand `compile_expr` can
+// resolve), so it runs as verbatim Rust in `try_accounts`, and verbatim Rust needs the `Key`
+// trait in scope to resolve `.key()` by method-call syntax — exactly as real Anchor needs
+// `anchor_lang::prelude::Key` in scope.
+use verified_anchor::Key;
 
 // Provide a crate::ID so that Account<'info, T> (which implies owner=crate::ID)
 // resolves in this test binary. Must be a valid base58 pubkey string of length 44.
@@ -56,10 +62,16 @@ fn rejects_too_few_accounts() {
     let accts = [v.info()];
     assert_eq!(Transfer::validate(&accts, &[], &any_pid()), Err(VAError::NotEnoughAccounts { expected: 2, got: 1 }));
 }
-// Documents the permissiveness gap noted in docs/verified-anchor-bridge.md: the generated
-// Rust accepts SURPLUS accounts (only the declared prefix is checked), whereas the Lean
-// model/contract require an exact count. This is a transcription difference, not a soundness
-// bug — the proof relates genValidate to the contract, both of which use exact equality.
+// The generated Rust accepts SURPLUS accounts: only the declared prefix `0..n` is checked, so
+// the guard is `accounts.len() < n`. That is required for drop-in parity — Anchor passes the
+// surplus through to `ctx.remaining_accounts`.
+//
+// Through v0.3 this was a documented DIVERGENCE, because Lean's `WellFormed`/`genValidate`
+// demanded an exact count and so rejected inputs this accepts. v0.4.0 closed it on the LEAN
+// side (`s.fields.length ≤ c.length`), never by tightening this guard, so the two now agree and
+// the headline soundness sentence needs no caveat. Nothing was weakened: every per-field check
+// and the distinct-mut-key check range over the declared prefix only, so a surplus account was
+// unconstrained under the exact-count contract too.
 #[test]
 fn accepts_surplus_accounts() {
     let mut v = acct(false, true);   // vault: writable
@@ -97,10 +109,18 @@ fn rejects_wrong_owner() {
     assert_eq!(OwnedVault::validate(&accts, &[], &any_pid()), Err(VAError::WrongOwner { field: "vault" }));
 }
 
+/// `has_one` needs a typed `Account<'info, T>`: the target's Borsh offset comes from
+/// `T::LAYOUT`, and an untyped wrapper has no layout to walk (M10 Task 7). This fixture used
+/// to be an `UncheckedAccount` relying on the hardcoded offset-8 read.
+#[verified_anchor::account]
+struct OwnerVault {
+    authority: Pubkey,
+}
+
 #[derive(VerifiedAccounts)]
 struct CheckOwner<'info> {
     #[account(has_one = authority)]
-    vault: UncheckedAccount<'info>,
+    vault: verified_anchor::Account<'info, OwnerVault>,
     authority: UncheckedAccount<'info>,
 }
 
@@ -108,12 +128,19 @@ fn acct_with_data(key: Pubkey, data: Vec<u8>) -> Acct {
     Acct { key, owner: Pubkey::new_unique(), lamports: 1, data, is_signer: false, is_writable: false }
 }
 
+/// Real Anchor wire bytes for an `OwnerVault`: 8-byte discriminator then the authority key.
+fn owner_vault_data(authority: Pubkey) -> Vec<u8> {
+    let mut d = <OwnerVault as verified_anchor::AccountData>::DISCRIMINATOR.to_vec();
+    d.extend_from_slice(authority.as_ref());
+    d
+}
+
 #[test]
 fn has_one_accepts_match() {
     let auth_key = Pubkey::new_unique();
-    let mut data = vec![0u8; 8];                 // 8-byte discriminator
-    data.extend_from_slice(auth_key.as_ref());   // authority Pubkey at offset 8
-    let mut vault = acct_with_data(Pubkey::new_unique(), data);
+    let mut vault = acct_with_data(Pubkey::new_unique(), owner_vault_data(auth_key));
+    // `Account<'info, T>` implies `owner = crate::ID`; without it validate stops before has_one.
+    vault.owner = crate::ID;
     let mut authority = acct_with_data(auth_key, vec![]);
     let accts = [vault.info(), authority.info()];
     assert_eq!(CheckOwner::validate(&accts, &[], &any_pid()), Ok(()));
@@ -121,9 +148,9 @@ fn has_one_accepts_match() {
 
 #[test]
 fn has_one_rejects_mismatch() {
-    let mut data = vec![0u8; 8];
-    data.extend_from_slice(Pubkey::new_unique().as_ref());   // wrong stored authority
-    let mut vault = acct_with_data(Pubkey::new_unique(), data);
+    // wrong stored authority
+    let mut vault = acct_with_data(Pubkey::new_unique(), owner_vault_data(Pubkey::new_unique()));
+    vault.owner = crate::ID;
     let mut authority = acct_with_data(Pubkey::new_unique(), vec![]);
     let accts = [vault.info(), authority.info()];
     assert_eq!(CheckOwner::validate(&accts, &[], &any_pid()), Err(VAError::WrongHasOne { field: "vault", target: "authority" }));
@@ -746,4 +773,1567 @@ fn zero_rejects_short_data() {
         ZeroGuard::validate(&accts, &[], &any_pid()),
         Err(VAError::NotZeroed { field: "uninit" })
     );
+}
+
+// ---- M10 Task 5: `AccountData` carries the layout ----
+//
+// `LAYOUT` is the runtime Borsh descriptor the generated locator walks; `LAYOUT_LEAN` is the
+// same descriptor as Lean `Ty` source, spliced into `lean_spec()` at runtime.
+
+#[test]
+fn account_data_derive_emits_real_layout() {
+    use verified_anchor::layout::{locate, Ty};
+
+    #[derive(
+        verified_anchor::borsh::BorshSerialize,
+        verified_anchor::borsh::BorshDeserialize,
+        verified_anchor::AccountData,
+    )]
+    #[borsh(crate = "::verified_anchor::borsh")]
+    struct LayoutProbe {
+        bump: u8,
+        authority: solana_program::pubkey::Pubkey,
+    }
+
+    // The descriptor names the real fields in declaration order.
+    match <LayoutProbe as verified_anchor::AccountData>::LAYOUT {
+        Ty::Struct(fs) => {
+            assert_eq!(fs.len(), 2);
+            assert_eq!(fs[0].0, "bump");
+            assert_eq!(fs[1].0, "authority");
+            assert_eq!(fs[1].1, Ty::Pubkey);
+        }
+        other => panic!("expected a struct descriptor, got {other:?}"),
+    }
+
+    // authority sits at offset 1 within the struct body, NOT offset 0.
+    let data = vec![0u8; 33];
+    let ty = <LayoutProbe as verified_anchor::AccountData>::LAYOUT;
+    assert_eq!(locate(&ty, &["authority"], &data, 0).map(|r| r.0), Some(1));
+
+    assert_eq!(
+        <LayoutProbe as verified_anchor::AccountData>::LAYOUT_LEAN,
+        "(Ty.struct [(\"bump\", Ty.u8), (\"authority\", Ty.pubkey)])"
+    );
+}
+
+// ---- M10 Task 7: `has_one` reads the NAMED field, not byte 8 ----
+//
+// REGRESSION for the v0.3.0 defect: the generated check hardcoded `&data[8..40]`, so
+// `has_one = authority` compared the FIRST field of the account struct whatever field was
+// named. Here `authority` is the SECOND field, so it lives at offset 9 (8 discriminator + 1
+// byte of `bump`); a hardcoded-8 read splices one byte of `bump` onto 31 bytes of the key.
+
+#[derive(
+    verified_anchor::borsh::BorshSerialize,
+    verified_anchor::borsh::BorshDeserialize,
+    verified_anchor::AccountData,
+)]
+#[borsh(crate = "::verified_anchor::borsh")]
+struct OffsetVault {
+    bump: u8,
+    authority: Pubkey,
+}
+
+#[derive(VerifiedAccounts)]
+struct CheckOffsetHasOne<'info> {
+    #[account(has_one = authority)]
+    vault: verified_anchor::Account<'info, OffsetVault>,
+    authority: UncheckedAccount<'info>,
+}
+
+fn offset_vault_data(bump: u8, authority: Pubkey) -> Vec<u8> {
+    let mut d = <OffsetVault as verified_anchor::AccountData>::DISCRIMINATOR.to_vec();
+    d.push(bump);
+    d.extend_from_slice(authority.as_ref());
+    d
+}
+
+#[test]
+fn has_one_accepts_target_at_nonzero_offset() {
+    let auth = Pubkey::new_unique();
+    let mut v = acct_with_data(Pubkey::new_unique(), offset_vault_data(254, auth));
+    // `Account<'info, T>` implies `owner = crate::ID`, so the fixture must be program-owned
+    // for the has_one check to even be reached.
+    v.owner = crate::ID;
+    let mut a = acct_with_data(auth, vec![]);
+    let accts = [v.info(), a.info()];
+    assert_eq!(CheckOffsetHasOne::validate(&accts, &[], &any_pid()), Ok(()));
+}
+
+#[test]
+fn has_one_rejects_mismatch_at_nonzero_offset() {
+    let auth = Pubkey::new_unique();
+    let mut v = acct_with_data(Pubkey::new_unique(), offset_vault_data(254, auth));
+    v.owner = crate::ID;
+    let mut a = acct_with_data(Pubkey::new_unique(), vec![]);   // different key
+    let accts = [v.info(), a.info()];
+    assert_eq!(
+        CheckOffsetHasOne::validate(&accts, &[], &any_pid()),
+        Err(VAError::WrongHasOne { field: "vault", target: "authority" })
+    );
+}
+
+#[test]
+fn lean_spec_carries_the_real_layout() {
+    let s = CheckOffsetHasOne::lean_spec();
+    assert!(s.contains("(\"bump\", Ty.u8)"), "spec was: {s}");
+    assert!(s.contains("(\"authority\", Ty.pubkey)"), "spec was: {s}");
+    assert!(!s.contains("(\"authority\", 8)"), "spec still hardcodes offset 8: {s}");
+}
+
+/// The build-time `has_one` guard keys off the field NAME being present in the descriptor, not
+/// off the layout being fixed-width. A variable-width earlier field is perfectly locatable at
+/// runtime (its width comes from its length prefix), so this must still compile AND validate —
+/// i.e. the guard added for the truncated-descriptor case must not over-reject.
+#[verified_anchor::account]
+struct LabelVault {
+    label: String,
+    authority: Pubkey,
+}
+
+fn label_vault_data(label: &str, authority: Pubkey) -> Vec<u8> {
+    let mut d = <LabelVault as verified_anchor::AccountData>::DISCRIMINATOR.to_vec();
+    d.extend_from_slice(&(label.len() as u32).to_le_bytes());   // borsh String length prefix
+    d.extend_from_slice(label.as_bytes());
+    d.extend_from_slice(authority.as_ref());
+    d
+}
+
+#[derive(VerifiedAccounts)]
+struct CheckLabelHasOne<'info> {
+    #[account(has_one = authority)]
+    vault: verified_anchor::Account<'info, LabelVault>,
+    authority: UncheckedAccount<'info>,
+}
+
+#[test]
+fn has_one_locates_past_a_variable_width_field() {
+    let auth = Pubkey::new_unique();
+    let mut v = acct_with_data(Pubkey::new_unique(), label_vault_data("a-long-ish-label", auth));
+    v.owner = crate::ID;
+    let mut a = acct_with_data(auth, vec![]);
+    let accts = [v.info(), a.info()];
+    assert_eq!(CheckLabelHasOne::validate(&accts, &[], &any_pid()), Ok(()));
+}
+
+#[test]
+fn has_one_rejects_mismatch_past_a_variable_width_field() {
+    let mut v = acct_with_data(
+        Pubkey::new_unique(),
+        label_vault_data("a-long-ish-label", Pubkey::new_unique()),
+    );
+    v.owner = crate::ID;
+    let mut a = acct_with_data(Pubkey::new_unique(), vec![]);
+    let accts = [v.info(), a.info()];
+    assert_eq!(
+        CheckLabelHasOne::validate(&accts, &[], &any_pid()),
+        Err(VAError::WrongHasOne { field: "vault", target: "authority" })
+    );
+}
+
+// ── M10 Task 9: `#[instruction(...)]` args and Anchor-shaped `name.as_bytes()` seeds ──────
+//
+// This is the drop-in target: the struct below is REAL, UNMODIFIED Anchor source. Before
+// M10 the same PDA required `seeds = [b"vault", arg(4, 5)]` — bespoke syntax no Anchor
+// program contains, and one that hardcodes the argument's length.
+
+// NOTE the attribute ORDER: `#[derive(..)]` first, `#[instruction(..)]` second. `instruction`
+// is a DERIVE HELPER (exactly as in Anchor, whose derive is
+// `#[proc_macro_derive(Accounts, attributes(account, instruction))]`), and rustc rejects a
+// helper written before the derive that introduces it (`legacy_derive_helpers`, deny-by-default).
+// Canonical Anchor source is therefore already in this order.
+#[derive(VerifiedAccounts)]
+#[instruction(name: String)]
+struct SeedFromArg<'info> {
+    #[account(seeds = [b"vault", name.as_bytes()], bump)]
+    pda: UncheckedAccount<'info>,
+}
+
+/// Borsh-encode a single `String` argument the way a client would: 4-byte LE length prefix
+/// then the payload. `instr_data` is the argument buffer with any discriminator ALREADY
+/// stripped by the caller (what Anchor hands `try_accounts`), so decoding starts at 0.
+fn borsh_string_arg(s: &str) -> Vec<u8> {
+    let mut v = (s.len() as u32).to_le_bytes().to_vec();
+    v.extend_from_slice(s.as_bytes());
+    v
+}
+
+#[test]
+fn seeds_resolve_a_named_string_arg() {
+    let pid = any_pid();
+    let (expected, _bump) = Pubkey::find_program_address(&[b"vault", b"alice"], &pid);
+    let mut p = acct_with_data(expected, vec![]);
+    let accts = [p.info()];
+    assert_eq!(SeedFromArg::validate(&accts, &borsh_string_arg("alice"), &pid), Ok(()));
+}
+
+#[test]
+fn seeds_reject_a_wrong_named_string_arg() {
+    let pid = any_pid();
+    let (expected, _bump) = Pubkey::find_program_address(&[b"vault", b"alice"], &pid);
+    let mut p = acct_with_data(expected, vec![]);
+    let accts = [p.info()];
+    assert_eq!(
+        SeedFromArg::validate(&accts, &borsh_string_arg("mallory"), &pid),
+        Err(VAError::WrongPda { field: "pda" })
+    );
+}
+
+// ── M10 Task 9: `argBytes` parity with the Lean model ─────────────────────────────────────
+//
+// `AccountsStruct.argBytes` (lean/VerifiedAnchor/Constraints/Context.lean) is the contract the
+// macro's `name.as_bytes()` codegen mirrors. A divergence here would make verified-anchor
+// derive a DIFFERENT PDA than real Anchor: our own tests would still pass (they would agree
+// with our own model) and the defect would surface only in production, as an address mismatch.
+//
+// LEAN_ARG_FIXTURE is copied verbatim from the Lean regression fixture `argCtx` in
+// `lean/VerifiedAnchor/Codegen/ExampleGenerated.lean`, whose `by decide` proofs pin:
+//     argBytes "amount"  = #[1,0,0,0,0,0,0,0]   -- u64: the WHOLE fixed-size encoding
+//     argBytes "label"   = #[104, 105]          -- string: LENGTH PREFIX STRIPPED
+//     argBytes "missing" = none
+// The tests below assert the PDA our generated code accepts equals the PDA derived from those
+// exact raw byte strings — so they compare SEED BYTES, not merely the accept/reject verdict.
+const LEAN_ARG_FIXTURE: [u8; 14] = [1, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 104, 105];
+
+// `amount.to_le_bytes()` is exactly what a real Anchor program writes for a numeric seed, and
+// `argBytes`' fixed-size arm returns exactly that little-endian encoding.
+#[derive(VerifiedAccounts)]
+#[instruction(amount: u64, label: String)]
+struct ArgFixedSeed<'info> {
+    #[account(seeds = [b"vault", amount.to_le_bytes()], bump)]
+    pda: UncheckedAccount<'info>,
+}
+
+#[derive(VerifiedAccounts)]
+#[instruction(amount: u64, label: String)]
+struct ArgStringSeed<'info> {
+    #[account(seeds = [b"vault", label.as_bytes()], bump)]
+    pda: UncheckedAccount<'info>,
+}
+
+#[derive(VerifiedAccounts)]
+#[instruction(blob: Vec<u8>)]
+struct ArgVecSeed<'info> {
+    #[account(seeds = [b"vault", blob.as_bytes()], bump)]
+    pda: UncheckedAccount<'info>,
+}
+
+/// Fixed-size arm: `argBytes` returns the whole 8-byte Borsh encoding, no framing to strip.
+#[test]
+fn arg_bytes_fixed_size_uses_the_whole_encoding() {
+    let pid = any_pid();
+    let (expected, _) = Pubkey::find_program_address(&[b"vault", &[1, 0, 0, 0, 0, 0, 0, 0]], &pid);
+    let mut p = acct_with_data(expected, vec![]);
+    let accts = [p.info()];
+    assert_eq!(ArgFixedSeed::validate(&accts, &LEAN_ARG_FIXTURE, &pid), Ok(()));
+}
+
+/// THE POINT, and the top failure mode of this task. `label` is at offset 8 (after the u64),
+/// its raw Borsh encoding is the 6 bytes `[2,0,0,0,104,105]`, and `argBytes` — like Anchor's
+/// `label.as_bytes()` — yields only the 2 payload bytes `[104,105]`.
+#[test]
+fn arg_bytes_string_strips_the_length_prefix() {
+    let pid = any_pid();
+    let (payload_only, _) = Pubkey::find_program_address(&[b"vault", &[104, 105]], &pid);
+    let mut p = acct_with_data(payload_only, vec![]);
+    let accts = [p.info()];
+    assert_eq!(ArgStringSeed::validate(&accts, &LEAN_ARG_FIXTURE, &pid), Ok(()));
+}
+
+/// The negative half of the parity claim: had we kept the Borsh framing (the natural mistake),
+/// we would derive THIS address instead. It must be rejected, and it must differ from the one
+/// accepted above — otherwise the assertion above proves nothing about prefix stripping.
+#[test]
+fn arg_bytes_string_does_not_include_the_borsh_framing() {
+    let pid = any_pid();
+    let (payload_only, _) = Pubkey::find_program_address(&[b"vault", &[104, 105]], &pid);
+    let (with_framing, _) =
+        Pubkey::find_program_address(&[b"vault", &[2, 0, 0, 0, 104, 105]], &pid);
+    assert_ne!(payload_only, with_framing);
+    let mut p = acct_with_data(with_framing, vec![]);
+    let accts = [p.info()];
+    assert_eq!(
+        ArgStringSeed::validate(&accts, &LEAN_ARG_FIXTURE, &pid),
+        Err(VAError::WrongPda { field: "pda" })
+    );
+}
+
+/// `vec` takes the same length-prefix-stripping arm as `string` in Lean `argBytes`.
+#[test]
+fn arg_bytes_vec_strips_the_length_prefix() {
+    let pid = any_pid();
+    let (expected, _) = Pubkey::find_program_address(&[b"vault", &[9u8, 8, 7]], &pid);
+    let mut p = acct_with_data(expected, vec![]);
+    let accts = [p.info()];
+    let data = [3u8, 0, 0, 0, 9, 8, 7];
+    assert_eq!(ArgVecSeed::validate(&accts, &data, &pid), Ok(()));
+}
+
+/// Fail-closed, both arms: Lean `argBytes` returns `none` when the declared argument overruns
+/// the buffer, and `none` cannot produce a matching PDA. Rust must reject, never panic.
+#[test]
+fn arg_bytes_overrun_fails_closed() {
+    let pid = any_pid();
+    let (expected, _) = Pubkey::find_program_address(&[b"vault", b"alice"], &pid);
+    let mut p = acct_with_data(expected, vec![]);
+    let accts = [p.info()];
+    // Empty buffer: not even the u32 length prefix is present.
+    assert_eq!(
+        SeedFromArg::validate(&accts, &[], &pid),
+        Err(VAError::WrongPda { field: "pda" })
+    );
+    // Length prefix claims 5 payload bytes; only 2 follow.
+    assert_eq!(
+        SeedFromArg::validate(&accts, &[5, 0, 0, 0, 97, 108], &pid),
+        Err(VAError::WrongPda { field: "pda" })
+    );
+    // Truncated fixed-size argument (u64 needs 8 bytes, 3 given).
+    assert_eq!(
+        ArgFixedSeed::validate(&accts, &[1, 0, 0], &pid),
+        Err(VAError::WrongPda { field: "pda" })
+    );
+}
+
+/// A zero-length string yields an EMPTY seed, not a failure — Lean's `off + 4 + 0 ≤ size`
+/// holds, so `argBytes` returns the empty ByteArray.
+#[test]
+fn arg_bytes_empty_string_is_an_empty_seed() {
+    let pid = any_pid();
+    let (expected, _) = Pubkey::find_program_address(&[b"vault", b""], &pid);
+    let mut p = acct_with_data(expected, vec![]);
+    let accts = [p.info()];
+    assert_eq!(SeedFromArg::validate(&accts, &[0, 0, 0, 0], &pid), Ok(()));
+}
+
+/// The `Bumps` struct is built by a SECOND copy of the seed codegen inside `try_accounts`.
+/// It must resolve `name.as_bytes()` the same way `validate` does, or the canonical bump handed
+/// back to the handler would be derived from different seeds than the ones just validated.
+#[test]
+fn bumps_struct_resolves_a_named_arg_seed() {
+    use verified_anchor::Accounts;
+    let pid = any_pid();
+    let (expected, expected_bump) = Pubkey::find_program_address(&[b"vault", b"alice"], &pid);
+    let mut p = acct_with_data(expected, vec![]);
+    let accts = [p.info()];
+    let (_s, bumps) =
+        <SeedFromArg as Accounts>::try_accounts(&pid, &accts, &borsh_string_arg("alice")).unwrap();
+    assert_eq!(bumps.pda, expected_bump);
+}
+
+// ── M10 Task 9: numeric seeds via `to_le_bytes()` ─────────────────────────────────────────
+//
+// The canonical Anchor spelling for a numeric PDA seed. `.as_ref()` is what real source writes
+// (a bare `[u8; 8]` does not coerce to `&[u8]` inside a seed list); it carries no meaning here
+// and is peeled, as is a leading `&`.
+
+#[derive(VerifiedAccounts)]
+#[instruction(amount: u64)]
+struct Deposit<'info> {
+    #[account(seeds = [b"vault", amount.to_le_bytes().as_ref()], bump)]
+    vault: UncheckedAccount<'info>,
+}
+
+#[derive(VerifiedAccounts)]
+#[instruction(amount: u64)]
+struct DepositRef<'info> {
+    #[account(seeds = [b"vault", &amount.to_le_bytes()], bump)]
+    vault: UncheckedAccount<'info>,
+}
+
+#[derive(VerifiedAccounts)]
+#[instruction(idx: u16, amount: u64)]
+struct DepositAtOffset<'info> {
+    #[account(seeds = [b"vault", amount.to_le_bytes().as_ref()], bump)]
+    vault: UncheckedAccount<'info>,
+}
+
+/// The address must be the one REAL ANCHOR would derive: built here straight from
+/// `amount.to_le_bytes()`, with no reference to our own decoding path.
+#[test]
+fn numeric_arg_seed_derives_the_anchor_address() {
+    let pid = any_pid();
+    let amount: u64 = 42;
+    let (expected, _) = Pubkey::find_program_address(&[b"vault", amount.to_le_bytes().as_ref()], &pid);
+    let mut p = acct_with_data(expected, vec![]);
+    let accts = [p.info()];
+    let data = amount.to_le_bytes().to_vec();
+    assert_eq!(Deposit::validate(&accts, &data, &pid), Ok(()));
+}
+
+/// `&amount.to_le_bytes()` is the same seed as `amount.to_le_bytes().as_ref()`.
+#[test]
+fn numeric_arg_seed_accepts_the_reference_spelling() {
+    let pid = any_pid();
+    let amount: u64 = 42;
+    let (expected, _) = Pubkey::find_program_address(&[b"vault", amount.to_le_bytes().as_ref()], &pid);
+    let mut p = acct_with_data(expected, vec![]);
+    let accts = [p.info()];
+    assert_eq!(DepositRef::validate(&accts, &amount.to_le_bytes(), &pid), Ok(()));
+}
+
+/// Negative: a different amount is a different PDA. Without this the test above would pass for
+/// an implementation that ignored the argument entirely.
+#[test]
+fn numeric_arg_seed_rejects_a_different_amount() {
+    let pid = any_pid();
+    let (expected, _) = Pubkey::find_program_address(&[b"vault", 42u64.to_le_bytes().as_ref()], &pid);
+    let mut p = acct_with_data(expected, vec![]);
+    let accts = [p.info()];
+    assert_eq!(
+        Deposit::validate(&accts, &43u64.to_le_bytes(), &pid),
+        Err(VAError::WrongPda { field: "vault" })
+    );
+}
+
+/// Big-endian is the failure this guard exists for: had `to_be_bytes()` been silently accepted,
+/// THIS is the address it would have derived. It must differ, and must be rejected.
+#[test]
+fn numeric_arg_seed_is_little_endian() {
+    let pid = any_pid();
+    let amount: u64 = 42;
+    let (le, _) = Pubkey::find_program_address(&[b"vault", amount.to_le_bytes().as_ref()], &pid);
+    let (be, _) = Pubkey::find_program_address(&[b"vault", amount.to_be_bytes().as_ref()], &pid);
+    assert_ne!(le, be, "the fixture must distinguish the two endiannesses");
+    let mut p = acct_with_data(be, vec![]);
+    let accts = [p.info()];
+    assert_eq!(
+        Deposit::validate(&accts, &amount.to_le_bytes(), &pid),
+        Err(VAError::WrongPda { field: "vault" })
+    );
+}
+
+/// A numeric seed behind another argument: the offset comes from Borsh, not from the seed list.
+#[test]
+fn numeric_arg_seed_at_a_nonzero_offset() {
+    let pid = any_pid();
+    let amount: u64 = 7;
+    let (expected, _) = Pubkey::find_program_address(&[b"vault", amount.to_le_bytes().as_ref()], &pid);
+    let mut p = acct_with_data(expected, vec![]);
+    let accts = [p.info()];
+    let mut data = 3u16.to_le_bytes().to_vec();   // idx, declared first
+    data.extend_from_slice(&amount.to_le_bytes());
+    assert_eq!(DepositAtOffset::validate(&accts, &data, &pid), Ok(()));
+}
+
+/// Fail-closed on a truncated numeric argument, same as the string arm.
+#[test]
+fn numeric_arg_seed_overrun_fails_closed() {
+    let pid = any_pid();
+    let (expected, _) = Pubkey::find_program_address(&[b"vault", 42u64.to_le_bytes().as_ref()], &pid);
+    let mut p = acct_with_data(expected, vec![]);
+    let accts = [p.info()];
+    assert_eq!(
+        Deposit::validate(&accts, &[42, 0, 0], &pid),
+        Err(VAError::WrongPda { field: "vault" })
+    );
+}
+
+// ── M10 Task 9: the remaining Anchor seed spellings ───────────────────────────────────────
+//
+// `&x` / `.as_ref()` / `.as_slice()` are slice-coercion noise around a seed source: a seed list
+// is `&[&[u8]]`, and `Pubkey`, `[u8; 8]` and `Vec<u8>` do not coerce to `&[u8]` there. They are
+// peeled, then the bare name is resolved — INSTRUCTION ARGUMENTS FIRST, then account fields.
+
+#[derive(VerifiedAccounts)]
+struct KeyAsRefSeed<'info> {
+    #[account(seeds = [b"vault", user.key().as_ref()], bump)]
+    pda: UncheckedAccount<'info>,
+    user: UncheckedAccount<'info>,
+}
+
+#[derive(VerifiedAccounts)]
+#[instruction(authority: Pubkey)]
+struct PubkeyArgSeed<'info> {
+    #[account(seeds = [b"vault", authority.as_ref()], bump)]
+    pda: UncheckedAccount<'info>,
+}
+
+#[derive(VerifiedAccounts)]
+#[instruction(blob: Vec<u8>)]
+struct VecArgRefSeed<'info> {
+    #[account(seeds = [b"vault", &blob], bump)]
+    pda: UncheckedAccount<'info>,
+}
+
+#[derive(VerifiedAccounts)]
+#[instruction(blob: Vec<u8>)]
+struct VecArgSliceSeed<'info> {
+    #[account(seeds = [b"vault", blob.as_slice()], bump)]
+    pda: UncheckedAccount<'info>,
+}
+
+/// `user.key().as_ref()` — the ubiquitous Anchor account-key seed. Expected address built
+/// straight from the account's key bytes.
+#[test]
+fn account_key_as_ref_seed_derives_the_anchor_address() {
+    let pid = any_pid();
+    let user_key = Pubkey::new_unique();
+    let (expected, _) = Pubkey::find_program_address(&[b"vault", user_key.as_ref()], &pid);
+    let mut p = acct_with_data(expected, vec![]);
+    let mut u = acct_with_data(user_key, vec![]);
+    let accts = [p.info(), u.info()];
+    assert_eq!(KeyAsRefSeed::validate(&accts, &[], &pid), Ok(()));
+}
+
+#[test]
+fn account_key_as_ref_seed_rejects_a_different_key() {
+    let pid = any_pid();
+    let (expected, _) = Pubkey::find_program_address(&[b"vault", Pubkey::new_unique().as_ref()], &pid);
+    let mut p = acct_with_data(expected, vec![]);
+    let mut u = acct_with_data(Pubkey::new_unique(), vec![]);   // a DIFFERENT user account
+    let accts = [p.info(), u.info()];
+    assert_eq!(
+        KeyAsRefSeed::validate(&accts, &[], &pid),
+        Err(VAError::WrongPda { field: "pda" })
+    );
+}
+
+/// A `Pubkey` INSTRUCTION ARGUMENT via `.as_ref()`. `argBytes`' fixed-size arm returns the whole
+/// 32-byte encoding, which is exactly `Pubkey::as_ref()`.
+#[test]
+fn pubkey_arg_seed_derives_the_anchor_address() {
+    let pid = any_pid();
+    let authority = Pubkey::new_unique();
+    let (expected, _) = Pubkey::find_program_address(&[b"vault", authority.as_ref()], &pid);
+    let mut p = acct_with_data(expected, vec![]);
+    let accts = [p.info()];
+    assert_eq!(PubkeyArgSeed::validate(&accts, authority.as_ref(), &pid), Ok(()));
+}
+
+#[test]
+fn pubkey_arg_seed_rejects_a_different_authority() {
+    let pid = any_pid();
+    let (expected, _) = Pubkey::find_program_address(&[b"vault", Pubkey::new_unique().as_ref()], &pid);
+    let mut p = acct_with_data(expected, vec![]);
+    let accts = [p.info()];
+    assert_eq!(
+        PubkeyArgSeed::validate(&accts, Pubkey::new_unique().as_ref(), &pid),
+        Err(VAError::WrongPda { field: "pda" })
+    );
+    // ...and a truncated Pubkey argument fails closed rather than panicking.
+    assert_eq!(
+        PubkeyArgSeed::validate(&accts, &[7u8; 31], &pid),
+        Err(VAError::WrongPda { field: "pda" })
+    );
+}
+
+/// `&blob` and `blob.as_slice()` are the same seed: the `Vec` payload, length prefix stripped.
+#[test]
+fn vec_arg_reference_and_slice_spellings_agree() {
+    let pid = any_pid();
+    let (expected, _) = Pubkey::find_program_address(&[b"vault", &[9u8, 8, 7]], &pid);
+    let mut p = acct_with_data(expected, vec![]);
+    let accts = [p.info()];
+    let data = [3u8, 0, 0, 0, 9, 8, 7];
+    assert_eq!(VecArgRefSeed::validate(&accts, &data, &pid), Ok(()));
+    assert_eq!(VecArgSliceSeed::validate(&accts, &data, &pid), Ok(()));
+    // Negative: a different payload is a different PDA.
+    assert_eq!(
+        VecArgRefSeed::validate(&accts, &[3u8, 0, 0, 0, 9, 8, 6], &pid),
+        Err(VAError::WrongPda { field: "pda" })
+    );
+}
+
+/// Literal seeds take the same peeling: `b"vault".as_ref()`, `&b"vault"` and `"vault".as_bytes()`
+/// are all the bare `b"vault"` seed. Anchor programs use these interchangeably.
+#[derive(VerifiedAccounts)]
+struct LiteralSeedSpellings<'info> {
+    #[account(seeds = [b"vault".as_ref(), &b"x", "tail".as_bytes()], bump)]
+    pda: UncheckedAccount<'info>,
+}
+
+#[test]
+fn literal_seed_spellings_all_derive_the_same_address() {
+    let pid = any_pid();
+    let (expected, _) = Pubkey::find_program_address(&[b"vault", b"x", b"tail"], &pid);
+    let mut p = acct_with_data(expected, vec![]);
+    let accts = [p.info()];
+    assert_eq!(LiteralSeedSpellings::validate(&accts, &[], &pid), Ok(()));
+    // Negative: a different literal ordering is a different PDA.
+    let (other, _) = Pubkey::find_program_address(&[b"tail", b"x", b"vault"], &pid);
+    assert_ne!(expected, other);
+}
+
+// ── M10 Task 12: `constraint = <expr>` compiled into the proven sublanguage ────────────────
+
+#[derive(
+    verified_anchor::borsh::BorshSerialize,
+    verified_anchor::borsh::BorshDeserialize,
+    verified_anchor::AccountData,
+)]
+#[borsh(crate = "::verified_anchor::borsh")]
+struct ExprVault {
+    bump: u8,
+    amount: u64,
+}
+
+#[derive(VerifiedAccounts)]
+struct CheckExpr<'info> {
+    #[account(constraint = vault.amount >= 1000)]
+    vault: verified_anchor::Account<'info, ExprVault>,
+    user: UncheckedAccount<'info>,
+}
+
+fn expr_vault_data(bump: u8, amount: u64) -> Vec<u8> {
+    let mut d = <ExprVault as verified_anchor::AccountData>::DISCRIMINATOR.to_vec();
+    d.push(bump);
+    d.extend_from_slice(&amount.to_le_bytes());
+    d
+}
+
+#[test]
+fn constraint_expr_accepts_when_satisfied() {
+    let mut v = acct_with_data(Pubkey::new_unique(), expr_vault_data(1, 1000));
+    // `Account<'info, T>` implies `owner = crate::ID`; without it validate stops before the expr.
+    v.owner = crate::ID;
+    let mut u = acct_with_data(Pubkey::new_unique(), vec![]);
+    let accts = [v.info(), u.info()];
+    assert_eq!(CheckExpr::validate(&accts, &[], &any_pid()), Ok(()));
+}
+
+#[test]
+fn constraint_expr_rejects_when_violated() {
+    let mut v = acct_with_data(Pubkey::new_unique(), expr_vault_data(1, 999));
+    // `Account<'info, T>` implies `owner = crate::ID`; without it validate stops before the expr.
+    v.owner = crate::ID;
+    let mut u = acct_with_data(Pubkey::new_unique(), vec![]);
+    let accts = [v.info(), u.info()];
+    assert!(matches!(
+        CheckExpr::validate(&accts, &[], &any_pid()),
+        Err(VAError::ConstraintViolated { field: "vault", .. })
+    ));
+}
+
+#[derive(VerifiedAccounts)]
+struct CheckKeyExpr<'info> {
+    #[account(constraint = a.key() != b.key())]
+    a: UncheckedAccount<'info>,
+    b: UncheckedAccount<'info>,
+}
+
+#[test]
+fn constraint_expr_compares_keys() {
+    let mut a = acct_with_data(Pubkey::new_unique(), vec![]);
+    let mut b = acct_with_data(Pubkey::new_unique(), vec![]);
+    assert_eq!(CheckKeyExpr::validate(&[a.info(), b.info()], &[], &any_pid()), Ok(()));
+
+    let k = Pubkey::new_unique();
+    let mut c = acct_with_data(k, vec![]);
+    let mut d = acct_with_data(k, vec![]);
+    assert!(CheckKeyExpr::validate(&[c.info(), d.info()], &[], &any_pid()).is_err());
+}
+
+// ── STRICTNESS: `&&`/`||` must NOT lower to Rust's short-circuiting operators ──────────────
+//
+// Lean's `evalExpr` binds BOTH operands through the `Option` monad before combining, so an
+// unevaluable operand poisons the whole expression regardless of the other side.
+//
+// The unevaluable operand here is `threshold < 1` read from an EMPTY `instr_data`: `locate`
+// finds the argument's offset, `read_val` runs off the end of the buffer, and the operand is
+// `None`. (These fixtures used to spell it `user.key() < 1` — a TYPE-CONFUSED ordering, which
+// `evalCmp` also refuses. That spelling is gone because the provability gate now diverts every
+// non-numeric ordering to the escape hatch, where the developer's Rust runs verbatim and
+// `Pubkey < 1` does not type-check — exactly as it does not under real Anchor. A RUNTIME-
+// unevaluable operand pins the same strictness property without depending on a comparison no
+// Anchor program could contain.)
+
+#[derive(VerifiedAccounts)]
+#[instruction(threshold: u64)]
+struct StrictOr<'info> {
+    // `true || <unevaluable>`. Under Rust's native `||` this SHORT-CIRCUITS to `true` and the
+    // account set is ACCEPTED — while the Lean contract says `none`, i.e. REJECT. That gap is
+    // precisely "verified-anchor accepts an account set the contract rejects", the milestone's
+    // headline guarantee. If a future refactor swaps the strict combinator for native `||`,
+    // `strict_or_rejects_when_right_operand_is_unevaluable` below turns red.
+    #[account(constraint = user.is_signer || threshold < 1)]
+    user: UncheckedAccount<'info>,
+}
+
+#[test]
+fn strict_or_rejects_when_right_operand_is_unevaluable() {
+    let mut u = acct(true, false); // is_signer = true → the left operand is `Some(true)`
+    let accts = [u.info()];
+    // EMPTY instruction data → `threshold` cannot be read → the right operand is `None`.
+    assert!(
+        matches!(
+            StrictOr::validate(&accts, &[], &any_pid()),
+            Err(VAError::ConstraintViolated { field: "user", .. })
+        ),
+        "`true || <unevaluable>` MUST reject: Lean's `evalExpr` yields `none`, not `some true`. \
+         Native Rust `||` would short-circuit and accept."
+    );
+}
+
+/// The control for the fixture above: once `threshold` IS readable, the same `or` accepts
+/// normally. Without it, "reject everything" would satisfy the strictness assertion.
+#[test]
+fn strict_or_accepts_once_the_right_operand_is_readable() {
+    let mut u = acct(true, false);
+    let accts = [u.info()];
+    assert_eq!(StrictOr::validate(&accts, &7u64.to_le_bytes(), &any_pid()), Ok(()));
+}
+
+#[derive(VerifiedAccounts)]
+#[instruction(threshold: u64)]
+struct StrictAnd<'info> {
+    // `false && <unevaluable>`: rejects under both semantics, so this is not a safety
+    // difference — it is here so the `and` arm is exercised at all, and so the pair documents
+    // exactly where the asymmetry lies.
+    #[account(constraint = user.is_signer && threshold < 1)]
+    user: UncheckedAccount<'info>,
+}
+
+#[test]
+fn strict_and_rejects_when_an_operand_is_unevaluable() {
+    let mut u = acct(false, false);
+    let accts = [u.info()];
+    assert!(StrictAnd::validate(&accts, &[], &any_pid()).is_err());
+}
+
+#[derive(VerifiedAccounts)]
+struct EvaluableOr<'info> {
+    // The control: when BOTH operands evaluate, `or` behaves like ordinary disjunction. Without
+    // this, "reject everything" would pass the two strictness tests above.
+    #[account(constraint = a.is_signer || b.is_signer)]
+    a: UncheckedAccount<'info>,
+    b: UncheckedAccount<'info>,
+}
+
+#[test]
+fn evaluable_or_still_accepts_and_rejects_normally() {
+    let mut a = acct(false, false);
+    let mut b = acct(true, false);
+    assert_eq!(EvaluableOr::validate(&[a.info(), b.info()], &[], &any_pid()), Ok(()));
+    let mut c = acct(false, false);
+    let mut d = acct(false, false);
+    assert!(EvaluableOr::validate(&[c.info(), d.info()], &[], &any_pid()).is_err());
+}
+
+#[derive(VerifiedAccounts)]
+struct NotExpr<'info> {
+    #[account(constraint = !user.is_writable)]
+    user: UncheckedAccount<'info>,
+}
+
+#[test]
+fn not_expr_negates() {
+    let mut r = acct(false, false);
+    assert_eq!(NotExpr::validate(&[r.info()], &[], &any_pid()), Ok(()));
+    let mut w = acct(false, true);
+    assert!(NotExpr::validate(&[w.info()], &[], &any_pid()).is_err());
+}
+
+// A bare truthy operand — `#[account(constraint = user.is_signer)]` with no comparison.
+#[derive(VerifiedAccounts)]
+struct TruthyExpr<'info> {
+    #[account(constraint = user.is_signer)]
+    user: UncheckedAccount<'info>,
+}
+
+#[test]
+fn truthy_expr_reads_the_metadata_flag() {
+    let mut s = acct(true, false);
+    assert_eq!(TruthyExpr::validate(&[s.info()], &[], &any_pid()), Ok(()));
+    let mut n = acct(false, false);
+    assert!(TruthyExpr::validate(&[n.info()], &[], &any_pid()).is_err());
+}
+
+// A `constraint` over a named `#[instruction(...)]` argument. This is the case that forced the
+// `INSTR_ARGS` emission gate to widen: before Task 12 the const was emitted only when a SEED
+// referenced an argument, so this struct would not have compiled.
+#[derive(VerifiedAccounts)]
+#[instruction(amount: u64)]
+struct ArgExpr<'info> {
+    #[account(constraint = vault.amount >= amount)]
+    vault: verified_anchor::Account<'info, ExprVault>,
+}
+
+#[test]
+fn constraint_expr_reads_an_instruction_argument() {
+    let mut v = acct_with_data(Pubkey::new_unique(), expr_vault_data(1, 1000));
+    // `Account<'info, T>` implies `owner = crate::ID`; without it validate stops before the expr.
+    v.owner = crate::ID;
+    let accts = [v.info()];
+    assert_eq!(ArgExpr::validate(&accts, &1000u64.to_le_bytes(), &any_pid()), Ok(()));
+    assert!(ArgExpr::validate(&accts, &1001u64.to_le_bytes(), &any_pid()).is_err());
+    // Truncated instruction data: the argument cannot be located → `none` → fail closed.
+    assert!(ArgExpr::validate(&accts, &[], &any_pid()).is_err());
+}
+
+// An out-of-bounds data read fails CLOSED rather than panicking or reading adjacent bytes.
+#[test]
+fn constraint_expr_fails_closed_on_truncated_data() {
+    let mut short = <ExprVault as verified_anchor::AccountData>::DISCRIMINATOR.to_vec();
+    short.push(1); // `bump` present, `amount` truncated away
+    let mut v = acct_with_data(Pubkey::new_unique(), short);
+    // `Account<'info, T>` implies `owner = crate::ID`; without it validate stops before the expr.
+    v.owner = crate::ID;
+    let mut u = acct_with_data(Pubkey::new_unique(), vec![]);
+    let accts = [v.info(), u.info()];
+    assert!(CheckExpr::validate(&accts, &[], &any_pid()).is_err());
+}
+
+/// The rejection names the constraint the developer wrote. Pinned because `expr_source` renders
+/// TOKENS (stable `Span::source_text()` cannot join a multi-token span and returns only the
+/// first token — it once produced a bare `"vault"` here).
+#[test]
+fn constraint_violation_names_the_expression() {
+    let mut v = acct_with_data(Pubkey::new_unique(), expr_vault_data(1, 999));
+    v.owner = crate::ID;
+    let mut u = acct_with_data(Pubkey::new_unique(), vec![]);
+    let accts = [v.info(), u.info()];
+    assert_eq!(
+        CheckExpr::validate(&accts, &[], &any_pid()),
+        Err(VAError::ConstraintViolated { field: "vault", expr: "vault.amount >= 1000" })
+    );
+}
+
+/// The `Display` arm, and the distinct `ProgramError` custom code.
+#[test]
+fn constraint_violated_renders_and_maps_to_a_distinct_code() {
+    let e = VAError::ConstraintViolated { field: "vault", expr: "vault.amount >= 1000" };
+    assert_eq!(e.to_string(), "account `vault` violates constraint `vault.amount >= 1000`");
+    assert_eq!(
+        solana_program::program_error::ProgramError::from(e),
+        solana_program::program_error::ProgramError::Custom(18)
+    );
+}
+
+/// `a.key() != b.key()` renders through the same path, method calls and all.
+#[test]
+fn constraint_violation_renders_method_calls() {
+    let k = Pubkey::new_unique();
+    let mut c = acct_with_data(k, vec![]);
+    let mut d = acct_with_data(k, vec![]);
+    assert_eq!(
+        CheckKeyExpr::validate(&[c.info(), d.info()], &[], &any_pid()),
+        Err(VAError::ConstraintViolated { field: "a", expr: "a.key() != b.key()" })
+    );
+}
+
+// ── M10 Task 12, fix round 1: `nat`/`int` comparisons ─────────────────────────────────────
+//
+// `evalCmp` used to refuse to ORDER a `nat` against an `int` while `eq`/`ne` stayed total and
+// answered from constructor equality. That combination was worse than a refusal:
+//
+//   * `delta == 0` on an `i64` field was `false` for every `delta`  — a brick;
+//   * `delta != 0` was `true`  for every `delta`, zero included     — a TAUTOLOGY, i.e. a guard
+//     the developer wrote and the framework silently disabled. It passes every happy-path test
+//     and surfaces only as an exploit.
+//
+// Both Lean and the codegen now compare numerically. These fixtures pin all four shapes.
+
+#[derive(
+    verified_anchor::borsh::BorshSerialize,
+    verified_anchor::borsh::BorshDeserialize,
+    verified_anchor::AccountData,
+)]
+#[borsh(crate = "::verified_anchor::borsh")]
+struct SignedVault {
+    delta: i64,
+    amount: u64,
+}
+
+fn signed_vault_data(delta: i64, amount: u64) -> Vec<u8> {
+    let mut d = <SignedVault as verified_anchor::AccountData>::DISCRIMINATOR.to_vec();
+    d.extend_from_slice(&delta.to_le_bytes());
+    d.extend_from_slice(&amount.to_le_bytes());
+    d
+}
+
+fn signed_vault(delta: i64, amount: u64) -> Acct {
+    let mut a = acct_with_data(Pubkey::new_unique(), signed_vault_data(delta, amount));
+    a.owner = crate::ID;
+    a
+}
+
+// `delta != 0` — the tautology. Must now REJECT when `delta == 0`.
+#[derive(VerifiedAccounts)]
+struct SignedNeZero<'info> {
+    #[account(constraint = vault.delta != 0)]
+    vault: verified_anchor::Account<'info, SignedVault>,
+}
+
+#[test]
+fn signed_ne_unsigned_literal_is_not_a_tautology() {
+    let mut zero = signed_vault(0, 0);
+    assert_eq!(
+        SignedNeZero::validate(&[zero.info()], &[], &any_pid()),
+        Err(VAError::ConstraintViolated { field: "vault", expr: "vault.delta != 0" }),
+        "`delta != 0` MUST reject a zero delta. Constructor equality made this ACCEPT for every \
+         delta — a security check silently disabled."
+    );
+    // …and still accepts a genuinely non-zero delta, in both signs.
+    let mut neg = signed_vault(-1, 0);
+    assert_eq!(SignedNeZero::validate(&[neg.info()], &[], &any_pid()), Ok(()));
+    let mut pos = signed_vault(7, 0);
+    assert_eq!(SignedNeZero::validate(&[pos.info()], &[], &any_pid()), Ok(()));
+}
+
+// `delta == 0` — the mirror-image brick. Must now ACCEPT when `delta == 0`.
+#[derive(VerifiedAccounts)]
+struct SignedEqZero<'info> {
+    #[account(constraint = vault.delta == 0)]
+    vault: verified_anchor::Account<'info, SignedVault>,
+}
+
+#[test]
+fn signed_eq_unsigned_literal_is_not_a_brick() {
+    let mut zero = signed_vault(0, 0);
+    assert_eq!(SignedEqZero::validate(&[zero.info()], &[], &any_pid()), Ok(()));
+    let mut neg = signed_vault(-1, 0);
+    assert!(SignedEqZero::validate(&[neg.info()], &[], &any_pid()).is_err());
+}
+
+// `delta < 0` — mixed ORDERING, which used to be unevaluable and therefore always rejected.
+#[derive(VerifiedAccounts)]
+struct SignedLtZero<'info> {
+    #[account(constraint = vault.delta < 0)]
+    vault: verified_anchor::Account<'info, SignedVault>,
+}
+
+#[test]
+fn signed_ordering_against_an_unsigned_literal_evaluates() {
+    let mut neg = signed_vault(-1, 0);
+    assert_eq!(SignedLtZero::validate(&[neg.info()], &[], &any_pid()), Ok(()));
+    let mut zero = signed_vault(0, 0);
+    assert!(SignedLtZero::validate(&[zero.info()], &[], &any_pid()).is_err());
+    let mut pos = signed_vault(5, 0);
+    assert!(SignedLtZero::validate(&[pos.info()], &[], &any_pid()).is_err());
+}
+
+// FIELD vs FIELD across signedness — the case no macro-side literal-type inference could have
+// fixed, since neither side is a literal.
+#[derive(VerifiedAccounts)]
+struct SignedMixedFields<'info> {
+    #[account(constraint = vault.delta < vault.amount)]
+    vault: verified_anchor::Account<'info, SignedVault>,
+}
+
+#[test]
+fn mixed_signedness_field_comparison_evaluates() {
+    let mut a = signed_vault(-1, 3); // -1 < 3
+    assert_eq!(SignedMixedFields::validate(&[a.info()], &[], &any_pid()), Ok(()));
+    let mut b = signed_vault(5, 3); // 5 < 3 is false
+    assert!(SignedMixedFields::validate(&[b.info()], &[], &any_pid()).is_err());
+    // THE BOUNDARY: a u64 whose value exceeds i64 range is still ordered correctly against a
+    // negative i64. (`u128`/`i128` in the generated code, but the same widening question.)
+    let mut c = signed_vault(-1, u64::MAX);
+    assert_eq!(SignedMixedFields::validate(&[c.info()], &[], &any_pid()), Ok(()));
+}
+
+// A `u128` field beyond `i128::MAX` — the one place the generated Rust needs a guard Lean does
+// not, because `Int` is unbounded there but `u128`/`i128` do not share a range here.
+#[derive(
+    verified_anchor::borsh::BorshSerialize,
+    verified_anchor::borsh::BorshDeserialize,
+    verified_anchor::AccountData,
+)]
+#[borsh(crate = "::verified_anchor::borsh")]
+struct WideVault {
+    big: u128,
+}
+
+#[derive(VerifiedAccounts)]
+struct WideGtNeg<'info> {
+    #[account(constraint = vault.big > -1)]
+    vault: verified_anchor::Account<'info, WideVault>,
+}
+
+#[test]
+fn unsigned_beyond_i128_max_compares_greater_than_a_negative() {
+    let mut d = <WideVault as verified_anchor::AccountData>::DISCRIMINATOR.to_vec();
+    // i128::MAX + 1: casting this to i128 would wrap to i128::MIN and invert the comparison.
+    d.extend_from_slice(&(i128::MAX as u128 + 1).to_le_bytes());
+    let mut a = acct_with_data(Pubkey::new_unique(), d);
+    a.owner = crate::ID;
+    assert_eq!(WideGtNeg::validate(&[a.info()], &[], &any_pid()), Ok(()));
+}
+
+/// The non-numeric pairings are UNCHANGED by the widening: `key < nat` is still unevaluable, so
+/// the strictness fixtures above keep testing what they were written to test.
+#[test]
+fn non_numeric_ordering_still_rejects() {
+    let mut u = acct(true, false);
+    assert!(StrictOr::validate(&[u.info()], &[], &any_pid()).is_err());
+}
+
+// ── M10 Task 13: the escape hatch for out-of-sublanguage `constraint = <expr>` ─────────────
+//
+// An expression the proof cannot model is NOT a compile error and NOT silently dropped: it is
+// run VERBATIM as Rust in `try_accounts`, after deserialisation, and listed in
+// `UNPROVEN_CHECKS`. Real Anchor accepts arbitrary expressions, so a drop-in framework must
+// too; the honest answer is "runs, but outside the proof", never "quietly stopped running".
+
+fn is_blessed(k: &Pubkey) -> bool {
+    k.as_ref()[0] == 1
+}
+
+/// `is_blessed(..)` is a function call — outside the sublanguage. It MUST still compile.
+#[derive(VerifiedAccounts)]
+struct CheckEscapeHatch<'info> {
+    #[account(constraint = is_blessed(a.key))]
+    a: UncheckedAccount<'info>,
+}
+
+#[test]
+fn escape_hatch_compiles_and_is_listed_as_unproven() {
+    assert_eq!(CheckEscapeHatch::UNPROVEN_CHECKS, &["is_blessed(a.key)"]);
+}
+
+#[test]
+fn escape_hatch_omits_the_check_from_the_lean_spec() {
+    let s = CheckEscapeHatch::lean_spec();
+    assert!(!s.contains("Constraint.expr"), "unproven check leaked into the spec: {s}");
+}
+
+/// The point of the whole task: the hatch must RUN. A hatch that compiles but never executes
+/// is exactly the silent-no-op bug this task exists to close.
+#[test]
+fn escape_hatch_runs_in_try_accounts() {
+    use verified_anchor::Accounts;
+    let mut good = [0u8; 32];
+    good[0] = 1;
+    let mut a = acct_with_data(Pubkey::new_from_array(good), vec![]);
+    let accts = [a.info()];
+    assert!(CheckEscapeHatch::try_accounts(&any_pid(), &accts, &[]).is_ok());
+
+    let mut b = acct_with_data(Pubkey::new_from_array([2u8; 32]), vec![]);
+    let accts2 = [b.info()];
+    assert!(matches!(
+        CheckEscapeHatch::try_accounts(&any_pid(), &accts2, &[]),
+        Err(VAError::ConstraintViolated { field: "a", expr: "is_blessed(a.key)" })
+    ));
+}
+
+/// `validate()` alone cannot see an unproven check (it runs before deserialisation), so the
+/// hatch is a `try_accounts`-only guarantee. Pinned so nobody "fixes" the asymmetry by
+/// pretending `validate` enforces it.
+#[test]
+fn escape_hatch_is_not_enforced_by_validate_alone() {
+    let mut b = acct_with_data(Pubkey::new_from_array([2u8; 32]), vec![]);
+    assert_eq!(CheckEscapeHatch::validate(&[b.info()], &[], &any_pid()), Ok(()));
+}
+
+// `a.key() == crate::ID` is the single most common real-Anchor `constraint` idiom, and — like
+// `is_blessed(..)` above — it runs through the hatch (`crate::ID` is a module-qualified path,
+// which `compile_expr` cannot resolve to an operand). Its execution path is identical to the
+// `is_blessed` case already proven above; this pins the idiom itself, not a new mechanism.
+#[derive(VerifiedAccounts)]
+struct CheckKeyEqCrateId<'info> {
+    #[account(constraint = a.key() == crate::ID)]
+    a: UncheckedAccount<'info>,
+}
+
+#[test]
+fn key_eq_crate_id_is_listed_as_unproven() {
+    assert_eq!(CheckKeyEqCrateId::UNPROVEN_CHECKS, &["a.key() == crate::ID"]);
+}
+
+#[test]
+fn key_eq_crate_id_runs_in_try_accounts() {
+    use verified_anchor::Accounts;
+    let mut matching = acct_with_data(crate::ID, vec![]);
+    assert!(CheckKeyEqCrateId::try_accounts(&any_pid(), &[matching.info()], &[]).is_ok());
+
+    let mut other = acct_with_data(Pubkey::new_unique(), vec![]);
+    assert!(matches!(
+        CheckKeyEqCrateId::try_accounts(&any_pid(), &[other.info()], &[]),
+        Err(VAError::ConstraintViolated { field: "a", expr: "a.key() == crate::ID" })
+    ));
+}
+
+/// A proven check and an unproven one coexist; the proven one is still in the spec.
+#[derive(VerifiedAccounts)]
+struct CheckMixed<'info> {
+    #[account(constraint = a.key() != b.key())]
+    #[account(constraint = is_blessed(a.key))]
+    a: UncheckedAccount<'info>,
+    b: UncheckedAccount<'info>,
+}
+
+#[test]
+fn mixed_struct_proves_what_it_can() {
+    assert_eq!(CheckMixed::UNPROVEN_CHECKS, &["is_blessed(a.key)"]);
+    assert!(CheckMixed::lean_spec().contains("Constraint.expr"));
+}
+
+/// Both halves of the mixed struct enforce: the proven one in `validate`, the unproven one in
+/// `try_accounts`.
+#[test]
+fn mixed_struct_enforces_both_halves() {
+    use verified_anchor::Accounts;
+    let mut blessed = [0u8; 32];
+    blessed[0] = 1;
+    // proven half violated (a.key() == b.key()) → rejected by validate, inside try_accounts.
+    let mut a = acct_with_data(Pubkey::new_from_array(blessed), vec![]);
+    let mut b = acct_with_data(Pubkey::new_from_array(blessed), vec![]);
+    assert!(matches!(
+        CheckMixed::try_accounts(&any_pid(), &[a.info(), b.info()], &[]),
+        Err(VAError::ConstraintViolated { field: "a", expr: "a.key() != b.key()" })
+    ));
+    // unproven half violated (a is not blessed) → rejected by the hatch.
+    let mut c = acct_with_data(Pubkey::new_from_array([2u8; 32]), vec![]);
+    let mut d = acct_with_data(Pubkey::new_unique(), vec![]);
+    assert!(matches!(
+        CheckMixed::try_accounts(&any_pid(), &[c.info(), d.info()], &[]),
+        Err(VAError::ConstraintViolated { field: "a", expr: "is_blessed(a.key)" })
+    ));
+    // both satisfied → accepted.
+    let mut e = acct_with_data(Pubkey::new_from_array(blessed), vec![]);
+    let mut f = acct_with_data(Pubkey::new_unique(), vec![]);
+    assert!(CheckMixed::try_accounts(&any_pid(), &[e.info(), f.info()], &[]).is_ok());
+}
+
+/// A fully proven struct carries an EMPTY `UNPROVEN_CHECKS` — that is what makes the constant
+/// worth reporting on.
+#[test]
+fn a_fully_proven_struct_has_no_unproven_checks() {
+    assert!(CheckExpr::UNPROVEN_CHECKS.is_empty());
+    assert!(CheckKeyExpr::UNPROVEN_CHECKS.is_empty());
+}
+
+// ── M10 Task 13 (cont.): the CONST-SELECTED branch for a SUBLANGUAGE expression whose target
+// field is not locatable in the user's Borsh descriptor ────────────────────────────────────
+//
+// `constraint = vault.amount >= 1000` IS inside the sublanguage (a field comparison), unlike
+// `is_blessed(..)` above. But `[u8; NAME_LEN]`'s length is a NAMED CONST, not an integer
+// literal, so `map_ty` cannot evaluate it (M10 Task 15b: only literal lengths are — a
+// const-generic or named-const width is left unmapped rather than guessed) and
+// `#[derive(AccountData)]` truncates `NameVault`'s layout at `name`, never recording `amount`:
+// the proven byte-level check would `locate` == `None` and reject EVERY account. The macro
+// const-selects instead — `validate`'s proven arm is switched off and the SAME expression,
+// recompiled against the deserialised struct via `layout::FieldValue`, runs in `try_accounts`.
+// `tests/ui/pass/constraint_expr_unlocatable.rs` pins that this COMPILES; the tests below pin
+// that the fallback actually ENFORCES — the other half of the same silent-no-op risk this task
+// exists to close, and a different code path than the `is_blessed` cases above (that one never
+// touches `locatability_cond` at all, because a function call carries no data-field operand).
+const NAME_LEN: usize = 32;
+
+#[verified_anchor::account]
+struct NameVault {
+    name: [u8; NAME_LEN],
+    amount: u64,
+}
+
+#[derive(VerifiedAccounts)]
+struct CheckUnlocatable<'info> {
+    #[account(constraint = vault.amount >= 1000)]
+    vault: verified_anchor::Account<'info, NameVault>,
+}
+
+fn name_vault_data(name: [u8; 32], amount: u64) -> Vec<u8> {
+    let mut d = <NameVault as verified_anchor::AccountData>::DISCRIMINATOR.to_vec();
+    d.extend_from_slice(&name);
+    d.extend_from_slice(&amount.to_le_bytes());
+    d
+}
+
+#[test]
+fn unlocatable_field_is_listed_as_unproven() {
+    assert_eq!(CheckUnlocatable::UNPROVEN_CHECKS, &["vault.amount >= 1000"]);
+}
+
+#[test]
+fn unlocatable_field_omits_the_check_from_the_lean_spec() {
+    let s = CheckUnlocatable::lean_spec();
+    assert!(!s.contains("Constraint.expr"), "unproven check leaked into the spec: {s}");
+}
+
+/// The point of this whole block: the const-selected fallback must RUN, both ways.
+#[test]
+fn unlocatable_field_check_runs_in_try_accounts() {
+    use verified_anchor::Accounts;
+    // `Account<'info, T>` implies `owner = crate::ID`; `validate` stops before the constraint
+    // otherwise, which would make this test pass for the wrong reason.
+    let mut good = acct_with_data(Pubkey::new_unique(), name_vault_data([0u8; 32], 1000));
+    good.owner = crate::ID;
+    assert!(CheckUnlocatable::try_accounts(&any_pid(), &[good.info()], &[]).is_ok());
+
+    let mut bad = acct_with_data(Pubkey::new_unique(), name_vault_data([0u8; 32], 999));
+    bad.owner = crate::ID;
+    assert!(matches!(
+        CheckUnlocatable::try_accounts(&any_pid(), &[bad.info()], &[]),
+        Err(VAError::ConstraintViolated { field: "vault", expr: "vault.amount >= 1000" })
+    ));
+}
+
+/// Mirrors `escape_hatch_is_not_enforced_by_validate_alone`: the byte-level path cannot run
+/// this check (the descriptor cannot locate `amount`), so `validate` alone must NOT reject a
+/// bad `amount` — only `try_accounts`, after deserialisation, does.
+#[test]
+fn unlocatable_field_is_not_enforced_by_validate_alone() {
+    let mut bad = acct_with_data(Pubkey::new_unique(), name_vault_data([0u8; 32], 999));
+    bad.owner = crate::ID;
+    assert_eq!(CheckUnlocatable::validate(&[bad.info()], &[], &any_pid()), Ok(()));
+}
+
+// ── M10 Task 15b: `map_ty` gains a `[T; N]` arm ─────────────────────────────────────────────
+//
+// Before this task ANY fixed-size array field (not just `[u8; 32]`) had no `map_ty` arm at
+// all, so `#[derive(AccountData)]`'s cutoff truncated the descriptor there — every field
+// after it silently dropped out of `LAYOUT`/`LAYOUT_LEAN`. This pins that a field placed
+// AFTER a `[u8; 32]` now survives.
+#[test]
+fn account_data_maps_fixed_size_arrays() {
+    use verified_anchor::layout::Ty;
+
+    #[derive(
+        verified_anchor::borsh::BorshSerialize,
+        verified_anchor::borsh::BorshDeserialize,
+        verified_anchor::AccountData,
+    )]
+    #[borsh(crate = "::verified_anchor::borsh")]
+    struct ArrayProbe {
+        root: [u8; 32],
+        authority: solana_program::pubkey::Pubkey,
+    }
+
+    match <ArrayProbe as verified_anchor::AccountData>::LAYOUT {
+        Ty::Struct(fs) => {
+            // the field AFTER the array must survive the cutoff
+            assert_eq!(fs.len(), 2, "array field truncated the descriptor");
+            assert_eq!(fs[0].0, "root");
+            assert_eq!(fs[0].1, Ty::Array(&Ty::U8, 32));
+            assert_eq!(fs[1].0, "authority");
+        }
+        other => panic!("expected a struct descriptor, got {other:?}"),
+    }
+    assert_eq!(
+        <ArrayProbe as verified_anchor::AccountData>::LAYOUT_LEAN,
+        "(Ty.struct [(\"root\", (Ty.array Ty.u8 32)), (\"authority\", Ty.pubkey)])"
+    );
+}
+
+// ── C1: a NON-SCALAR data field must never compile into the proven core ─────────────────────
+//
+// `locatability_cond` used to gate on `has_top_level_field` — NAME PRESENCE ONLY. That was
+// correct while the only failure mode was a TRUNCATED descriptor: an unmappable field ended
+// the layout, so "present" implied "scalar". M10 Task 15b taught `map_ty` to map `[T; N]` for a
+// literal `N`, which made array fields PRESENT in `T::LAYOUT` — while `read_val` still refuses
+// every aggregate (`Array | String | Vec | Option | Struct` → `None`, mirroring Lean's
+// `readVal`). The gate then said "proven" for a field the reader cannot decode: `UNPROVEN_CHECKS`
+// came back empty (the developer is TOLD it is proven), the Lean spec carried the constraint,
+// the obligation discharged honestly — and `validate` rejected a MATCHING value, because a
+// contract that faithfully models "readVal returns none" faithfully rejects everything.
+//
+// Pre-M10 this shape was a `compile_error!`; M10 turned a loud error into a SILENT ALWAYS-REJECT,
+// which the milestone names as its worst failure mode. The gate is now `is_scalar_readable_field`
+// — present AND of a type `read_val` decodes — and the false branch routes to the VERBATIM-Rust
+// hatch (`proven_if: None`), never to the recompiled `deser` form: `layout::FieldValue` returns
+// `None` for exactly the same aggregate set, so that branch would brick identically.
+
+#[verified_anchor::account]
+struct RootVault {
+    root: [u8; 32],
+    amount: u64,
+}
+
+#[derive(VerifiedAccounts)]
+#[instruction(root: [u8; 32])]
+struct ArrayEq<'info> {
+    #[account(constraint = vault.root == root)]
+    vault: verified_anchor::Account<'info, RootVault>,
+}
+
+fn root_vault_data(root: [u8; 32], amount: u64) -> Vec<u8> {
+    let mut d = <RootVault as verified_anchor::AccountData>::DISCRIMINATOR.to_vec();
+    d.extend_from_slice(&root);
+    d.extend_from_slice(&amount.to_le_bytes());
+    d
+}
+
+// Incidental but load-bearing coverage for I2 as well: the identifier `root` appears BOTH after
+// a dot (`vault.root`, a data field) and standalone (`root`, the instruction argument). The
+// verbatim hatch must bind the argument and not the field name, so an `idents_in` filter that
+// dropped too much would fail to bind `root` and this fixture would not compile at all.
+#[test]
+fn array_field_equality_is_reported_unproven() {
+    assert_eq!(ArrayEq::UNPROVEN_CHECKS, &["vault.root == root"]);
+}
+
+#[test]
+fn array_field_equality_omits_the_check_from_the_lean_spec() {
+    let s = ArrayEq::lean_spec();
+    assert!(!s.contains("Constraint.expr"), "unreadable-field check leaked into the spec: {s}");
+}
+
+/// The heart of C1: the check must still be ENFORCED, both ways. Before the fix this returned
+/// `Err(ConstraintViolated)` even for a MATCHING root.
+#[test]
+fn array_field_equality_is_enforced_through_try_accounts() {
+    use verified_anchor::Accounts;
+    let root = [9u8; 32];
+    let mut instr = Vec::new();
+    instr.extend_from_slice(&root);
+
+    // matching root → ACCEPTED (this is the assertion the bug broke).
+    let mut good = acct_with_data(Pubkey::new_unique(), root_vault_data(root, 1));
+    good.owner = crate::ID;
+    assert!(ArrayEq::try_accounts(&any_pid(), &[good.info()], &instr).is_ok());
+
+    // differing root → REJECTED.
+    let mut bad = acct_with_data(Pubkey::new_unique(), root_vault_data([1u8; 32], 1));
+    bad.owner = crate::ID;
+    assert!(matches!(
+        ArrayEq::try_accounts(&any_pid(), &[bad.info()], &instr),
+        Err(VAError::ConstraintViolated { field: "vault", expr: "vault.root == root" })
+    ));
+}
+
+// The same shape for a VARIABLE-length aggregate. `String` is never even locatable at a fixed
+// offset, but it IS present in the descriptor, so the old name-presence gate accepted it too.
+#[verified_anchor::account]
+struct NamedVault {
+    label: String,
+    amount: u64,
+}
+
+#[derive(VerifiedAccounts)]
+#[instruction(label: String)]
+struct StringEq<'info> {
+    #[account(constraint = vault.label == label)]
+    vault: verified_anchor::Account<'info, NamedVault>,
+}
+
+fn named_vault_data(label: &str, amount: u64) -> Vec<u8> {
+    let mut d = <NamedVault as verified_anchor::AccountData>::DISCRIMINATOR.to_vec();
+    d.extend_from_slice(&(label.len() as u32).to_le_bytes());
+    d.extend_from_slice(label.as_bytes());
+    d.extend_from_slice(&amount.to_le_bytes());
+    d
+}
+
+#[test]
+fn string_field_equality_is_reported_unproven() {
+    assert_eq!(StringEq::UNPROVEN_CHECKS, &["vault.label == label"]);
+}
+
+#[test]
+fn string_field_equality_is_enforced_through_try_accounts() {
+    use verified_anchor::Accounts;
+    let mut instr = Vec::new();
+    instr.extend_from_slice(&3u32.to_le_bytes());
+    instr.extend_from_slice(b"abc");
+
+    let mut good = acct_with_data(Pubkey::new_unique(), named_vault_data("abc", 1));
+    good.owner = crate::ID;
+    assert!(StringEq::try_accounts(&any_pid(), &[good.info()], &instr).is_ok());
+
+    let mut bad = acct_with_data(Pubkey::new_unique(), named_vault_data("xyz", 1));
+    bad.owner = crate::ID;
+    assert!(matches!(
+        StringEq::try_accounts(&any_pid(), &[bad.info()], &instr),
+        Err(VAError::ConstraintViolated { field: "vault", expr: "vault.label == label" })
+    ));
+}
+
+/// The other half of the C1 fix, and the one that keeps the milestone worth having: a SCALAR
+/// data field on the SAME struct as an array must still be PROVEN. A fix that routed every
+/// data-field constraint to the hatch would pass every test above while destroying M10's value.
+#[derive(VerifiedAccounts)]
+struct ScalarStillProven<'info> {
+    #[account(constraint = vault.amount >= 1000)]
+    vault: verified_anchor::Account<'info, RootVault>,
+}
+
+#[test]
+fn a_scalar_field_after_an_array_is_still_proven() {
+    assert!(
+        ScalarStillProven::UNPROVEN_CHECKS.is_empty(),
+        "the C1 fix over-approximated and pushed a provable scalar to the hatch: {:?}",
+        ScalarStillProven::UNPROVEN_CHECKS
+    );
+    let s = ScalarStillProven::lean_spec();
+    assert!(s.contains("Constraint.expr"), "proven check missing from the spec: {s}");
+}
+
+#[test]
+fn a_scalar_field_after_an_array_is_enforced_by_the_proven_core() {
+    let mut good = acct_with_data(Pubkey::new_unique(), root_vault_data([0u8; 32], 1000));
+    good.owner = crate::ID;
+    assert_eq!(ScalarStillProven::validate(&[good.info()], &[], &any_pid()), Ok(()));
+
+    let mut bad = acct_with_data(Pubkey::new_unique(), root_vault_data([0u8; 32], 999));
+    bad.owner = crate::ID;
+    assert!(matches!(
+        ScalarStillProven::validate(&[bad.info()], &[], &any_pid()),
+        Err(VAError::ConstraintViolated { field: "vault", .. })
+    ));
+}
+
+// ── C1's TWIN: an ORDERING over a non-numeric field ─────────────────────────────────────────
+//
+// The C1 fix asked the gate "can `read_val` DECODE this field?". `Pubkey` decodes, so a
+// `Pubkey` ordering passed the gate — but `evalCmp` (and `Cmp::apply`, its Rust mirror) only
+// ORDERS numeric `Value`s; for any other pair the four orderings yield `none`. So
+// `constraint = pool.mint_a < pool.mint_b` — the canonical AMM mint-ordering idiom — was
+// reported PROVEN, entered the Lean spec, discharged honestly, and then rejected EVERY account,
+// including ones whose mints really are ordered. Same silent always-reject as C1, one question
+// deeper: the gate must ask "can `evalCmp` ORDER it?", not merely "can `read_val` read it?".
+
+#[verified_anchor::account]
+struct Pool {
+    mint_a: Pubkey,
+    mint_b: Pubkey,
+    fee_bps: u64,
+    frozen: bool,
+}
+
+fn pool_data(mint_a: Pubkey, mint_b: Pubkey, fee_bps: u64, frozen: bool) -> Vec<u8> {
+    let mut d = <Pool as verified_anchor::AccountData>::DISCRIMINATOR.to_vec();
+    d.extend_from_slice(mint_a.as_ref());
+    d.extend_from_slice(mint_b.as_ref());
+    d.extend_from_slice(&fee_bps.to_le_bytes());
+    d.push(frozen as u8);
+    d
+}
+
+/// Two `Pubkey`s that really are ordered, so "accepts when the ordering holds" is testable.
+fn ordered_mints() -> (Pubkey, Pubkey) {
+    let lo = Pubkey::new_from_array([1u8; 32]);
+    let hi = Pubkey::new_from_array([2u8; 32]);
+    (lo, hi)
+}
+
+#[derive(VerifiedAccounts)]
+struct MintOrder<'info> {
+    #[account(constraint = pool.mint_a < pool.mint_b)]
+    pool: verified_anchor::Account<'info, Pool>,
+}
+
+#[test]
+fn pubkey_ordering_is_reported_unproven() {
+    assert_eq!(MintOrder::UNPROVEN_CHECKS, &["pool.mint_a < pool.mint_b"]);
+}
+
+#[test]
+fn pubkey_ordering_omits_the_check_from_the_lean_spec() {
+    let s = MintOrder::lean_spec();
+    assert!(!s.contains("Constraint.expr"), "unorderable check leaked into the spec: {s}");
+}
+
+/// The heart of the twin: still ENFORCED, both ways. Before the fix the accepting direction
+/// returned `Err(ConstraintViolated)` even though `mint_a < mint_b` held.
+#[test]
+fn pubkey_ordering_is_enforced_through_try_accounts() {
+    use verified_anchor::Accounts;
+    let (lo, hi) = ordered_mints();
+
+    let mut good = acct_with_data(Pubkey::new_unique(), pool_data(lo, hi, 30, false));
+    good.owner = crate::ID;
+    assert!(MintOrder::try_accounts(&any_pid(), &[good.info()], &[]).is_ok());
+
+    let mut bad = acct_with_data(Pubkey::new_unique(), pool_data(hi, lo, 30, false));
+    bad.owner = crate::ID;
+    assert!(matches!(
+        MintOrder::try_accounts(&any_pid(), &[bad.info()], &[]),
+        Err(VAError::ConstraintViolated { field: "pool", expr: "pool.mint_a < pool.mint_b" })
+    ));
+}
+
+/// THE OVER-CORRECTION TRIPWIRE. `constraint = vault.authority == authority.key()` is one of
+/// the most common constraints in all of Anchor, and `evalCmp`'s `eq`/`ne` arms are TOTAL over
+/// any two `Value`s — so `Pubkey` EQUALITY must stay PROVEN. A fix that demoted every
+/// non-numeric comparison would pass every assertion above and gut the milestone.
+#[derive(VerifiedAccounts)]
+struct PubkeyEqStillProven<'info> {
+    #[account(constraint = vault.authority == authority.key())]
+    vault: verified_anchor::Account<'info, OwnerVault>,
+    authority: UncheckedAccount<'info>,
+}
+
+#[test]
+fn pubkey_equality_is_still_proven() {
+    assert!(
+        PubkeyEqStillProven::UNPROVEN_CHECKS.is_empty(),
+        "the ordering fix over-corrected and demoted Pubkey EQUALITY to the hatch: {:?}",
+        PubkeyEqStillProven::UNPROVEN_CHECKS
+    );
+    let s = PubkeyEqStillProven::lean_spec();
+    assert!(s.contains("Constraint.expr"), "proven Pubkey equality missing from the spec: {s}");
+}
+
+#[test]
+fn pubkey_equality_is_enforced_by_the_proven_core() {
+    let auth = Pubkey::new_unique();
+    let mut vault = acct_with_data(Pubkey::new_unique(), owner_vault_data(auth));
+    vault.owner = crate::ID;
+    let mut authority = acct_with_data(auth, vec![]);
+    assert_eq!(
+        PubkeyEqStillProven::validate(&[vault.info(), authority.info()], &[], &any_pid()),
+        Ok(())
+    );
+
+    let mut vault = acct_with_data(Pubkey::new_unique(), owner_vault_data(Pubkey::new_unique()));
+    vault.owner = crate::ID;
+    let mut other = acct_with_data(Pubkey::new_unique(), vec![]);
+    assert!(matches!(
+        PubkeyEqStillProven::validate(&[vault.info(), other.info()], &[], &any_pid()),
+        Err(VAError::ConstraintViolated { field: "vault", .. })
+    ));
+}
+
+/// `bool` equality is the other total-over-`Value` case and must likewise stay proven, and a
+/// NUMERIC ordering on the same struct must stay proven too — the fix narrows orderings by
+/// OPERAND TYPE, not by operator.
+#[derive(VerifiedAccounts)]
+struct PoolScalarsStillProven<'info> {
+    #[account(constraint = pool.frozen == false)]
+    #[account(constraint = pool.fee_bps <= 10000)]
+    pool: verified_anchor::Account<'info, Pool>,
+}
+
+#[test]
+fn bool_equality_and_numeric_ordering_are_still_proven() {
+    assert!(
+        PoolScalarsStillProven::UNPROVEN_CHECKS.is_empty(),
+        "the ordering fix over-corrected: {:?}",
+        PoolScalarsStillProven::UNPROVEN_CHECKS
+    );
+}
+
+#[test]
+fn numeric_ordering_on_the_pool_is_enforced_by_the_proven_core() {
+    let (lo, hi) = ordered_mints();
+    let mut good = acct_with_data(Pubkey::new_unique(), pool_data(lo, hi, 10000, false));
+    good.owner = crate::ID;
+    assert_eq!(PoolScalarsStillProven::validate(&[good.info()], &[], &any_pid()), Ok(()));
+
+    let mut bad = acct_with_data(Pubkey::new_unique(), pool_data(lo, hi, 10001, false));
+    bad.owner = crate::ID;
+    assert!(matches!(
+        PoolScalarsStillProven::validate(&[bad.info()], &[], &any_pid()),
+        Err(VAError::ConstraintViolated { field: "pool", .. })
+    ));
+}
+
+/// The STATIC half of the orderability gate: `a.key() < b.key()` carries no data-field operand
+/// at all, so the readability gate never looked at it — yet `evalCmp` refuses it just the same,
+/// and it was reported proven and rejected every account. `Orderable::Never` decides this one at
+/// macro-expansion time; no descriptor can rescue it.
+#[derive(VerifiedAccounts)]
+struct KeyOrder<'info> {
+    #[account(constraint = a.key() < b.key())]
+    a: UncheckedAccount<'info>,
+    b: UncheckedAccount<'info>,
+}
+
+#[test]
+fn key_ordering_between_two_accounts_is_unproven_but_enforced() {
+    use verified_anchor::Accounts;
+    assert_eq!(KeyOrder::UNPROVEN_CHECKS, &["a.key() < b.key()"]);
+    assert!(!KeyOrder::lean_spec().contains("Constraint.expr"));
+
+    let lo = Pubkey::new_from_array([1u8; 32]);
+    let hi = Pubkey::new_from_array([2u8; 32]);
+    let (mut x, mut y) = (acct_with_data(lo, vec![]), acct_with_data(hi, vec![]));
+    assert!(KeyOrder::try_accounts(&any_pid(), &[x.info(), y.info()], &[]).is_ok());
+
+    let (mut x, mut y) = (acct_with_data(hi, vec![]), acct_with_data(lo, vec![]));
+    assert!(matches!(
+        KeyOrder::try_accounts(&any_pid(), &[x.info(), y.info()], &[]),
+        Err(VAError::ConstraintViolated { field: "a", expr: "a.key() < b.key()" })
+    ));
 }
