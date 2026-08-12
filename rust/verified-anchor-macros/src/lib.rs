@@ -560,6 +560,13 @@ struct InstrArgs {
     /// list lets the resolution pass tell "you never declared this" apart from "you declared it
     /// but we dropped it", and refuse both instead of falling through.
     declared: Vec<String>,
+    /// Every declared argument WITH its Rust type, in declaration order.
+    ///
+    /// The escape hatch (M10 Task 13) decodes arguments with Borsh SEQUENTIALLY from the front
+    /// of `instr_data`, so it needs the declared type of every argument up to the one it wants
+    /// — including the ones `mappable` had to drop, whose Borsh offset is uncomputable from a
+    /// descriptor but perfectly computable by decoding what precedes them.
+    all: Vec<(String, syn::Type)>,
 }
 
 /// Is this `Vec<...>` segment's element type exactly `u8`?
@@ -579,12 +586,14 @@ fn vec_elem_is_u8(seg: &syn::PathSegment) -> bool {
 fn parse_instruction_args(input: &DeriveInput) -> syn::Result<InstrArgs> {
     let attr = match input.attrs.iter().find(|a| a.path().is_ident("instruction")) {
         Some(a) => a,
-        None => return Ok(InstrArgs { mappable: Vec::new(), declared: Vec::new() }),
+        None => return Ok(InstrArgs {
+            mappable: Vec::new(), declared: Vec::new(), all: Vec::new() }),
     };
     let parser = Punctuated::<syn::PatType, Token![,]>::parse_terminated;
     let parsed = attr.parse_args_with(parser)?;
     let mut mappable = Vec::new();
     let mut declared = Vec::new();
+    let mut all = Vec::new();
     let mut past_cutoff = false;
     for pt in parsed {
         let name = match pt.pat.as_ref() {
@@ -592,6 +601,7 @@ fn parse_instruction_args(input: &DeriveInput) -> syn::Result<InstrArgs> {
             other => return Err(syn::Error::new_spanned(other, "expected an argument name")),
         };
         declared.push(name.clone());
+        all.push((name.clone(), (*pt.ty).clone()));
         // Keep walking after the cutoff purely to finish recording names — nothing past it can
         // be mapped, because its offset depends on the width we could not compute.
         if past_cutoff {
@@ -603,7 +613,48 @@ fn parse_instruction_args(input: &DeriveInput) -> syn::Result<InstrArgs> {
             None => past_cutoff = true,
         }
     }
-    Ok(InstrArgs { mappable, declared })
+    Ok(InstrArgs { mappable, declared, all })
+}
+
+/// Borsh bindings for the `#[instruction(...)]` arguments an escape-hatch expression names.
+///
+/// Emitted INSIDE the check's own block, never at the top of `try_accounts`: decoding is
+/// fallible, and an argument needed only by a check that a const-selected branch switched off
+/// must not be decoded (let alone fail) in builds where that branch is dead.
+fn instr_arg_binds(
+    all: &[(String, syn::Type)],
+    used: &std::collections::HashSet<String>,
+    field_names: &[String],
+    field: &str,
+    src: &str,
+    span: proc_macro2::Span,
+) -> TokenStream2 {
+    // A name that is both an argument and an account field resolves to the field, which is
+    // already bound; decoding it here would shadow the field the developer meant.
+    let wanted = |n: &String| used.contains(n) && !field_names.contains(n);
+    let Some(last) = all.iter().rposition(|(n, _)| wanted(n)) else {
+        return quote! {};
+    };
+    let decodes: Vec<TokenStream2> = all[..=last].iter().map(|(n, ty)| {
+        // Arguments before the last referenced one are decoded only to advance the cursor.
+        let pat = match wanted(n) {
+            true => {
+                let id = syn::Ident::new(n, span);
+                quote! { #id }
+            }
+            false => quote! { _ },
+        };
+        quote! {
+            let #pat: #ty = <#ty as ::verified_anchor::borsh::BorshDeserialize>::deserialize(
+                &mut __va_args)
+                .map_err(|_| ::verified_anchor::VAError::ConstraintViolated {
+                    field: #field, expr: #src })?;
+        }
+    }).collect();
+    quote! {
+        let mut __va_args: &[u8] = instr_data;
+        #(#decodes)*
+    }
 }
 
 /// Does any field resolve a `name.as_bytes()` seed? Gates emission of the `INSTR_ARGS` const.
@@ -732,22 +783,248 @@ fn expr_maps(specs: &[FieldSpec])
     (index_of, inner_ty)
 }
 
-/// A readable rendering of a `constraint = <expr>`, for the `ConstraintViolated` error. Purely
-/// diagnostic — nothing branches on it.
+/// A readable rendering of a `constraint = <expr>`, for the `ConstraintViolated` error and for
+/// `UNPROVEN_CHECKS`. Purely diagnostic — nothing branches on it.
 ///
 /// Deliberately NOT `Span::source_text()`: on stable, `Spanned::span()` for a multi-token
 /// expression cannot join spans and falls back to the FIRST token, so `vault.amount >= 1000`
-/// came back as just `"vault"`. Rendering the tokens is the only faithful option; the
-/// substitutions below only undo `quote!`'s uniform token spacing.
+/// came back as just `"vault"`. Rendering the tokens is the only faithful option.
 /// `tests/behavior.rs::constraint_violation_names_the_expression` pins the result.
 fn expr_source(e: &Expr) -> String {
-    // Only these two: `quote!` puts spaces around every token, and the sublanguage's only
-    // multi-token idioms are field access (`vault . amount`) and zero-argument method calls
-    // (`a . key ()`). A blanket `" (" -> "("` would also glue grouping parens to the operator
-    // before them (`a &&(b || c)`), so it is left alone.
-    quote!(#e).to_string()
-        .replace(" . ", ".")
-        .replace(" ()", "()")
+    let mut out = String::new();
+    let mut st = RenderState { prev: Prev::Start, prev_joint: false, run_role: Prev::Start };
+    render_tokens(quote!(#e), &mut out, &mut st);
+    out
+}
+
+/// What the previously emitted token was, which is all the spacing rules need to know.
+#[derive(Clone, Copy, PartialEq)]
+enum Prev {
+    /// Nothing yet, or just after an opening delimiter.
+    Start,
+    /// An identifier or a literal.
+    Word,
+    /// A closing delimiter (or a postfix `?`): an operand ENDED here.
+    Close,
+    /// A punct in binary/separator position — `>=`, `,`. A space follows it.
+    Op,
+    /// A punct in prefix position (`&x`, `-1`) or a glue punct (`.`, `::`, a macro `!`).
+    /// No space follows it.
+    Prefix,
+}
+
+struct RenderState {
+    prev: Prev,
+    /// The previous punct was `Spacing::Joint`, i.e. the next punct continues the SAME
+    /// operator (`>` `=` -> `>=`). Multi-char operators must not be split by a space.
+    prev_joint: bool,
+    /// The role assigned to the first punct of the current joint run, inherited by the rest.
+    run_role: Prev,
+}
+
+/// Render a token stream the way a human would have written it.
+///
+/// `quote!` puts a space around EVERY token, which turns `is_blessed(a.key)` into
+/// `is_blessed (a . key)` — unreadable in an error message and in the `UNPROVEN_CHECKS`
+/// report, where arbitrary developer Rust now shows up (M10 Task 13). The two string
+/// substitutions this replaced only covered field access and empty argument lists.
+///
+/// The one genuinely ambiguous case is prefix vs binary `&`/`*`/`-`: they are told apart by
+/// what precedes them, exactly as a parser does — an operator with nothing to its left to
+/// consume (start of stream, or right after another operator) is a prefix operator, so
+/// `a.owner == &crate::ID` renders with the `&` glued to `crate`.
+fn render_tokens(ts: TokenStream2, out: &mut String, st: &mut RenderState) {
+    use proc_macro2::{Delimiter, Spacing, TokenTree};
+    for tt in ts {
+        match tt {
+            TokenTree::Ident(_) | TokenTree::Literal(_) => {
+                if matches!(st.prev, Prev::Word | Prev::Close | Prev::Op) {
+                    out.push(' ');
+                }
+                out.push_str(&tt.to_string());
+                st.prev = Prev::Word;
+                st.prev_joint = false;
+            }
+            TokenTree::Group(g) => {
+                let (open, close) = match g.delimiter() {
+                    Delimiter::Parenthesis => ("(", ")"),
+                    Delimiter::Bracket => ("[", "]"),
+                    Delimiter::Brace => ("{ ", " }"),
+                    // An invisible group is exactly what a macro-substituted expression looks
+                    // like after token capture; it must render as nothing at all.
+                    Delimiter::None => ("", ""),
+                };
+                // A call/index binds tight (`f(x)`, `v[0]`); a grouping paren after an
+                // operator does not (`a && (b || c)`).
+                let is_call = matches!(st.prev, Prev::Word | Prev::Close)
+                    && !matches!(g.delimiter(), Delimiter::Brace | Delimiter::None);
+                if !is_call && matches!(st.prev, Prev::Word | Prev::Close | Prev::Op) {
+                    out.push(' ');
+                }
+                out.push_str(open);
+                st.prev = Prev::Start;
+                st.prev_joint = false;
+                render_tokens(g.stream(), out, st);
+                out.push_str(close);
+                st.prev = Prev::Close;
+                st.prev_joint = false;
+            }
+            TokenTree::Punct(p) => {
+                let ch = p.as_char();
+                let alone = p.spacing() == Spacing::Alone;
+                // A macro bang: `matches!(..)`. `!=` is a JOINT `!`, so the two cannot collide.
+                let macro_bang = ch == '!' && alone && st.prev == Prev::Word;
+                let space = if st.prev_joint {
+                    false
+                } else if macro_bang {
+                    false
+                } else {
+                    match ch {
+                        '.' | ',' | ';' | ':' | '#' | '?' => false,
+                        _ => matches!(st.prev, Prev::Word | Prev::Close | Prev::Op),
+                    }
+                };
+                if space {
+                    out.push(' ');
+                }
+                out.push(ch);
+                let role = if st.prev_joint {
+                    st.run_role
+                } else if macro_bang {
+                    Prev::Prefix
+                } else {
+                    match ch {
+                        ',' | ';' => Prev::Op,
+                        '.' | ':' | '#' => Prev::Prefix,
+                        // Postfix `?`: an operand ended here, like a closing delimiter.
+                        '?' => Prev::Close,
+                        // Binary only if there is an operand to its left.
+                        _ => match matches!(st.prev, Prev::Word | Prev::Close) {
+                            true => Prev::Op,
+                            false => Prev::Prefix,
+                        },
+                    }
+                };
+                st.run_role = role;
+                st.prev = role;
+                st.prev_joint = p.spacing() == Spacing::Joint;
+            }
+        }
+    }
+}
+
+/// The inner `T` of the `Account<'info, T>` at account index `i`.
+///
+/// Only a typed account can carry a data-field operand (`expr::operand` builds `Operand::Field`
+/// for nothing else), so the lookup always resolves.
+fn inner_ty_at(i: usize, ctx: &crate::expr::ExprCtx) -> syn::Type {
+    ctx.inner_ty.iter()
+        .find(|(nm, _)| ctx.index_of.get(*nm) == Some(&i))
+        .map(|(_, t)| t.clone())
+        .expect("data-field operand on a field with no typed layout")
+}
+
+/// The const-bool guard "every data field this expression reads is locatable in the USER's
+/// Borsh descriptor", or `None` when the expression reads no data field at all (then it is
+/// proven unconditionally).
+///
+/// WHY THIS IS A CONST AND NOT A BUILD ERROR. `#[derive(AccountData)]` truncates the layout at
+/// the first field whose type `map_ty` cannot map, so `constraint = vault.amount >= 1000` over
+/// `struct NameVault { name: [u8; 32], amount: u64 }` reads a field the descriptor does not
+/// record. Before M10 Task 13 that was a `const assert!` — a HARD BUILD ERROR on a program real
+/// Anchor compiles and enforces, which the prime directive forbids. It cannot be a silent
+/// runtime `None` either: `locate` failing rejects EVERY account, bricking the instruction.
+///
+/// So the decision is deferred to the user's crate, where the descriptor is finally known, and
+/// taken by a CONST so both arms are compiled but only one survives: locatable => the proven
+/// byte-level check in `validate`; not locatable => the developer's verbatim Rust in
+/// `try_accounts`, listed in `UNPROVEN_CHECKS` and absent from `lean_spec`. Enforcement never
+/// stops; only the proof does.
+fn locatability_cond(v: &crate::expr::VExpr, ctx: &crate::expr::ExprCtx) -> Option<TokenStream2> {
+    let ops = v.field_operands();
+    if ops.is_empty() {
+        return None;
+    }
+    let terms: Vec<TokenStream2> = ops.iter().map(|(i, seg)| {
+        let inner = inner_ty_at(*i, ctx);
+        quote! {
+            ::verified_anchor::layout::has_top_level_field(
+                <#inner as ::verified_anchor::AccountData>::LAYOUT, #seg)
+        }
+    }).collect();
+    Some(quote! { #(#terms)&&* })
+}
+
+/// One `constraint = <expr>` the proof does not (or may not) cover.
+struct UnprovenCheck<'a> {
+    /// The field the attribute was written on — the `field` of the `ConstraintViolated` error.
+    field: String,
+    /// The developer's source text, for the error and for `UNPROVEN_CHECKS`.
+    src: String,
+    /// The expression, run VERBATIM as Rust in `try_accounts`.
+    expr: &'a Expr,
+    /// `None` — outside the sublanguage, so unproven in every build; the hatch runs the
+    /// developer's Rust verbatim. `Some((cond, v))` — INSIDE the sublanguage, but only
+    /// provable when `cond` (a const bool evaluated in the user's crate) holds; the hatch
+    /// re-evaluates the compiled form `v` against the deserialised struct otherwise.
+    ///
+    /// The two arms differ deliberately. A statically unproven expression is arbitrary Rust
+    /// and must run as Rust. A conditionally unproven one is a SUBLANGUAGE expression, and
+    /// re-emitting it as Rust would change its meaning: the sublanguage compares `nat` against
+    /// `int` numerically (`vault.delta < vault.amount`, `vault.big > -1`) where Rust refuses
+    /// the comparison outright, and it is strict where Rust's `||` short-circuits. Running the
+    /// compiled form keeps the fallback semantically identical to the check it replaces.
+    proven_if: Option<(TokenStream2, crate::expr::VExpr)>,
+}
+
+/// Every constraint expression that must run through the escape hatch, in field order.
+///
+/// This is the FULL complement of `validate_body`'s expression arm: an expression is either
+/// compiled into the proven core there, or it lands here. Nothing may fall between the two —
+/// that gap is precisely the silent no-op M10 Task 13 exists to close.
+fn unproven_checks<'a>(specs: &'a [FieldSpec], ctx: &crate::expr::ExprCtx) -> Vec<UnprovenCheck<'a>> {
+    let mut out = Vec::new();
+    for spec in specs {
+        for c in &spec.constraints {
+            let Constraint::Expr(e) = c else { continue };
+            let proven_if = match crate::expr::compile_expr(e, ctx) {
+                // Outside the sublanguage (a call, a macro, a module-qualified path, …).
+                None => None,
+                // Inside it, but its provability depends on the user's descriptor.
+                Some(v) => match locatability_cond(&v, ctx) {
+                    Some(cond) => Some((cond, v)),
+                    // Proven unconditionally — not an escape-hatch check at all.
+                    None => continue,
+                },
+            };
+            out.push(UnprovenCheck {
+                field: spec.name.clone(),
+                src: expr_source(e),
+                expr: e,
+                proven_if,
+            });
+        }
+    }
+    out
+}
+
+/// Every identifier appearing anywhere in `e`, used to decide which account fields and which
+/// `#[instruction(...)]` arguments an escape-hatch expression needs in scope. Deliberately
+/// over-approximate (a method name counts as an identifier): binding one extra name is
+/// harmless, missing one is a build failure on valid Anchor.
+fn idents_in(e: &Expr) -> std::collections::HashSet<String> {
+    fn walk(ts: TokenStream2, out: &mut std::collections::HashSet<String>) {
+        for tt in ts {
+            match tt {
+                proc_macro2::TokenTree::Ident(i) => { out.insert(i.to_string()); }
+                proc_macro2::TokenTree::Group(g) => walk(g.stream(), out),
+                _ => {}
+            }
+        }
+    }
+    let mut out = std::collections::HashSet::new();
+    walk(quote!(#e), &mut out);
+    out
 }
 
 /// `lean_constraint`, plus the `constraint = <expr>` arm that needs name resolution.
@@ -840,10 +1117,30 @@ fn lean_spec_string(specs: &[FieldSpec], instr_args: &[InstrArg]) -> (String, Ve
         index_of: &expr_index_of,
         inner_ty: &expr_inner_ty,
         instr_args: &expr_arg_names,
+        deser: false,
     };
     for spec in specs {
+        // An entry is either a fixed string, or — for a `constraint = <expr>` whose data-field
+        // reads may not be locatable in the user's descriptor — a string chosen by a CONST in
+        // the user's crate: the Lean literal when the expression is provable there, `""` when
+        // it is not and the escape hatch owns it instead. See `locatability_cond`.
+        let mut cs_cond: Vec<TokenStream2> = Vec::new();
         let cs: Vec<String> = spec.constraints.iter()
-            .map(|c| lean_constraint_with(c, &expr_ctx))
+            .map(|c| {
+                let s = lean_constraint_with(c, &expr_ctx);
+                if let Constraint::Expr(e) = c {
+                    if !s.is_empty() {
+                        if let Some(v) = crate::expr::compile_expr(e, &expr_ctx) {
+                            if let Some(cond) = locatability_cond(&v, &expr_ctx) {
+                                cs_cond.push(quote! { if #cond { #s } else { "" } });
+                                // Placeholder: spliced back in below as a runtime hole.
+                                return "@@COND@@".to_string();
+                            }
+                        }
+                    }
+                }
+                s
+            })
             .filter(|s| !s.is_empty())
             .collect();
         let mut cs = cs;   // make mutable
@@ -920,9 +1217,37 @@ fn lean_spec_string(specs: &[FieldSpec], instr_args: &[InstrArg]) -> (String, Ve
         } else {
             "none"
         };
-        let cs_joined = cs.join(", ")
-            .replace("@@BUMP@@", &bump_str)
-            .replace("@@PROG@@", prog_str);
+        let cs_joined = if cs_cond.is_empty() {
+            cs.join(", ")
+                .replace("@@BUMP@@", &bump_str)
+                .replace("@@PROG@@", prog_str)
+        } else {
+            // At least one entry is decided in the user's crate, so the whole constraint list
+            // is joined at RUNTIME: an entry that resolves to `""` must vanish along with its
+            // separator, or the literal would come out as `[Constraint.mut, ]` and not parse.
+            let mut conds = cs_cond.into_iter();
+            let pieces: Vec<TokenStream2> = cs.iter().map(|e| {
+                match e.as_str() {
+                    "@@COND@@" => conds.next().expect("one hole per conditional entry"),
+                    lit => {
+                        let lit = lit.replace("@@BUMP@@", &bump_str).replace("@@PROG@@", prog_str);
+                        quote! { #lit }
+                    }
+                }
+            }).collect();
+            let hole = args.len();
+            args.push(quote! {
+                {
+                    let __cs: &[&str] = &[#(#pieces),*];
+                    __cs.iter()
+                        .filter(|s| !s.is_empty())
+                        .cloned()
+                        .collect::<::std::vec::Vec<&str>>()
+                        .join(", ")
+                }
+            });
+            format!("@@ARG{hole}@@")
+        };
         // `allow_duplicate = <field>` opt-outs → the field's `allowDuplicate` list. Emitted
         // ONLY when non-empty so existing literals keep relying on the Lean field default `[]`.
         let allows: Vec<String> = spec.constraints.iter().filter_map(|c| match c {
@@ -989,6 +1314,7 @@ fn validate_body(specs: &[FieldSpec], instr_args: &[InstrArg]) -> TokenStream2 {
         index_of: &index_of,
         inner_ty: &inner_ty,
         instr_args: &expr_arg_names,
+        deser: false,
     };
     // Carried forward from M10 Task 9: `INSTR_ARGS` used to be emitted only when a SEED
     // referenced an instruction argument. `Operand::InstrArg`'s codegen references the same
@@ -1177,15 +1503,26 @@ fn validate_body(specs: &[FieldSpec], instr_args: &[InstrArg]) -> TokenStream2 {
                 // `constraint = <expr>`: compile into the proven sublanguage, or hand it to the
                 // escape hatch. `compile_expr` returning `None` is NOT an error — real Anchor
                 // accepts arbitrary expressions, so a `compile_error!` here would break the
-                // drop-in property. Until M10 Task 13 lands, such an expression is DROPPED: it
-                // is neither emitted into `lean_spec` nor checked at runtime.
+                // drop-in property. Such an expression is emitted by `derive_verified_accounts`
+                // into `try_accounts` instead (M10 Task 13), where the deserialised bindings it
+                // needs exist; `validate` is the byte-level path and cannot run it. `continue`
+                // here therefore drops NOTHING — see `unproven_checks`.
                 Constraint::Expr(e) => {
                     match crate::expr::compile_expr(e, &expr_ctx) {
                         Some(v) => {
                             if v.uses_instr_arg() {
                                 needs_instr_args = true;
                             }
-                            v.to_tokens_check(name, &expr_source(e), &expr_ctx)
+                            let check = v.to_tokens_check(name, &expr_source(e), &expr_ctx);
+                            // The const-selected branch: when a data field this expression
+                            // reads is missing from the user's descriptor, the proven check
+                            // would reject every account, so it is switched OFF here and the
+                            // developer's verbatim Rust runs in `try_accounts` instead. See
+                            // `locatability_cond`.
+                            match locatability_cond(&v, &expr_ctx) {
+                                Some(cond) => quote! { if #cond { #check } },
+                                None => check,
+                            }
                         }
                         None => continue,
                     }
@@ -1793,6 +2130,92 @@ pub fn derive_verified_accounts(input: TokenStream) -> TokenStream {
 
     let body = validate_body(&specs, &instr_args.mappable);
     let (lean_tpl, lean_args) = lean_spec_string(&specs, &instr_args.mappable);
+
+    // ── The escape hatch (M10 Task 13) ────────────────────────────────────────────────────
+    //
+    // Every `constraint = <expr>` the proven core does not cover runs here instead: verbatim
+    // Rust, in `try_accounts`, AFTER deserialisation, so `vault.amount` means what Anchor
+    // means. It cannot run in `validate` — that is the byte-level path and the deserialised
+    // bindings do not exist yet. Both paths are conjuncts of the same `try_accounts`, so an
+    // unproven check can only ever REJECT MORE than the proof describes: soundness
+    // ("verified-anchor never accepts an account set the contract rejects") is untouched, only
+    // completeness is.
+    let (hatch_index_of, hatch_inner_ty) = expr_maps(&specs);
+    let hatch_arg_names: Vec<String> =
+        instr_args.mappable.iter().map(|a| a.name.clone()).collect();
+    let hatch_ctx = crate::expr::ExprCtx {
+        index_of: &hatch_index_of,
+        inner_ty: &hatch_inner_ty,
+        instr_args: &hatch_arg_names,
+        deser: false,
+    };
+    let unproven = unproven_checks(&specs, &hatch_ctx);
+    let field_names: Vec<String> = specs.iter().map(|s| s.name.clone()).collect();
+
+    // `UNPROVEN_CHECKS` entries. A conditionally proven expression contributes `""` in the
+    // builds where the proof does cover it; the empties are filtered out below so the reported
+    // list is exactly the set of checks running outside the proof in THIS build.
+    let unproven_srcs: Vec<TokenStream2> = unproven.iter().map(|u| {
+        let src = &u.src;
+        match &u.proven_if {
+            Some((cond, _)) => quote! { if #cond { "" } else { #src } },
+            None => quote! { #src },
+        }
+    }).collect();
+
+    let hatch_ctx_deser = crate::expr::ExprCtx {
+        index_of: &hatch_index_of,
+        inner_ty: &hatch_inner_ty,
+        instr_args: &hatch_arg_names,
+        deser: true,
+    };
+    let hatch_checks: Vec<TokenStream2> = unproven.iter().map(|u| {
+        let (field, src, e) = (&u.field, &u.src, u.expr);
+        match &u.proven_if {
+            // Const-selected fallback for a SUBLANGUAGE expression whose data fields the user's
+            // descriptor cannot locate. The proven check in `validate` is switched off by the
+            // same const, so exactly one of the two runs — never neither.
+            Some((cond, v)) => {
+                let check = v.to_tokens_check(field, src, &hatch_ctx_deser);
+                // `Operand::instrArg` reads `instr_data` through this const, which
+                // `try_accounts` only emits for seeds. Shadowing it locally is harmless and
+                // keeps the fallback self-contained.
+                let args_decl = match v.uses_instr_arg() {
+                    true => instr_args_const(&instr_args.mappable),
+                    false => quote! {},
+                };
+                quote! { if !(#cond) { #args_decl #check } }
+            }
+            // Outside the sublanguage: the developer's Rust, verbatim.
+            None => {
+                let used = idents_in(e);
+                // Bind every account field the expression names, by its DECLARED name, so the
+                // developer's Rust reads exactly what the same source reads under real Anchor:
+                // `Account<'info, T>` derefs to the deserialised `T`, the untyped wrappers
+                // deref to `AccountInfo`. Only the names actually used are bound — an unused
+                // binding would warn in the user's crate, which they cannot silence.
+                let binds: Vec<TokenStream2> = specs.iter().filter(|sp| used.contains(&sp.name))
+                    .map(|sp| {
+                        let id = syn::Ident::new(&sp.name, name.span());
+                        quote! { let #id = &__self.#id; }
+                    }).collect();
+                let arg_binds = instr_arg_binds(
+                    &instr_args.all, &used, &field_names, field, src, name.span());
+                quote! {
+                    {
+                        #(#binds)*
+                        #arg_binds
+                        if !(#e) {
+                            return ::core::result::Result::Err(
+                                ::verified_anchor::VAError::ConstraintViolated {
+                                    field: #field, expr: #src });
+                        }
+                    }
+                }
+            }
+        }
+    }).collect();
+
     let lifecycle = lifecycle_body(&specs);
     let has_lifecycle = specs.iter().any(|s| s.constraints.iter().any(|c|
         matches!(c, Constraint::InitMarker | Constraint::Close(_)
@@ -1910,6 +2333,57 @@ pub fn derive_verified_accounts(input: TokenStream) -> TokenStream {
     };
     let accounts_impl_target = if has_info { quote! { #name<'info> } } else { quote! { #name } };
     let lean_spec_impl_target = if has_info { quote! { #name<'_> } } else { quote! { #name } };
+    // `UNPROVEN_CHECKS`: the source text of every check running OUTSIDE the proof, reported by
+    // `cargo verified-anchor check`. Host-only, like `lean_spec`: it is a development-time
+    // report, and there is no reason to carry the strings in the on-chain `.so`.
+    let any_conditional = unproven.iter().any(|u| u.proven_if.is_some());
+    let unproven_all = syn::Ident::new(&format!("__VA_UNPROVEN_ALL_{}", name), name.span());
+    let unproven_len = syn::Ident::new(&format!("__VA_UNPROVEN_LEN_{}", name), name.span());
+    let unproven_arr = syn::Ident::new(&format!("__VA_UNPROVEN_{}", name), name.span());
+    // A conditionally proven expression contributes `""` in builds where the proof covers it.
+    // Those blanks are filtered out AT COMPILE TIME so the reported list has no holes; the
+    // length is a const, so it has to be counted in a const too.
+    let (unproven_items, unproven_slice) = if any_conditional {
+        (
+            quote! {
+                #[cfg(not(target_os = "solana"))]
+                #[doc(hidden)]
+                #[allow(non_upper_case_globals)]
+                const #unproven_all: &[&str] = &[#(#unproven_srcs),*];
+                #[cfg(not(target_os = "solana"))]
+                #[doc(hidden)]
+                #[allow(non_upper_case_globals)]
+                const #unproven_len: usize = {
+                    let mut n = 0usize;
+                    let mut i = 0usize;
+                    while i < #unproven_all.len() {
+                        if !#unproven_all[i].is_empty() { n += 1; }
+                        i += 1;
+                    }
+                    n
+                };
+                #[cfg(not(target_os = "solana"))]
+                #[doc(hidden)]
+                #[allow(non_upper_case_globals)]
+                const #unproven_arr: [&str; #unproven_len] = {
+                    let mut out = [""; #unproven_len];
+                    let mut i = 0usize;
+                    let mut j = 0usize;
+                    while i < #unproven_all.len() {
+                        if !#unproven_all[i].is_empty() {
+                            out[j] = #unproven_all[i];
+                            j += 1;
+                        }
+                        i += 1;
+                    }
+                    out
+                };
+            },
+            quote! { &#unproven_arr },
+        )
+    } else {
+        (quote! {}, quote! { &[#(#unproven_srcs),*] })
+    };
 
     // The Bumps init inside `try_accounts` re-derives seeds, so it needs the same const.
     let try_accounts_instr_args = if uses_arg_field(&specs) {
@@ -1919,6 +2393,7 @@ pub fn derive_verified_accounts(input: TokenStream) -> TokenStream {
     };
 
     let expanded = quote! {
+        #unproven_items
         #validate_impl
         // See the note in `account_data_derive`: `target_os = "solana"` is not a known
         // check-cfg value, so the derive must silence the warning on its users' behalf.
@@ -1939,6 +2414,14 @@ pub fn derive_verified_accounts(input: TokenStream) -> TokenStream {
             pub fn lean_spec() -> ::std::string::String {
                 ::std::format!(#lean_tpl #(, #lean_args)*)
             }
+            /// Source text of every `constraint = <expr>` that runs OUTSIDE the proof — as
+            /// raw Rust in `try_accounts`, after deserialisation, with Anchor's semantics
+            /// rather than `evalExpr`'s. Empty for a fully proven struct.
+            ///
+            /// These checks still RUN, and being extra `&&` conjuncts they can only reject
+            /// more than the proof describes; what they are not is modelled in Lean.
+            #[cfg(not(target_os = "solana"))]
+            pub const UNPROVEN_CHECKS: &'static [&'static str] = #unproven_slice;
             #lifecycle
         }
         #bumps_struct_decl
@@ -1952,6 +2435,10 @@ pub fn derive_verified_accounts(input: TokenStream) -> TokenStream {
                 #try_accounts_instr_args
                 <Self as ::verified_anchor::Validate>::validate(accounts, instr_data, program_id)?;
                 let __self = Self { #(#field_inits),* };
+                // The escape hatch: checks the proof does not cover, run verbatim against the
+                // DESERIALISED bindings. After `validate` and after `__self`, because that is
+                // the only point where `vault.amount` can mean what Anchor means.
+                #(#hatch_checks)*
                 let __bumps = #bumps_struct_init;
                 ::core::result::Result::Ok((__self, __bumps))
             }

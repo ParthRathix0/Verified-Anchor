@@ -1728,3 +1728,181 @@ fn non_numeric_ordering_still_rejects() {
     let mut u = acct(true, false);
     assert!(StrictOr::validate(&[u.info()], &[], &any_pid()).is_err());
 }
+
+// ── M10 Task 13: the escape hatch for out-of-sublanguage `constraint = <expr>` ─────────────
+//
+// An expression the proof cannot model is NOT a compile error and NOT silently dropped: it is
+// run VERBATIM as Rust in `try_accounts`, after deserialisation, and listed in
+// `UNPROVEN_CHECKS`. Real Anchor accepts arbitrary expressions, so a drop-in framework must
+// too; the honest answer is "runs, but outside the proof", never "quietly stopped running".
+
+fn is_blessed(k: &Pubkey) -> bool {
+    k.as_ref()[0] == 1
+}
+
+/// `is_blessed(..)` is a function call — outside the sublanguage. It MUST still compile.
+#[derive(VerifiedAccounts)]
+struct CheckEscapeHatch<'info> {
+    #[account(constraint = is_blessed(a.key))]
+    a: UncheckedAccount<'info>,
+}
+
+#[test]
+fn escape_hatch_compiles_and_is_listed_as_unproven() {
+    assert_eq!(CheckEscapeHatch::UNPROVEN_CHECKS, &["is_blessed(a.key)"]);
+}
+
+#[test]
+fn escape_hatch_omits_the_check_from_the_lean_spec() {
+    let s = CheckEscapeHatch::lean_spec();
+    assert!(!s.contains("Constraint.expr"), "unproven check leaked into the spec: {s}");
+}
+
+/// The point of the whole task: the hatch must RUN. A hatch that compiles but never executes
+/// is exactly the silent-no-op bug this task exists to close.
+#[test]
+fn escape_hatch_runs_in_try_accounts() {
+    use verified_anchor::Accounts;
+    let mut good = [0u8; 32];
+    good[0] = 1;
+    let mut a = acct_with_data(Pubkey::new_from_array(good), vec![]);
+    let accts = [a.info()];
+    assert!(CheckEscapeHatch::try_accounts(&any_pid(), &accts, &[]).is_ok());
+
+    let mut b = acct_with_data(Pubkey::new_from_array([2u8; 32]), vec![]);
+    let accts2 = [b.info()];
+    assert!(matches!(
+        CheckEscapeHatch::try_accounts(&any_pid(), &accts2, &[]),
+        Err(VAError::ConstraintViolated { field: "a", expr: "is_blessed(a.key)" })
+    ));
+}
+
+/// `validate()` alone cannot see an unproven check (it runs before deserialisation), so the
+/// hatch is a `try_accounts`-only guarantee. Pinned so nobody "fixes" the asymmetry by
+/// pretending `validate` enforces it.
+#[test]
+fn escape_hatch_is_not_enforced_by_validate_alone() {
+    let mut b = acct_with_data(Pubkey::new_from_array([2u8; 32]), vec![]);
+    assert_eq!(CheckEscapeHatch::validate(&[b.info()], &[], &any_pid()), Ok(()));
+}
+
+/// A proven check and an unproven one coexist; the proven one is still in the spec.
+#[derive(VerifiedAccounts)]
+struct CheckMixed<'info> {
+    #[account(constraint = a.key() != b.key())]
+    #[account(constraint = is_blessed(a.key))]
+    a: UncheckedAccount<'info>,
+    b: UncheckedAccount<'info>,
+}
+
+#[test]
+fn mixed_struct_proves_what_it_can() {
+    assert_eq!(CheckMixed::UNPROVEN_CHECKS, &["is_blessed(a.key)"]);
+    assert!(CheckMixed::lean_spec().contains("Constraint.expr"));
+}
+
+/// Both halves of the mixed struct enforce: the proven one in `validate`, the unproven one in
+/// `try_accounts`.
+#[test]
+fn mixed_struct_enforces_both_halves() {
+    use verified_anchor::Accounts;
+    let mut blessed = [0u8; 32];
+    blessed[0] = 1;
+    // proven half violated (a.key() == b.key()) → rejected by validate, inside try_accounts.
+    let mut a = acct_with_data(Pubkey::new_from_array(blessed), vec![]);
+    let mut b = acct_with_data(Pubkey::new_from_array(blessed), vec![]);
+    assert!(matches!(
+        CheckMixed::try_accounts(&any_pid(), &[a.info(), b.info()], &[]),
+        Err(VAError::ConstraintViolated { field: "a", expr: "a.key() != b.key()" })
+    ));
+    // unproven half violated (a is not blessed) → rejected by the hatch.
+    let mut c = acct_with_data(Pubkey::new_from_array([2u8; 32]), vec![]);
+    let mut d = acct_with_data(Pubkey::new_unique(), vec![]);
+    assert!(matches!(
+        CheckMixed::try_accounts(&any_pid(), &[c.info(), d.info()], &[]),
+        Err(VAError::ConstraintViolated { field: "a", expr: "is_blessed(a.key)" })
+    ));
+    // both satisfied → accepted.
+    let mut e = acct_with_data(Pubkey::new_from_array(blessed), vec![]);
+    let mut f = acct_with_data(Pubkey::new_unique(), vec![]);
+    assert!(CheckMixed::try_accounts(&any_pid(), &[e.info(), f.info()], &[]).is_ok());
+}
+
+/// A fully proven struct carries an EMPTY `UNPROVEN_CHECKS` — that is what makes the constant
+/// worth reporting on.
+#[test]
+fn a_fully_proven_struct_has_no_unproven_checks() {
+    assert!(CheckExpr::UNPROVEN_CHECKS.is_empty());
+    assert!(CheckKeyExpr::UNPROVEN_CHECKS.is_empty());
+}
+
+// ── M10 Task 13 (cont.): the CONST-SELECTED branch for a SUBLANGUAGE expression whose target
+// field is not locatable in the user's Borsh descriptor ────────────────────────────────────
+//
+// `constraint = vault.amount >= 1000` IS inside the sublanguage (a field comparison), unlike
+// `is_blessed(..)` above. But `[u8; 32]` has no `map_ty` arm, so `#[derive(AccountData)]`
+// truncates `NameVault`'s layout at `name` and never records `amount`: the proven byte-level
+// check would `locate` == `None` and reject EVERY account. The macro const-selects instead —
+// `validate`'s proven arm is switched off and the SAME expression, recompiled against the
+// deserialised struct via `layout::FieldValue`, runs in `try_accounts`.
+// `tests/ui/pass/constraint_expr_unlocatable.rs` pins that this COMPILES; the tests below pin
+// that the fallback actually ENFORCES — the other half of the same silent-no-op risk this task
+// exists to close, and a different code path than the `is_blessed` cases above (that one never
+// touches `locatability_cond` at all, because a function call carries no data-field operand).
+#[verified_anchor::account]
+struct NameVault {
+    name: [u8; 32],
+    amount: u64,
+}
+
+#[derive(VerifiedAccounts)]
+struct CheckUnlocatable<'info> {
+    #[account(constraint = vault.amount >= 1000)]
+    vault: verified_anchor::Account<'info, NameVault>,
+}
+
+fn name_vault_data(name: [u8; 32], amount: u64) -> Vec<u8> {
+    let mut d = <NameVault as verified_anchor::AccountData>::DISCRIMINATOR.to_vec();
+    d.extend_from_slice(&name);
+    d.extend_from_slice(&amount.to_le_bytes());
+    d
+}
+
+#[test]
+fn unlocatable_field_is_listed_as_unproven() {
+    assert_eq!(CheckUnlocatable::UNPROVEN_CHECKS, &["vault.amount >= 1000"]);
+}
+
+#[test]
+fn unlocatable_field_omits_the_check_from_the_lean_spec() {
+    let s = CheckUnlocatable::lean_spec();
+    assert!(!s.contains("Constraint.expr"), "unproven check leaked into the spec: {s}");
+}
+
+/// The point of this whole block: the const-selected fallback must RUN, both ways.
+#[test]
+fn unlocatable_field_check_runs_in_try_accounts() {
+    use verified_anchor::Accounts;
+    // `Account<'info, T>` implies `owner = crate::ID`; `validate` stops before the constraint
+    // otherwise, which would make this test pass for the wrong reason.
+    let mut good = acct_with_data(Pubkey::new_unique(), name_vault_data([0u8; 32], 1000));
+    good.owner = crate::ID;
+    assert!(CheckUnlocatable::try_accounts(&any_pid(), &[good.info()], &[]).is_ok());
+
+    let mut bad = acct_with_data(Pubkey::new_unique(), name_vault_data([0u8; 32], 999));
+    bad.owner = crate::ID;
+    assert!(matches!(
+        CheckUnlocatable::try_accounts(&any_pid(), &[bad.info()], &[]),
+        Err(VAError::ConstraintViolated { field: "vault", expr: "vault.amount >= 1000" })
+    ));
+}
+
+/// Mirrors `escape_hatch_is_not_enforced_by_validate_alone`: the byte-level path cannot run
+/// this check (the descriptor cannot locate `amount`), so `validate` alone must NOT reject a
+/// bad `amount` — only `try_accounts`, after deserialisation, does.
+#[test]
+fn unlocatable_field_is_not_enforced_by_validate_alone() {
+    let mut bad = acct_with_data(Pubkey::new_unique(), name_vault_data([0u8; 32], 999));
+    bad.owner = crate::ID;
+    assert_eq!(CheckUnlocatable::validate(&[bad.info()], &[], &any_pid()), Ok(()));
+}

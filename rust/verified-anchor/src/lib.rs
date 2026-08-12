@@ -12,7 +12,7 @@ pub mod account_data;
 pub use account_data::{AccountData, ProgramId, System};
 
 pub mod account;
-pub use account::{Account, Signer, Program, SystemAccount, UncheckedAccount};
+pub use account::{Account, Key, Signer, Program, SystemAccount, UncheckedAccount};
 
 pub mod context;
 pub use context::Context;

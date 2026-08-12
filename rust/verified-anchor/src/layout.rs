@@ -30,6 +30,64 @@ pub enum Value<'a> {
     Bytes(&'a [u8]),
 }
 
+/// A field of a DESERIALISED account struct, read as the same `Value` the byte-level
+/// `read_val` would have produced from the same field.
+///
+/// WHY THIS EXISTS (M10 Task 13). `#[derive(AccountData)]` truncates the Borsh descriptor at
+/// the first field whose type it cannot map, so `constraint = vault.amount >= 1000` over
+/// `struct NameVault { name: [u8; 32], amount: u64 }` names a field the descriptor does not
+/// record. `locate` would return `None` there and the constraint would reject EVERY account.
+/// The macro therefore const-selects: locatable => the proven byte-level check in `validate`;
+/// not locatable => the SAME expression re-evaluated in `try_accounts` against the
+/// deserialised struct, through this trait.
+///
+/// The impls mirror `read_val` ARM FOR ARM, including its refusals: an aggregate yields `None`
+/// there, so it yields `None` here, and a constraint reading one fails closed on both paths.
+/// The fallback is unproven — Lean cannot model a read the descriptor does not describe — but
+/// it is the same SEMANTICS, which is what keeps the two paths from disagreeing about a
+/// program that moves between them when a field type becomes mappable.
+pub trait FieldValue {
+    fn field_value(&self) -> Option<Value<'static>>;
+}
+
+macro_rules! field_value_nat {
+    ($($t:ty),*) => { $(
+        impl FieldValue for $t {
+            fn field_value(&self) -> Option<Value<'static>> { Some(Value::Nat(*self as u128)) }
+        }
+    )* };
+}
+macro_rules! field_value_int {
+    ($($t:ty),*) => { $(
+        impl FieldValue for $t {
+            fn field_value(&self) -> Option<Value<'static>> { Some(Value::Int(*self as i128)) }
+        }
+    )* };
+}
+field_value_nat!(u8, u16, u32, u64, u128);
+field_value_int!(i8, i16, i32, i64, i128);
+
+impl FieldValue for bool {
+    fn field_value(&self) -> Option<Value<'static>> { Some(Value::Bool(*self)) }
+}
+impl FieldValue for Pubkey {
+    fn field_value(&self) -> Option<Value<'static>> { Some(Value::Key(*self)) }
+}
+// The aggregates `read_val` refuses. Present so a constraint over one still COMPILES (real
+// Anchor accepts it) and still fails closed, exactly as the byte-level path does.
+impl<T> FieldValue for Option<T> {
+    fn field_value(&self) -> Option<Value<'static>> { None }
+}
+impl<T> FieldValue for Vec<T> {
+    fn field_value(&self) -> Option<Value<'static>> { None }
+}
+impl FieldValue for String {
+    fn field_value(&self) -> Option<Value<'static>> { None }
+}
+impl<T, const N: usize> FieldValue for [T; N] {
+    fn field_value(&self) -> Option<Value<'static>> { None }
+}
+
 impl Ty {
     /// Fixed encoded width, or `None` for variable-length types. Mirrors Lean `Ty.byteSize`.
     pub const fn byte_size(&self) -> Option<usize> {

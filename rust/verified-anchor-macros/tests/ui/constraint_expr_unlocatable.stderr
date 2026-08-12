@@ -1,5 +1,0 @@
-error[E0080]: evaluation panicked: verified-anchor: `constraint = ...` reads `amount`, which cannot be located in the Borsh layout of `NameVault`. Either `amount` is not a field of `NameVault`, or an EARLIER field of `NameVault` has a type verified-anchor cannot map yet (fixed-size arrays, nested structs, enums): the layout is truncated at the first such field, because every offset behind it is unknowable. Move the field ahead of that one, or give that field a mappable type.
-  --> tests/ui/constraint_expr_unlocatable.rs:21:10
-   |
-21 | #[derive(VerifiedAccounts)]
-   |          ^^^^^^^^^^^^^^^^ evaluation of `<BadLayout<'info> as verified_anchor::Validate>::validate::_` failed here

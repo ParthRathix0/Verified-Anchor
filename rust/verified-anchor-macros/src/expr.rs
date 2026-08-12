@@ -72,6 +72,14 @@ pub(crate) struct ExprCtx<'a> {
     pub index_of: &'a std::collections::HashMap<String, usize>,
     pub inner_ty: &'a std::collections::HashMap<String, syn::Type>,
     pub instr_args: &'a [String],
+    /// Read data fields from the DESERIALISED struct (`__self.vault.amount`, via
+    /// `layout::FieldValue`) instead of from the account bytes (`locate` + `read_val`).
+    ///
+    /// Set only for the `try_accounts` fallback the macro const-selects when a field is not
+    /// locatable in the user's Borsh descriptor (M10 Task 13). Every other operand — key,
+    /// owner, lamports, instruction argument — is emitted identically in both modes, because
+    /// `accounts` and `instr_data` are in scope under both names in `try_accounts` too.
+    pub deser: bool,
 }
 
 // ── Parsing: `syn::Expr` -> `VExpr` ───────────────────────────────────────────────────────
@@ -332,6 +340,19 @@ impl Operand {
             // `operand()` above only builds `Field` for those, so `inner_ty` always resolves.
             Operand::Field(i, path) => {
                 let i = *i;
+                if ctx.deser {
+                    // The const-selected fallback: the descriptor cannot locate this field, so
+                    // read it off the deserialised struct instead. Same `Value`, same
+                    // fail-closed refusals — see `layout::FieldValue`.
+                    let fname = ctx.index_of.iter()
+                        .find(|(_, idx)| **idx == i)
+                        .map(|(nm, _)| syn::Ident::new(nm, proc_macro2::Span::call_site()))
+                        .expect("data-field operand on an unknown account index");
+                    let seg = syn::Ident::new(&path[0], proc_macro2::Span::call_site());
+                    return as_static_value(quote! {
+                        ::verified_anchor::layout::FieldValue::field_value(&__self.#fname.#seg)
+                    });
+                }
                 let inner = ctx
                     .inner_ty
                     .iter()
@@ -339,7 +360,6 @@ impl Operand {
                     .map(|(_, t)| t.clone())
                     .expect("Operand::Field on a field with no typed layout");
                 let segs: Vec<&str> = path.iter().map(|s| s.as_str()).collect();
-                let seg0 = segs[0];
                 // The rebind sits INSIDE the `Ok(__data)` arm, while the `Ref` guard is alive.
                 let read = rebind_value(quote! {
                     ::verified_anchor::layout::locate(&__ty, &[#(#segs),*], &__data, 8)
@@ -348,27 +368,14 @@ impl Operand {
                 });
                 as_static_value(quote! {
                     {
-                        // BUILD-TIME guard, the same one `has_one` carries and for the same
-                        // reason: when the target is absent from the descriptor, `locate`
-                        // returns `None` at runtime and the constraint rejects EVERY account,
-                        // including legitimate ones, silently. `#[derive(AccountData)]`
-                        // truncates the layout at the first field whose type `map_ty` cannot
-                        // map, so correct-looking Anchor code can land here. Deciding it from
-                        // the descriptor alone turns a bricked instruction into a build error.
-                        const _: () = ::core::assert!(
-                            ::verified_anchor::layout::has_top_level_field(
-                                <#inner as ::verified_anchor::AccountData>::LAYOUT, #seg0),
-                            ::core::concat!(
-                                "verified-anchor: `constraint = ...` reads `", #seg0,
-                                "`, which cannot be located in the Borsh layout of `",
-                                ::core::stringify!(#inner), "`. Either `", #seg0,
-                                "` is not a field of `", ::core::stringify!(#inner),
-                                "`, or an EARLIER field of `", ::core::stringify!(#inner),
-                                "` has a type verified-anchor cannot map yet (fixed-size arrays, \
-                                 nested structs, enums): the layout is truncated at the first \
-                                 such field, because every offset behind it is unknowable. Move \
-                                 the field ahead of that one, or give that field a mappable type."),
-                        );
+                        // NO build-time guard here any more. It used to be a `const assert!`
+                        // that `#seg0` is locatable in `#inner`'s descriptor — a HARD BUILD
+                        // ERROR on code real Anchor compiles and enforces (a `[u8; 32]` field
+                        // ahead of the target truncates the layout), which the prime directive
+                        // forbids. `lib.rs` now decides locatability with the SAME const fn and
+                        // selects between this proven check and the developer's verbatim Rust,
+                        // so an unlocatable target loses its proof but keeps its enforcement.
+                        // This branch is therefore only ever REACHED when `locate` succeeds.
                         match accounts[#i].try_borrow_data() {
                             ::core::result::Result::Ok(__data) => {
                                 let __ty = <#inner as ::verified_anchor::AccountData>::LAYOUT;
@@ -425,6 +432,46 @@ impl Operand {
                     }
                 })
             }
+        }
+    }
+}
+
+impl Operand {
+    /// The `(account index, first path segment)` of a data-field read, if this is one.
+    ///
+    /// `lib.rs` turns these into the `has_top_level_field` conjunction that decides, IN THE
+    /// USER'S CRATE, whether this expression can be proven at all — the descriptor is only
+    /// knowable there. Only the first segment is checked because `operand()` refuses paths
+    /// longer than one segment.
+    fn field_op(&self) -> Option<(usize, &str)> {
+        match self {
+            Operand::Field(i, path) => Some((*i, path[0].as_str())),
+            _ => None,
+        }
+    }
+}
+
+impl VExpr {
+    /// Every data-field read in this expression. EMPTY means the expression's provability does
+    /// not depend on any Borsh descriptor, so it is proven unconditionally.
+    pub(crate) fn field_operands(&self) -> Vec<(usize, &str)> {
+        let mut out = Vec::new();
+        self.walk_field_operands(&mut out);
+        out
+    }
+
+    fn walk_field_operands<'a>(&'a self, out: &mut Vec<(usize, &'a str)>) {
+        match self {
+            VExpr::Cmp(_, l, r) => {
+                out.extend(l.field_op());
+                out.extend(r.field_op());
+            }
+            VExpr::And(l, r) | VExpr::Or(l, r) => {
+                l.walk_field_operands(out);
+                r.walk_field_operands(out);
+            }
+            VExpr::Not(e) => e.walk_field_operands(out),
+            VExpr::Truthy(o) => out.extend(o.field_op()),
         }
     }
 }
