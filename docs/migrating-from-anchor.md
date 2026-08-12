@@ -25,6 +25,8 @@ A typical struct migrates field-for-field:
 | `#[account(address = <pubkey>)]`              | same                                                        |
 | `#[account(executable)]`                      | same                                                        |
 | `#[account(rent_exempt = enforce)]`           | same (proven with opaque boundary — see bridge)             |
+| `#[account(constraint = <expr>)]`             | same — proven sublanguage where possible, honest escape hatch otherwise (see below) |
+| `#[instruction(amount: u64, name: String)]`   | same — binds named arguments for `seeds`/`constraint` (see below) |
 | `#[account]` on type T                        | `#[derive(BorshSerialize, BorshDeserialize, AccountData)]`  |
 
 Plus: `use verified_anchor::prelude::*;` brings in everything (wrappers, traits, Context, derives).
@@ -70,7 +72,9 @@ the table above. Declaring an account field as `u8` is a compile error; the
 | `realloc::zero = <bool>` | yes | runtime zero-fill flag; no separate proof obligation |
 | `zero` | yes (validation constraint) | `genValidate_sound` / `genConstraint_zero_iff` |
 | `init_if_needed, payer = p, space = n` | yes — typed `Account<'info, T>` required | lifecycle (`initIfNeeded_establishes_post`) |
-| `constraint = expr`, `token::*`, `mint::*`, `associated_token::*` | **no** | rejected at compile time |
+| `constraint = <expr>` | yes — compiled into a proven relational sublanguage when possible, an honest reported escape hatch otherwise | validation (`genValidate_sound` at `M10Subset`) or unproven-but-enforced (see below) |
+| `#[instruction(...)]` argument binding | yes | supporting infrastructure for `seeds`/`constraint` (see below) |
+| `token::*`, `mint::*`, `associated_token::*` | **no** | rejected at compile time (planned M11) |
 
 ## Explicit opt-outs
 
@@ -137,6 +141,155 @@ checks only owner + size, which is the same level of safety stock Anchor provide
 seeds. Adding `seeds` ties account identity to the PDA derivation on both branches and
 closes the reinit-attack surface. See the exploit case studies for a worked example.
 
+## `constraint = <expr>`
+
+Syntax is identical to stock Anchor — verified-anchor never rejects a `constraint = <expr>`
+attribute at compile time, because real Anchor accepts arbitrary Rust there and the drop-in
+guarantee means verified-anchor must too:
+
+```rust
+#[account(constraint = vault.amount >= 1000 && vault.authority == authority.key())]
+pub vault: Account<'info, Vault>,
+```
+
+Each expression is compiled one of two ways:
+
+* **Proven sublanguage.** If the expression is a comparison (or `&&`/`||`/`!` combination of
+  comparisons) over account metadata (`a.key()`, `a.owner`, `a.lamports()`, `a.data_len()`,
+  `a.is_signer`, `a.is_writable`, `a.executable`), a literal, a `#[instruction(...)]` argument,
+  or a Borsh-located field of a typed `Account<'info, T>`, it compiles into the proven
+  relational sublanguage: a byte-level check in `validate`, covered by `genValidate_sound` at
+  `M10Subset`, exactly like `signer`/`owner`/`has_one`. `nat`/`int` fields compare numerically
+  (widened), so a signed and unsigned field can be compared directly.
+* **Honest escape hatch.** Anything else — a function call, a macro, a module-qualified path, a
+  multi-segment data path (`vault.inner.amount`), or a data field the sublanguage cannot locate
+  (behind a float, a Borsh enum, or a fixed-size array whose length is a named const rather than
+  an integer literal) — compiles to the developer's expression run **verbatim as Rust**, inside
+  `try_accounts`, after the account has been Borsh-deserialised (so `vault.amount` means what it
+  means in stock Anchor). This still runs and still rejects on failure
+  (`VAError::ConstraintViolated { field, expr }`) — it is simply not part of the Lean proof.
+
+**How it is reported.** `cargo verified-anchor check` lists every escape-hatch expression per
+struct (the developer's exact source text) in its human report and in `--json` output; pass
+`--deny-unproven` to make any unproven check a CI failure. See
+[`verified-anchor-bridge.md`](verified-anchor-bridge.md) for the exact guarantee this gives you:
+soundness (never accepting what the contract rejects) holds unconditionally, including for
+structs that use the escape hatch — only completeness (whether a legitimate account set is
+accepted) is affected by an unproven check.
+
+## `#[instruction(...)]` argument binding
+
+Syntax is identical to stock Anchor:
+
+```rust
+#[instruction(amount: u64, name: String)]
+#[derive(VerifiedAccounts)]
+pub struct Deposit<'info> {
+    #[account(seeds = [b"vault", name.as_bytes()], bump)]
+    pub vault: Account<'info, Vault>,
+    #[account(constraint = amount > 0)]
+    pub source: Account<'info, Source>,
+}
+```
+
+Supported argument types are the ones `Ty` can express: `u8`..`u128`/`i8`..`i128`, `bool`,
+`Pubkey`, `String`, `Vec<T>` (recursively, for a mappable `T`), and `Option<T>`. An argument of
+an unmappable type (a float, an enum, a user struct `Ty` cannot describe) — or any argument
+declared after one — cannot be used in a `seeds` expression or reach the proven sublanguage;
+using it in `constraint = <expr>` still compiles, via the escape hatch.
+
+**`instr_data` convention — read this before writing a handler.** `instr_data`, as
+`#[instruction(...)]` decodes it and as `validate`/`try_accounts` receive it, is the
+instruction's **argument buffer with any instruction discriminator (sighash) already stripped
+by the caller** — exactly what stock Anchor hands its own `try_accounts`. Decoding starts at
+byte offset 0. **This is a real footgun**: a handler that forwards the raw instruction data
+Solana delivers to the program entrypoint — which, under Anchor's own wire format, begins with
+an 8-byte discriminator — without stripping it first will misdecode every `#[instruction(...)]`
+argument (and every `arg(off, len)` / `bump = arg(off)` offset), silently reading the wrong
+bytes rather than failing loudly. Strip the discriminator (or use the entrypoint macro that
+already does) before calling `try_accounts`.
+
+## `arg(off, len)` (deprecated)
+
+The pre-M10 raw-slice seed form still works and is not going away — removing it would break
+existing verified-anchor users — but new code should prefer `#[instruction(...)]` +
+`name.as_bytes()` / `amount.to_le_bytes()`, which is what real Anchor source actually writes
+and what `cargo verified-anchor check` can additionally cross-check against the argument's
+declared type:
+
+```rust
+// Deprecated, still supported:
+#[account(seeds = [b"vault", arg(0, 8)], bump)]
+// Preferred:
+#[instruction(amount: u64)]
+#[account(seeds = [b"vault", amount.to_le_bytes()], bump)]
+```
+
+## `has_one` — behaviour change if upgrading from < v0.4.0
+
+**Before v0.4.0**, the generated `has_one` check read the target field unconditionally at byte
+offset 8 (immediately after the 8-byte discriminator) — correct only when the `has_one` target
+happened to be the struct's FIRST field. A program whose `has_one` target was declared second,
+third, or later — a perfectly ordinary Anchor struct — was **mis-checked**: the comparison ran
+against the wrong bytes.
+
+**As of v0.4.0**, `#[derive(AccountData)]` emits the struct's real Borsh field layout
+(`T::LAYOUT`), and `has_one = field` locates `field` at its actual offset via `locate`
+(walking past any preceding fixed- or variable-width fields), matching stock Anchor exactly
+regardless of field order. If you were relying on the old (incorrect) offset-8 behaviour for a
+non-first-field target — which was never a documented or intended semantics — re-run your test
+suite; the check now examines different bytes and may reject something it previously accepted
+by accident, or (correctly) reject something it previously passed by accident.
+
+## The seed-spelling boundary
+
+`seeds = [...]` accepts the spellings a real, unmodified Anchor program actually writes.
+Determined empirically by compiling each form against the macro:
+
+**Parses (accepted):**
+
+* `b"vault"`, `b"vault".as_ref()`, `&b"vault"` — byte-string literal
+* `"vault".as_bytes()` — str-literal spelling of the same literal seed
+* `user.key()`, `user.key().as_ref()` — an account field's pubkey
+* `name.as_bytes()` — a `#[instruction(...)]` `String`/`Vec<u8>` argument
+* `amount.to_le_bytes()`, `amount.to_le_bytes().as_ref()`, `&amount.to_le_bytes()` — a
+  `#[instruction(...)]` numeric argument, little-endian (matching Borsh)
+* `authority.as_ref()` — a `#[instruction(...)]` `Pubkey`/`Vec` argument
+* `&blob`, `blob.as_slice()` — a bare byte-slice-shaped argument reached via `&`/`.as_slice()`
+* `arg(off, len)` — the deprecated raw-slice form (still works; see above)
+
+**Does NOT parse — every one of these is a BUILD ERROR, never a silently different PDA:**
+
+* `SEED_CONST`, `SEED_CONST.as_ref()` — a module-level constant; not resolvable to a specific
+  account field or instruction argument at macro time
+* `crate::ID.as_ref()`, or any multi-segment path — same reason
+* `ctx.accounts.user.key().as_ref()` — the macro resolves seeds against the struct's OWN
+  fields, not through a `ctx.accounts.` prefix (real Anchor seed expressions inside the derive
+  don't have a `ctx` in scope either)
+* `user.key.as_ref()` — the `key` FIELD (not the `.key()` METHOD) of an `AccountInfo`; not
+  recognised
+* `&user.key().to_bytes()` — an extra conversion the macro does not peel
+* `vault.owner.as_ref()` — a field of a DESERIALISED account struct; not resolvable at
+  seed-derivation time (`validate` runs before deserialisation)
+* `&name.as_bytes()[..4]` — indexing/slicing a seed source is not supported
+* `flag.as_ref()` on a `bool` argument — no `AsRef<[u8]>` seed spelling for `bool`
+* an `Option<_>` argument used directly as a seed
+* any computed expression (arithmetic, a function call, a ternary-like `if`)
+
+**Why this boundary is safe to publish as-is: every unsupported spelling above is a compile-time
+error, never a silently different PDA.** There is no case where an unrecognised seed expression
+compiles and derives an address other than the one Anchor would derive from the same source —
+it either compiles to the same bytes Anchor would use, or it fails to compile at all.
+
+**`to_be_bytes()` / `to_ne_bytes()` are refused deliberately, not merely unsupported.** Borsh —
+and therefore the PDA Anchor itself derives — is little-endian. `to_be_bytes()` would silently
+derive a *different* address than the same source compiled under real Anchor: a security bug
+that looks like "wrong account", not "won't compile". `to_ne_bytes()` is refused for the same
+reason even though it happens to equal `to_le_bytes()` on-chain (BPF is little-endian): code
+using it would pass every on-chain test and then be silently wrong the moment the same `lean_spec()`
+or any off-chain / big-endian-host tooling evaluates it. Both are compile errors pointing at
+`to_le_bytes()`.
+
 ## Limitations
 
 - `seeds` / `bump` **canonical is the safe default**. A declared `bump = n` must equal the
@@ -161,3 +314,24 @@ closes the reinit-attack surface. See the exploit case studies for a worked exam
 - `init_if_needed` with `arg(..)` seeds is not supported in `execute_lifecycle` (the
   lifecycle executor has no instruction data to derive them from); use literal or
   field-key seeds instead.
+- **An unlocatable `has_one` target is a build error.** `has_one` needs the named field's real
+  Borsh offset from `T::LAYOUT`. If the target sits behind — or is itself — a non-literal-length
+  array (`[u8; N]` with `N` a named const), a nested struct, or an enum, `T::LAYOUT` does not
+  record it and the macro rejects the struct at compile time. Unlike `constraint = <expr>`,
+  `has_one` is declarative: there is no developer expression to fall back to, so an unlocatable
+  target genuinely cannot be checked rather than being routed to an escape hatch.
+- **`constraint = <expr>` over a multi-segment data path** (e.g. `vault.inner.amount`) falls out
+  of the proven sublanguage to the escape hatch: `map_ty` cannot yet produce a nested
+  `Ty::Struct`, so no descriptor can locate a field two levels deep. The expression still
+  compiles and still runs — just unproven. See "The escape hatch" above.
+- **`nat`/`int` comparisons in `constraint = <expr>` ARE supported**, numerically widened
+  (a signed and an unsigned field, or a signed field and an unsigned literal, compare correctly
+  against each other). **Floats and Borsh enums are not modelled** in the `Ty` descriptor at
+  all — any field of, or expression touching, either type falls to the escape hatch.
+- **`lean_spec()` is now `#[cfg(not(target_os = "solana"))]`, as of v0.4.0.** It was always
+  host-only in intent (the Lean source string is development-time metadata, spliced from the
+  typed field's real Borsh layout), but was not previously gated. If any code in your crate
+  called `<YourStruct>::lean_spec()` directly from a path that gets compiled into the on-chain
+  `.so` (rather than only from `cargo verified-anchor check`'s own tooling / a host-only test),
+  that call is now a compile error under a BPF build. This is a genuine public-API removal in
+  BPF builds, not a bug fix — `UNPROVEN_CHECKS` is gated the same way, for the same reason.

@@ -63,8 +63,8 @@ fn run(args: Args) -> Result<(String, bool), String> {
     let lean_dir = discharge::locate_lean_dir(args.lean_dir.as_deref())?;
     discharge::discharge(&lean_dir, &check_file)?;
 
-    let report = render_report(&specs, args.json);
     let fail = should_fail(&specs, args.deny_unproven);
+    let report = render_report(&specs, args.json, args.deny_unproven);
     Ok((report, fail))
 }
 
@@ -72,11 +72,17 @@ fn run(args: Args) -> Result<(String, bool), String> {
 /// `specs` discharged (an earlier `discharge::discharge` error would have short-circuited
 /// `run` before this is called) — what varies is only whether each struct's proof covers its
 /// FULL constraint surface or defers some of it to the Task 13 escape hatch.
-fn render_report(specs: &[generate::Spec], json: bool) -> String {
+///
+/// `"ok"` in the `--json` output mirrors the process exit code (`should_fail`), not blanket
+/// success: with `--deny-unproven`, a struct carrying unproven checks makes `ok` false, same
+/// as the non-zero exit. A CI consumer keying off `ok` must never see it disagree with the
+/// exit status.
+fn render_report(specs: &[generate::Spec], json: bool, deny_unproven: bool) -> String {
     let total_unproven: usize = specs.iter().map(|s| s.unproven.len()).sum();
+    let ok = !should_fail(specs, deny_unproven);
     let mut out = String::new();
     if json {
-        out.push_str("{\"ok\":true,\"structs\":[");
+        out.push_str(&format!("{{\"ok\":{ok},\"structs\":["));
         for (i, s) in specs.iter().enumerate() {
             if i > 0 { out.push(','); }
             let k = match s.kind { generate::Kind::Validation => "validation", generate::Kind::Lifecycle => "lifecycle" };
@@ -137,14 +143,14 @@ mod tests {
 
     #[test]
     fn reports_proven_structs_plainly() {
-        let r = render_report(&[spec("Deposit", &[])], false);
+        let r = render_report(&[spec("Deposit", &[])], false, false);
         assert!(r.contains("\u{2713} Deposit (validation)"));
         assert!(!r.contains("\u{26a0}"));
     }
 
     #[test]
     fn reports_unproven_checks_prominently() {
-        let r = render_report(&[spec("Deposit", &["custom_check(vault, clock)"])], false);
+        let r = render_report(&[spec("Deposit", &["custom_check(vault, clock)"])], false, false);
         assert!(r.contains("\u{26a0}"), "report was: {r}");
         assert!(r.contains("custom_check(vault, clock)"), "report was: {r}");
         assert!(r.contains("1 unproven"), "report was: {r}");
@@ -159,7 +165,23 @@ mod tests {
 
     #[test]
     fn json_report_lists_unproven() {
-        let r = render_report(&[spec("A", &["f(x)"])], true);
+        let r = render_report(&[spec("A", &["f(x)"])], true, false);
         assert!(r.contains("\"unproven\":[\"f(x)\"]"), "report was: {r}");
+    }
+
+    #[test]
+    fn json_ok_field_matches_the_exit_condition() {
+        // Without --deny-unproven, unproven checks don't fail the process, so ok stays true.
+        let r = render_report(&[spec("A", &["f(x)"])], true, false);
+        assert!(r.contains("\"ok\":true"), "report was: {r}");
+
+        // With --deny-unproven and an unproven check present, the process exits non-zero —
+        // "ok" must say the same thing, not unconditionally claim success.
+        let r = render_report(&[spec("A", &["f(x)"])], true, true);
+        assert!(r.contains("\"ok\":false"), "report was: {r}");
+
+        // With --deny-unproven but nothing unproven, both still agree on success.
+        let r = render_report(&[spec("A", &[])], true, true);
+        assert!(r.contains("\"ok\":true"), "report was: {r}");
     }
 }
