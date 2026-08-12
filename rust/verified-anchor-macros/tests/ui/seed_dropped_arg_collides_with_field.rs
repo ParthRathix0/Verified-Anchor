@@ -5,7 +5,7 @@
 
 use verified_anchor::VerifiedAccounts;
 
-verified_anchor::solana_program::declare_id!("VADrop11111111111111111111111111111111111111");
+verified_anchor::solana_program::declare_id!("VADrop1111111111111111111111111111111111111");
 
 // THE SILENT-WRONG-ADDRESS CASE. `f32` is unmappable, so the cutoff drops `authority` — and
 // `authority` is ALSO an account field here. Falling back to the field would emit
