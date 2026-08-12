@@ -1,0 +1,51 @@
+name: Soundness gap
+description: The generated validator accepts something the contract rejects, or a check runs unproven
+labels: [soundness]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## Stop — is this exploitable?
+
+        If this can be used against a **deployed** program, do not file here.
+        Report it privately instead: [open a security advisory](https://github.com/ParthRathix0/Verified-Anchor/security/advisories/new)
+        or email <rathiparth931@gmail.com>. See [SECURITY.md](https://github.com/ParthRathix0/Verified-Anchor/blob/master/SECURITY.md).
+
+        This template is for soundness gaps that are safe to discuss in the open.
+  - type: dropdown
+    id: category
+    attributes:
+      label: Which category is this?
+      description: From the five listed in SECURITY.md.
+      options:
+        - The validator accepts a context the contract rejects
+        - A runtime check has no Lean counterpart
+        - A headline theorem depends on an unexpected axiom
+        - A sorry or admit is reachable from a headline theorem
+        - A named trust boundary diverges from real behaviour
+    validations:
+      required: true
+  - type: textarea
+    id: struct
+    attributes:
+      label: The struct
+      render: rust
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: The account context that is wrongly accepted
+      description: Which accounts, with which owner, signer, key and data, and why the contract should reject it.
+    validations:
+      required: true
+  - type: input
+    id: lean
+    attributes:
+      label: Relevant Lean definition or theorem, if you know it
+      placeholder: "genValidate_sound / M10Subset / satisfies"
+  - type: textarea
+    id: check_output
+    attributes:
+      label: "`cargo verified-anchor check` output"
+      render: shell
