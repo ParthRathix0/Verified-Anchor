@@ -286,7 +286,7 @@ theorem dupStruct_sound (c : Ctx) : genValidate dupStruct c = true ↔ validates
 check compares `accounts[i].lamports` against the opaque `rentExemptMinimum accounts[i].data.size`
 — an uninterpreted wall, exactly like `sha256`. We therefore demonstrate the two honest halves:
 
-* `M4Subset rentExemptStruct` reduces under `decide` (it only inspects `isM4Constraint`, which
+* `M10Subset rentExemptStruct` reduces under `decide` (it only inspects `isM10Constraint`, which
   is a concrete Bool match on the constructor — fully decidable, no opaque call).
 * The symbolic soundness arrow `genValidate_sound` instantiated at `rentExemptStruct` — valid
   for ALL contexts, schematic over `rentExemptMinimum`.
@@ -302,7 +302,7 @@ def rentExemptStruct : AccountsStruct :=
   , fields := [ { name := "vault", ty := AccountType.uncheckedAccount,
                   constraints := [Constraint.rentExempt] } ] }
 
-/-- `rentExemptStruct` is in the M4 subset (`isM4Constraint .rentExempt = true` is decidable). -/
+/-- `rentExemptStruct` is in the M10 subset (`isM10Constraint .rentExempt = true` is decidable). -/
 theorem rentExemptStruct_M4 : M4Subset rentExemptStruct := by decide
 
 /-- THE rent_exempt CLOSED LOOP (symbolic): for any context, the generated rent-exemption

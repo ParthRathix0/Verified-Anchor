@@ -2451,6 +2451,7 @@ pub fn derive_verified_accounts(input: TokenStream) -> TokenStream {
                 name: #name_str,
                 lean_spec: <#lean_spec_impl_target>::lean_spec,
                 has_lifecycle: #has_lifecycle,
+                unproven: <#lean_spec_impl_target>::UNPROVEN_CHECKS,
             }
         }
     };

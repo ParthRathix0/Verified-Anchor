@@ -175,6 +175,8 @@ pub struct SpecEntry {
     pub lean_spec: fn() -> String,
     /// True if any field carries an `init`/`close` constraint (selects the obligation kind).
     pub has_lifecycle: bool,
+    /// Source text of the constraints that run outside the proof. Empty when fully proven.
+    pub unproven: &'static [&'static str],
 }
 
 #[cfg(not(target_os = "solana"))]
@@ -189,12 +191,20 @@ pub fn collect_specs() -> Vec<&'static SpecEntry> {
 /// Write one spec file per registered struct into `dir`. Filename is `<name>.<kind>` where
 /// kind is `lifecycle` or `validation`; the file content is the `lean_spec()` literal.
 /// (No JSON — the literal is the whole content, so there's nothing to escape.)
+///
+/// When a struct carries escape-hatch checks, also write a sibling `<name>.unproven` file —
+/// one expression per line — so `cargo verified-anchor check` can report them without
+/// re-running the crate. Omitted (not written empty) when the struct is fully proven, so its
+/// mere presence on disk is the "this struct has an unproven surface" signal.
 #[cfg(not(target_os = "solana"))]
 pub fn write_spec_files(dir: &std::path::Path) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)?;
     for e in collect_specs() {
         let kind = if e.has_lifecycle { "lifecycle" } else { "validation" };
         std::fs::write(dir.join(format!("{}.{}", e.name, kind)), (e.lean_spec)())?;
+        if !e.unproven.is_empty() {
+            std::fs::write(dir.join(format!("{}.unproven", e.name)), e.unproven.join("\n"))?;
+        }
     }
     Ok(())
 }
@@ -221,7 +231,7 @@ mod spec_collection_tests {
     use super::*;
 
     // A manually-registered entry (same crate → inventory sees it).
-    inventory::submit! { SpecEntry { name: "FakeStruct", lean_spec: || "FAKE-SPEC".to_string(), has_lifecycle: false } }
+    inventory::submit! { SpecEntry { name: "FakeStruct", lean_spec: || "FAKE-SPEC".to_string(), has_lifecycle: false, unproven: &[] } }
 
     #[test]
     fn write_spec_files_emits_one_file_per_entry() {
