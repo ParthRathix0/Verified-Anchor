@@ -1,0 +1,169 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  lean:
+    name: Lean — build, zero sorry, axiom audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache elan and .lake
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.elan
+            lean/.lake
+          key: lean-${{ runner.os }}-${{ hashFiles('lean/lean-toolchain', 'lean/lakefile.toml') }}
+
+      - name: Install elan
+        run: |
+          if [ ! -d "$HOME/.elan" ]; then
+            curl -sSfL https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh \
+              | sh -s -- -y --default-toolchain none
+          fi
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+
+      - name: lake build
+        run: cd lean && lake build
+
+      # lake build only WARNS on a sorry and still exits 0, so this check is
+      # load-bearing rather than redundant.
+      - name: Zero sorry
+        run: |
+          if grep -rn "sorry\|admit" lean/VerifiedAnchor/; then
+            echo "::error::sorry or admit found in the Lean library"
+            exit 1
+          fi
+          echo "no sorry/admit"
+
+      - name: Axiom audit
+        run: ./scripts/audit-axioms.sh
+
+  rust:
+    name: Rust — fmt, native tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+
+      - name: Format
+        run: cd rust && cargo fmt --all -- --check
+
+      # Advisory only. The workspace carries ~199 pre-existing warnings, several on
+      # fixtures that deliberately exercise unusual expression forms (for example
+      # `constraint = pool.frozen == false`, where clippy's suggested rewrite would
+      # change what the test tests). Tighten to -D warnings once those are triaged.
+      - name: Clippy (advisory)
+        continue-on-error: true
+        run: cd rust && cargo clippy --workspace --all-targets
+
+      - name: Native tests
+        run: cd rust && cargo test --workspace --exclude verified-anchor
+
+  sbf:
+    name: SBF — build .so, load check, litesvm
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+
+      - name: Cache Solana platform-tools
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.local/share/solana
+            ~/.cache/solana
+          key: solana-${{ runner.os }}-v1.53
+
+      - name: Install Solana CLI
+        run: |
+          if [ ! -d "$HOME/.local/share/solana" ]; then
+            sh -c "$(curl -sSfL https://release.anza.xyz/stable/install)"
+          fi
+          echo "$HOME/.local/share/solana/install/active_release/bin" >> "$GITHUB_PATH"
+
+      - name: Build both BPF programs
+        run: |
+          export PATH="$HOME/.cache/solana/v1.53/platform-tools/rust/bin:$PATH"
+          cd rust/verified-anchor-program && cargo-build-sbf --no-rustup-override
+          cd ../verified-anchor-exploits && cargo-build-sbf --no-rustup-override
+
+      # A Solana BPF program is a shared object and a VALID PT_DYNAMIC is expected.
+      # The M5 regression was a CORRUPT one (inventory's #[used] link-section statics),
+      # which the loader rejects with InvalidAccountData. Presence of the segment proves
+      # nothing either way, so the real check is whether the loader accepts the binary —
+      # that is what the litesvm suites below do. This step only asserts the artifacts
+      # exist and are well-formed ELF.
+      - name: Sanity-check the ELF artifacts
+        run: |
+          fail=0
+          for so in rust/target/deploy/*.so; do
+            [ -s "$so" ] || { echo "::error::$so is missing or empty"; fail=1; continue; }
+            readelf -h "$so" > /dev/null 2>&1 || { echo "::error::$so is not valid ELF"; fail=1; continue; }
+            echo "ok: $so ($(stat -c%s "$so") bytes)"
+          done
+          exit $fail
+
+      # The load-bearing check: litesvm actually deploys and invokes both programs.
+      # A corrupted ELF fails here with InvalidAccountData.
+      - name: litesvm runtime suites
+        run: cd rust && cargo test -p verified-anchor
+
+  proofs:
+    name: Proof obligations — cargo verified-anchor check
+    runs-on: ubuntu-latest
+    needs: [lean, rust]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+
+      - name: Cache elan and .lake
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.elan
+            lean/.lake
+          key: lean-${{ runner.os }}-${{ hashFiles('lean/lean-toolchain', 'lean/lakefile.toml') }}
+
+      - name: Install elan
+        run: |
+          if [ ! -d "$HOME/.elan" ]; then
+            curl -sSfL https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh \
+              | sh -s -- -y --default-toolchain none
+          fi
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+
+      - name: Build the checker
+        run: cd rust && cargo install --path cargo-verified-anchor --locked
+
+      # --lean-dir points at this checkout, so the check runs against the Lean library
+      # in the PR rather than the published pinned tag.
+      - name: Discharge example obligations
+        run: cd rust && cargo verified-anchor check -p verified-anchor-example --lean-dir ../lean
+
+      - name: Discharge exploit-suite obligations
+        run: cd rust && cargo verified-anchor check -p verified-anchor-exploits --lean-dir ../lean
