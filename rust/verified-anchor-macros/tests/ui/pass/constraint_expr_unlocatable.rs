@@ -9,16 +9,20 @@ use verified_anchor::VerifiedAccounts;
 verified_anchor::solana_program::declare_id!("VACnUn1111111111111111111111111111111111111");
 
 // A PASS fixture, and it used to be a compile_fail one — that change is the point of M10
-// Task 13. `[u8; 32]` has no `map_ty` arm, so the descriptor stops at `name` and never records
-// `amount`; the proven byte-level check would then reject every legitimate account. Real Anchor
-// compiles and enforces this program, so refusing to build it violated the prime directive.
+// Task 13. `[u8; NAME_LEN]`'s length is a NAMED CONST, not an integer literal, so `map_ty`
+// (M10 Task 15b: only literal lengths are evaluable at macro-expansion time) cannot map it.
+// The descriptor stops at `name` and never records `amount`; the proven byte-level check
+// would then reject every legitimate account. Real Anchor compiles and enforces this program,
+// so refusing to build it violated the prime directive.
 //
 // It now compiles: the macro const-selects on `has_top_level_field`, and in a build where the
 // field is not locatable the check runs in `try_accounts` against the deserialised struct
 // instead, and is reported in `BadLayout::UNPROVEN_CHECKS`. Proof lost, enforcement kept.
+const NAME_LEN: usize = 32;
+
 #[verified_anchor::account]
 pub struct NameVault {
-    pub name: [u8; 32],
+    pub name: [u8; NAME_LEN],
     pub amount: u64,
 }
 

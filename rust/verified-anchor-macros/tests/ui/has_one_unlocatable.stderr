@@ -1,5 +1,5 @@
-error[E0080]: evaluation panicked: verified-anchor: `has_one = authority` cannot be located in the Borsh layout of `NameVault`. Either `authority` is not a field of `NameVault`, or an EARLIER field of `NameVault` has a type verified-anchor cannot map yet (fixed-size arrays, nested structs, enums): the layout is truncated at the first such field, because every offset behind it is unknowable. Move the target ahead of that field, or give that field a mappable type.
-  --> tests/ui/has_one_unlocatable.rs:21:10
+error[E0080]: evaluation panicked: verified-anchor: `has_one = authority` cannot be located in the Borsh layout of `NameVault`. Either `authority` is not a field of `NameVault`, or an EARLIER field of `NameVault` has a type verified-anchor cannot map yet (an array with a non-literal length, a nested struct, an enum, ...): the layout is truncated at the first such field, because every offset behind it is unknowable. Move the target ahead of that field, or give that field a mappable type.
+  --> tests/ui/has_one_unlocatable.rs:24:10
    |
-21 | #[derive(VerifiedAccounts)]
+24 | #[derive(VerifiedAccounts)]
    |          ^^^^^^^^^^^^^^^^ evaluation of `<BadLayout<'info> as verified_anchor::Validate>::validate::_` failed here

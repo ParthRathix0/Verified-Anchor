@@ -229,3 +229,50 @@ fn signed_integers_match_borsh_encoding() {
         assert_eq!(key_at(&SIGNED_TY, &["tail"], &bytes), tail);
     }
 }
+
+/// M10 Task 15b: `map_ty` gained a `[T; N]` arm so fixed-size arrays no longer truncate
+/// `#[derive(AccountData)]`'s descriptor. `Ty::Array`'s `byte_size`/`encoded_width` predate
+/// that change and were never exercised against the real crate — Borsh encodes a fixed array
+/// with NO length prefix (unlike `Vec`, which is length-prefixed), so a locator that assumed
+/// otherwise would still pass every test that only inspects our own model. Two arrays back to
+/// back (`[u8; 32]` then `[u64; 4]`, 32 + 32 = 64 bytes with no framing between or after them)
+/// so a one-array fixture could not hide an off-by-one at the boundary.
+#[derive(BorshSerialize, BorshDeserialize)]
+struct WithArrays {
+    root: [u8; 32],
+    scores: [u64; 4],
+    tail: Pubkey,
+}
+
+const WITH_ARRAYS_TY: Ty = Ty::Struct(&[
+    ("root", Ty::Array(&Ty::U8, 32)),
+    ("scores", Ty::Array(&Ty::U64, 4)),
+    ("tail", Ty::Pubkey),
+]);
+
+#[test]
+fn fixed_arrays_layout_matches_borsh() {
+    let root = [7u8; 32];
+    let scores = [1u64, 2, 3, 4];
+    let tail = Pubkey::new_unique();
+    let s = WithArrays { root, scores, tail };
+    let bytes = borsh::to_vec(&s).unwrap();
+
+    // `borsh::to_vec` is the ground truth for the wire size: no length prefix on either
+    // array means the whole struct is exactly 32 + 32 + 32 = 96 bytes.
+    assert_eq!(bytes.len(), 96, "borsh's own encoding grew a prefix this test didn't expect");
+
+    // the field positioned AFTER both arrays must be locatable, and at the byte offset borsh
+    // actually placed it at (64), not wherever a length-prefixed assumption would predict.
+    let (off, fty) = locate(&WITH_ARRAYS_TY, &["tail"], &bytes, 0).expect("locate failed");
+    assert_eq!(off, 64);
+    assert_eq!(key_at(&WITH_ARRAYS_TY, &["tail"], &bytes), tail);
+    let _ = fty;
+
+    // and the deserialised value must round-trip through the real crate to the same `tail`,
+    // tying this to `borsh`'s own reader, not just our own assumption about its writer.
+    let back = WithArrays::try_from_slice(&bytes).unwrap();
+    assert_eq!(back.tail, tail);
+    assert_eq!(back.root, root);
+    assert_eq!(back.scores, scores);
+}

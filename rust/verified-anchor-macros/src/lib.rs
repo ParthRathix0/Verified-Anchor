@@ -930,8 +930,10 @@ fn inner_ty_at(i: usize, ctx: &crate::expr::ExprCtx) -> syn::Type {
 ///
 /// WHY THIS IS A CONST AND NOT A BUILD ERROR. `#[derive(AccountData)]` truncates the layout at
 /// the first field whose type `map_ty` cannot map, so `constraint = vault.amount >= 1000` over
-/// `struct NameVault { name: [u8; 32], amount: u64 }` reads a field the descriptor does not
-/// record. Before M10 Task 13 that was a `const assert!` — a HARD BUILD ERROR on a program real
+/// `struct NameVault { name: [u8; N], amount: u64 }` (`N` a named const — M10 Task 15b maps a
+/// LITERAL array length, but a const-generic or named-const length is still unevaluable at
+/// macro time) reads a field the descriptor does not record. Before M10 Task 13 that was a
+/// `const assert!` — a HARD BUILD ERROR on a program real
 /// Anchor compiles and enforces, which the prime directive forbids. It cannot be a silent
 /// runtime `None` either: `locate` failing rejects EVERY account, bricking the instruction.
 ///
@@ -1383,7 +1385,7 @@ fn validate_body(specs: &[FieldSpec], instr_args: &[InstrArg]) -> TokenStream2 {
                             // account, including legitimate ones, and does so silently. That can
                             // happen to correct-looking Anchor code: `#[derive(AccountData)]`
                             // truncates the layout at the first field whose type `map_ty` cannot
-                            // map (fixed-size arrays, nested structs, enums are not covered yet),
+                            // map (a non-literal-length array, a nested struct, an enum, ...),
                             // because every offset behind such a field is unknowable. Deciding
                             // this from the descriptor alone turns a bricked instruction into a
                             // build error.
@@ -1395,8 +1397,9 @@ fn validate_body(specs: &[FieldSpec], instr_args: &[InstrArg]) -> TokenStream2 {
                                     "` cannot be located in the Borsh layout of `", ::core::stringify!(#inner),
                                     "`. Either `", #tname, "` is not a field of `", ::core::stringify!(#inner),
                                     "`, or an EARLIER field of `", ::core::stringify!(#inner),
-                                    "` has a type verified-anchor cannot map yet (fixed-size arrays, nested \
-                                     structs, enums): the layout is truncated at the first such field, because \
+                                    "` has a type verified-anchor cannot map yet (an array with a non-literal \
+                                     length, a nested struct, an enum, ...): the layout is truncated at the \
+                                     first such field, because \
                                      every offset behind it is unknowable. Move the target ahead of that field, \
                                      or give that field a mappable type."),
                             );

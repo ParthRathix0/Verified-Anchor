@@ -1874,18 +1874,22 @@ fn a_fully_proven_struct_has_no_unproven_checks() {
 // field is not locatable in the user's Borsh descriptor ────────────────────────────────────
 //
 // `constraint = vault.amount >= 1000` IS inside the sublanguage (a field comparison), unlike
-// `is_blessed(..)` above. But `[u8; 32]` has no `map_ty` arm, so `#[derive(AccountData)]`
-// truncates `NameVault`'s layout at `name` and never records `amount`: the proven byte-level
-// check would `locate` == `None` and reject EVERY account. The macro const-selects instead —
-// `validate`'s proven arm is switched off and the SAME expression, recompiled against the
-// deserialised struct via `layout::FieldValue`, runs in `try_accounts`.
+// `is_blessed(..)` above. But `[u8; NAME_LEN]`'s length is a NAMED CONST, not an integer
+// literal, so `map_ty` cannot evaluate it (M10 Task 15b: only literal lengths are — a
+// const-generic or named-const width is left unmapped rather than guessed) and
+// `#[derive(AccountData)]` truncates `NameVault`'s layout at `name`, never recording `amount`:
+// the proven byte-level check would `locate` == `None` and reject EVERY account. The macro
+// const-selects instead — `validate`'s proven arm is switched off and the SAME expression,
+// recompiled against the deserialised struct via `layout::FieldValue`, runs in `try_accounts`.
 // `tests/ui/pass/constraint_expr_unlocatable.rs` pins that this COMPILES; the tests below pin
 // that the fallback actually ENFORCES — the other half of the same silent-no-op risk this task
 // exists to close, and a different code path than the `is_blessed` cases above (that one never
 // touches `locatability_cond` at all, because a function call carries no data-field operand).
+const NAME_LEN: usize = 32;
+
 #[verified_anchor::account]
 struct NameVault {
-    name: [u8; 32],
+    name: [u8; NAME_LEN],
     amount: u64,
 }
 
@@ -1939,4 +1943,41 @@ fn unlocatable_field_is_not_enforced_by_validate_alone() {
     let mut bad = acct_with_data(Pubkey::new_unique(), name_vault_data([0u8; 32], 999));
     bad.owner = crate::ID;
     assert_eq!(CheckUnlocatable::validate(&[bad.info()], &[], &any_pid()), Ok(()));
+}
+
+// ── M10 Task 15b: `map_ty` gains a `[T; N]` arm ─────────────────────────────────────────────
+//
+// Before this task ANY fixed-size array field (not just `[u8; 32]`) had no `map_ty` arm at
+// all, so `#[derive(AccountData)]`'s cutoff truncated the descriptor there — every field
+// after it silently dropped out of `LAYOUT`/`LAYOUT_LEAN`. This pins that a field placed
+// AFTER a `[u8; 32]` now survives.
+#[test]
+fn account_data_maps_fixed_size_arrays() {
+    use verified_anchor::layout::Ty;
+
+    #[derive(
+        verified_anchor::borsh::BorshSerialize,
+        verified_anchor::borsh::BorshDeserialize,
+        verified_anchor::AccountData,
+    )]
+    #[borsh(crate = "::verified_anchor::borsh")]
+    struct ArrayProbe {
+        root: [u8; 32],
+        authority: solana_program::pubkey::Pubkey,
+    }
+
+    match <ArrayProbe as verified_anchor::AccountData>::LAYOUT {
+        Ty::Struct(fs) => {
+            // the field AFTER the array must survive the cutoff
+            assert_eq!(fs.len(), 2, "array field truncated the descriptor");
+            assert_eq!(fs[0].0, "root");
+            assert_eq!(fs[0].1, Ty::Array(&Ty::U8, 32));
+            assert_eq!(fs[1].0, "authority");
+        }
+        other => panic!("expected a struct descriptor, got {other:?}"),
+    }
+    assert_eq!(
+        <ArrayProbe as verified_anchor::AccountData>::LAYOUT_LEAN,
+        "(Ty.struct [(\"root\", (Ty.array Ty.u8 32)), (\"authority\", Ty.pubkey)])"
+    );
 }

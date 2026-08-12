@@ -10,6 +10,28 @@ use syn::Type;
 /// Unmappable types (floats, enums, user structs, anything unrecognised) return `None`; callers
 /// that build a field list stop at the first `None` (see the derive's doc comment for why).
 pub(crate) fn map_ty(ty: &Type) -> Option<(TokenStream, String)> {
+    // `Type::Array` ([T; N]) is a distinct `syn::Type` variant from `Type::Path` and never
+    // reaches the path-matching logic below, so it must be handled first. Fixed-size arrays
+    // ([u8; 32] hashes/roots, [u8; 64] signatures, [Pubkey; N] collections) are common in real
+    // Anchor account structs; without this arm a single such field returns `None` and the
+    // derive's cutoff truncates the WHOLE descriptor there (see the derive's doc comment) —
+    // every field after it silently falls out of the proven core.
+    if let Type::Array(arr) = ty {
+        let (rt, lean) = map_ty(&arr.elem)?;
+        let n: usize = match &arr.len {
+            syn::Expr::Lit(syn::ExprLit { lit: syn::Lit::Int(i), .. }) => i.base10_parse().ok()?,
+            // A const-generic or named-const length (`[u8; N]`) cannot be evaluated at macro
+            // expansion time — only integer literals can. Returning `None` here preserves the
+            // safe cutoff instead of guessing a width, which would silently mis-offset every
+            // field after it.
+            _ => return None,
+        };
+        return Some((
+            quote! { ::verified_anchor::layout::Ty::Array(&#rt, #n) },
+            format!("(Ty.array {lean} {n})"),
+        ));
+    }
+
     let path = match ty {
         Type::Path(p) => p,
         _ => return None,

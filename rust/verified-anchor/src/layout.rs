@@ -35,8 +35,9 @@ pub enum Value<'a> {
 ///
 /// WHY THIS EXISTS (M10 Task 13). `#[derive(AccountData)]` truncates the Borsh descriptor at
 /// the first field whose type it cannot map, so `constraint = vault.amount >= 1000` over
-/// `struct NameVault { name: [u8; 32], amount: u64 }` names a field the descriptor does not
-/// record. `locate` would return `None` there and the constraint would reject EVERY account.
+/// `struct NameVault { name: [u8; N], amount: u64 }` (`N` a named const, still unmappable —
+/// M10 Task 15b) names a field the descriptor does not record. `locate` would return `None`
+/// there and the constraint would reject EVERY account.
 /// The macro therefore const-selects: locatable => the proven byte-level check in `validate`;
 /// not locatable => the SAME expression re-evaluated in `try_accounts` against the
 /// deserialised struct, through this trait.
@@ -286,11 +287,13 @@ const fn const_str_eq(a: &str, b: &str) -> bool {
 /// is what lets `#[derive(VerifiedAccounts)]` turn an unlocatable `has_one` target into a BUILD
 /// error instead of an instruction that rejects every legitimate account at runtime.
 ///
-/// Why an unlocatable target is reachable from correct-looking code: `map_ty` does not yet
-/// cover fixed-size arrays, nested structs or enums, and `#[derive(AccountData)]` truncates the
-/// descriptor at the first field it cannot map (everything after it has an unknowable offset).
-/// So a perfectly valid Anchor struct whose `has_one` target sits behind, say, a `[u8; 32]`
-/// yields a descriptor that simply does not mention the target.
+/// Why an unlocatable target is reachable from correct-looking code: `map_ty` does not cover
+/// nested structs or enums, and (M10 Task 15b) only maps a fixed-size array whose length is an
+/// integer LITERAL — a const-generic or named-const length is still unevaluable at macro time.
+/// `#[derive(AccountData)]` truncates the descriptor at the first field it cannot map
+/// (everything after it has an unknowable offset). So a perfectly valid Anchor struct whose
+/// `has_one` target sits behind, say, a `[u8; N]` with `N` a named const yields a descriptor
+/// that simply does not mention the target.
 pub const fn top_level_field(ty: Ty, name: &str) -> Option<Ty> {
     let fs = match ty {
         Ty::Struct(fs) => fs,
@@ -475,9 +478,10 @@ mod const_lookup_tests {
     use super::*;
 
     const VAULT: Ty = Ty::Struct(&[("bump", Ty::U8), ("authority", Ty::Pubkey)]);
-    // What `#[derive(AccountData)]` emits for `struct NameVault { name: [u8;32], authority: Pubkey }`
-    // today: `map_ty` has no fixed-array arm, so the descriptor TRUNCATES at `name` and never
-    // mentions `authority`. This is the shape the build-time `has_one` guard must reject.
+    // What `#[derive(AccountData)]` emits for `struct NameVault { name: [u8; N], authority:
+    // Pubkey }` with `N` a named const: `map_ty` (M10 Task 15b) only maps a LITERAL array
+    // length, so the descriptor TRUNCATES at `name` and never mentions `authority`. This is
+    // the shape the build-time `has_one` guard must reject.
     const TRUNCATED: Ty = Ty::Struct(&[]);
 
     // Evaluated by the compiler, not the test runner: these are the exact expressions the
