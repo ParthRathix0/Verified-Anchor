@@ -103,11 +103,35 @@ jobs:
           fi
           echo "$HOME/.local/share/solana/install/active_release/bin" >> "$GITHUB_PATH"
 
+      # The local dev recipe pins platform-tools v1.53 on PATH and passes
+      # --no-rustup-override to dodge a rustup 1.26 bug. NEITHER applies on a clean
+      # runner: the pinned path does not exist there, so `rustc` resolved to the stable
+      # toolchain, which has no sbpf-solana-solana target. Let cargo-build-sbf manage its
+      # own toolchain, and fall back to an explicit platform-tools rustc if it needs one.
       - name: Build both BPF programs
         run: |
-          export PATH="$HOME/.cache/solana/v1.53/platform-tools/rust/bin:$PATH"
-          cd rust/verified-anchor-program && cargo-build-sbf --no-rustup-override
-          cd ../verified-anchor-exploits && cargo-build-sbf --no-rustup-override
+          build_sbf() {
+            echo "::group::cargo-build-sbf $1"
+            if ( cd "$1" && cargo-build-sbf ); then
+              echo "::endgroup::"
+              return 0
+            fi
+            echo "first attempt failed; looking for a cached platform-tools rustc"
+            PT_RUSTC=$(find "$HOME/.cache/solana" -type f -name rustc -path '*platform-tools*' 2>/dev/null | head -1)
+            if [ -z "$PT_RUSTC" ]; then
+              echo "::error::no platform-tools rustc found under $HOME/.cache/solana"
+              find "$HOME/.cache/solana" -maxdepth 3 -type d 2>/dev/null || true
+              echo "::endgroup::"
+              return 1
+            fi
+            echo "retrying with $PT_RUSTC"
+            ( cd "$1" && PATH="$(dirname "$PT_RUSTC"):$PATH" cargo-build-sbf --no-rustup-override )
+            rc=$?
+            echo "::endgroup::"
+            return $rc
+          }
+          build_sbf rust/verified-anchor-program
+          build_sbf rust/verified-anchor-exploits
 
       # A Solana BPF program is a shared object and a VALID PT_DYNAMIC is expected.
       # The M5 regression was a CORRUPT one (inventory's #[used] link-section statics),
