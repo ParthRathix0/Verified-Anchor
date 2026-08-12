@@ -71,7 +71,11 @@ docs/                                 Project documentation
 
 web/index.html                        Self-contained landing page (deployable on GitHub Pages)
 verified_anchor_proposal.md           Original proposal
-LICENSE                               CC BY-NC-ND 4.0
+LICENSE                               Apache-2.0
+NOTICE                                Copyright and relicensing notice
+CONTRIBUTING.md                       How to contribute (toolchain, gate, invariants)
+CLA.md                                Contributor License Agreement
+SECURITY.md                           Vulnerability and soundness-gap disclosure
 ```
 
 ## Documentation
@@ -257,11 +261,24 @@ Actions source is used to serve from `web/`.) The page is also Vercel-ready
 
 ## Contributing
 
-Issues and audit attempts are welcome. Substantive code patches require a prior contributor agreement granting the author the right to incorporate the change under the project license (see below). Open an issue first if you intend to send code.
+Contributions are welcome — bug reports, drop-in gaps, soundness findings, docs, tests, and code.
+
+Read [CONTRIBUTING.md](CONTRIBUTING.md) first: it covers the toolchain setup (Lean 4 via elan,
+the Solana SBF platform-tools recipe), the mandatory build gate every change must pass, and the
+project invariants a patch must not break — zero `sorry`, headline theorems at
+`[propext, Quot.sound]`, kernel `decide` only, and BPF-gating for host-only dependencies.
+
+Contributors sign a [CLA](CLA.md) on their first pull request; a bot handles this automatically.
+You keep the copyright in your contribution.
+
+Security issues and soundness gaps in the proven core follow the private disclosure process in
+[SECURITY.md](SECURITY.md) — please do not open a public issue for those.
 
 ## License
 
-[CC BY-NC-ND 4.0](LICENSE). This is not a standard open-source license. Practical effects:
+[Apache-2.0](LICENSE). See [NOTICE](NOTICE) for the copyright and relicensing notice.
 
-* **NonCommercial.** No use for commercial advantage without prior written permission.
-* **NoDerivatives.** No distribution of modified versions.
+Versions 0.1.0 through 0.4.0 were published to crates.io under CC BY-NC-ND 4.0 and still display
+that string there, because crates.io freezes licence metadata per published version. The
+copyright holder relicenses the whole work: **all versions, including those already published,
+are available under Apache-2.0.**
