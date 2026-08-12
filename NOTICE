@@ -1,0 +1,30 @@
+Verified Anchor
+Copyright 2026 Parth Arvind Rathi
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+
+---
+
+Relicensing notice
+------------------
+
+Versions 0.1.0 through 0.4.0 of the verified-anchor, verified-anchor-macros
+and cargo-verified-anchor crates were originally published to crates.io under
+CC BY-NC-ND 4.0. crates.io records the licence of each version at the moment
+it is published and that record cannot be amended retroactively, so those
+published versions still display the earlier licence string.
+
+The copyright holder, as sole author of this repository's entire commit
+history, hereby relicenses the whole of that work. All versions of this
+project, including those already published to crates.io under the earlier
+licence, are available under the Apache License, Version 2.0.
