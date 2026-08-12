@@ -324,10 +324,27 @@ or any off-chain / big-endian-host tooling evaluates it. Both are compile errors
   of the proven sublanguage to the escape hatch: `map_ty` cannot yet produce a nested
   `Ty::Struct`, so no descriptor can locate a field two levels deep. The expression still
   compiles and still runs — just unproven. See "The escape hatch" above.
+- **`constraint = <expr>` over a NON-SCALAR data field** (`[T; N]`, `String`, `Vec<T>`,
+  `Option<T>`, a nested struct) also falls to the escape hatch, as of v0.4.0. The byte-level
+  reader `read_val` decodes only scalars — integers, `bool`, `Pubkey` — mirroring Lean's
+  `readVal`, so a comparison like `vault.root == root` over a `[u8; 32]` cannot be part of the
+  proven core. It is reported in `UNPROVEN_CHECKS` and enforced as verbatim Rust in
+  `try_accounts`, exactly as real Anchor would run it. (Before v0.4.0 an array field was
+  *reported as proven* and then rejected every account — see the v0.4.0 fix notes.)
 - **`nat`/`int` comparisons in `constraint = <expr>` ARE supported**, numerically widened
   (a signed and an unsigned field, or a signed field and an unsigned literal, compare correctly
   against each other). **Floats and Borsh enums are not modelled** in the `Ty` descriptor at
   all — any field of, or expression touching, either type falls to the escape hatch.
+- **`AccountData` gained required `LAYOUT` and `LAYOUT_LEAN` associated consts in v0.4.0.**
+  This breaks any HAND-WRITTEN `impl AccountData for T`, which will no longer compile until the
+  two consts are added. The fix is not to add them by hand: **`AccountData` should only ever be
+  derived**, via `#[derive(AccountData)]` or the `#[verified_anchor::account]` attribute. The
+  derive computes `LAYOUT` from the struct's real field declarations and emits `LAYOUT_LEAN` as
+  the matching Lean term, so the proven spec and the bytes the runtime actually walks describe
+  the same layout by construction. A hand-written impl can silently disagree with the struct's
+  Borsh encoding, and every offset the proof reasons about — `has_one`, `constraint = <expr>` —
+  is taken from `LAYOUT`. That makes a wrong `LAYOUT` a way to obtain a *valid proof of the
+  wrong statement*, which no other input to this system can do.
 - **`lean_spec()` is now `#[cfg(not(target_os = "solana"))]`, as of v0.4.0.** It was always
   host-only in intent (the Lean source string is development-time metadata, spliced from the
   typed field's real Borsh layout), but was not previously gated. If any code in your crate

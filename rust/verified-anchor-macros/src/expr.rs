@@ -246,6 +246,18 @@ impl Operand {
     fn is_instr_arg(&self) -> bool {
         matches!(self, Operand::InstrArg(_))
     }
+
+    /// A literal written in the source, as opposed to something read at runtime.
+    fn is_literal(&self) -> bool {
+        matches!(self, Operand::LitNat(_) | Operand::LitInt(_) | Operand::LitBool(_))
+    }
+
+    /// A NEGATIVE integer literal. `vault.big > -1` over a `u128` field is answerable in the
+    /// sublanguage (`evalCmp` compares `.nat` and `.int` numerically) but is not even
+    /// well-typed in Rust — there is no negative `u128` literal.
+    fn is_negative_literal(&self) -> bool {
+        matches!(self, Operand::LitInt(n) if *n < 0)
+    }
 }
 
 impl VExpr {
@@ -263,6 +275,58 @@ impl VExpr {
             VExpr::Or(l, r) => format!("Expr.or ({}) ({})", l.to_lean(), r.to_lean()),
             VExpr::Not(e) => format!("Expr.not ({})", e.to_lean()),
             VExpr::Truthy(o) => format!("Expr.truthy ({})", o.to_lean()),
+        }
+    }
+
+    /// Does the const-selected FALLBACK for this expression have to be the recompiled `Value`
+    /// form, or may it be the developer's verbatim Rust?
+    ///
+    /// WHY THE CHOICE EXISTS AT ALL. When the descriptor cannot support the proven byte-level
+    /// check, the macro emits a fallback that runs in `try_accounts` instead. Two forms are
+    /// available and NEITHER is universally usable:
+    ///
+    ///   * VERBATIM RUST (`if !(<source expr>)`) reads the deserialised struct, so it works for
+    ///     any field type — including the aggregates (`[T; N]`, `String`, `Vec<T>`, `Option<T>`)
+    ///     that `read_val` AND `layout::FieldValue` both refuse. It is the only fallback that
+    ///     enforces an aggregate comparison instead of rejecting every account.
+    ///   * The RECOMPILED `Value` FORM evaluates through `layout::FieldValue`, so it keeps the
+    ///     sublanguage's semantics where those are DELIBERATELY more permissive than Rust's type
+    ///     checker: `.nat` and `.int` compare numerically.
+    ///
+    /// Both arms of a const selection are type-checked whether or not the const picks them, so
+    /// the form has to be chosen HERE, at macro time, before the descriptor is known. `true`
+    /// means "the verbatim form might not type-check — keep the `Value` form":
+    ///
+    ///   * an operand is a negative literal (`vault.big > -1`: no negative `u128` literal), or
+    ///   * an ORDERING compares two runtime operands (`vault.delta < vault.amount`: `i64 < u64`
+    ///     is not a Rust expression), neither of which is a literal that would infer its type
+    ///     from the other side.
+    ///
+    /// Everything else — every equality, and every ordering against a literal — takes the
+    /// verbatim form. That is what makes `vault.root == root` over a `[u8; 32]` enforce rather
+    /// than brick, which is the whole point.
+    ///
+    /// The residue is deliberate and safe in the drop-in sense: choosing verbatim for an
+    /// expression Rust cannot type (`vault.delta == vault.amount` across signedness) yields a
+    /// build error on a constraint REAL ANCHOR ALSO REJECTS — Anchor emits the same expression
+    /// verbatim into the same `if !(..)` position — so nothing that compiles under Anchor stops
+    /// compiling here.
+    pub(crate) fn fallback_needs_value_form(&self) -> bool {
+        match self {
+            VExpr::Cmp(op, l, r) => {
+                if l.is_negative_literal() || r.is_negative_literal() {
+                    return true;
+                }
+                match op {
+                    Cmp::Eq | Cmp::Ne => false,
+                    Cmp::Lt | Cmp::Le | Cmp::Gt | Cmp::Ge =>
+                        !l.is_literal() && !r.is_literal(),
+                }
+            }
+            VExpr::And(l, r) | VExpr::Or(l, r) =>
+                l.fallback_needs_value_form() || r.fallback_needs_value_form(),
+            VExpr::Not(e) => e.fallback_needs_value_form(),
+            VExpr::Truthy(o) => o.is_negative_literal(),
         }
     }
 

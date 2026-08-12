@@ -62,10 +62,16 @@ fn rejects_too_few_accounts() {
     let accts = [v.info()];
     assert_eq!(Transfer::validate(&accts, &[], &any_pid()), Err(VAError::NotEnoughAccounts { expected: 2, got: 1 }));
 }
-// Documents the permissiveness gap noted in docs/verified-anchor-bridge.md: the generated
-// Rust accepts SURPLUS accounts (only the declared prefix is checked), whereas the Lean
-// model/contract require an exact count. This is a transcription difference, not a soundness
-// bug — the proof relates genValidate to the contract, both of which use exact equality.
+// The generated Rust accepts SURPLUS accounts: only the declared prefix `0..n` is checked, so
+// the guard is `accounts.len() < n`. That is required for drop-in parity — Anchor passes the
+// surplus through to `ctx.remaining_accounts`.
+//
+// Through v0.3 this was a documented DIVERGENCE, because Lean's `WellFormed`/`genValidate`
+// demanded an exact count and so rejected inputs this accepts. v0.4.0 closed it on the LEAN
+// side (`s.fields.length ≤ c.length`), never by tightening this guard, so the two now agree and
+// the headline soundness sentence needs no caveat. Nothing was weakened: every per-field check
+// and the distinct-mut-key check range over the declared prefix only, so a surplus account was
+// unconstrained under the exact-count contract too.
 #[test]
 fn accepts_surplus_accounts() {
     let mut v = acct(false, true);   // vault: writable
@@ -1980,4 +1986,161 @@ fn account_data_maps_fixed_size_arrays() {
         <ArrayProbe as verified_anchor::AccountData>::LAYOUT_LEAN,
         "(Ty.struct [(\"root\", (Ty.array Ty.u8 32)), (\"authority\", Ty.pubkey)])"
     );
+}
+
+// ── C1: a NON-SCALAR data field must never compile into the proven core ─────────────────────
+//
+// `locatability_cond` used to gate on `has_top_level_field` — NAME PRESENCE ONLY. That was
+// correct while the only failure mode was a TRUNCATED descriptor: an unmappable field ended
+// the layout, so "present" implied "scalar". M10 Task 15b taught `map_ty` to map `[T; N]` for a
+// literal `N`, which made array fields PRESENT in `T::LAYOUT` — while `read_val` still refuses
+// every aggregate (`Array | String | Vec | Option | Struct` → `None`, mirroring Lean's
+// `readVal`). The gate then said "proven" for a field the reader cannot decode: `UNPROVEN_CHECKS`
+// came back empty (the developer is TOLD it is proven), the Lean spec carried the constraint,
+// the obligation discharged honestly — and `validate` rejected a MATCHING value, because a
+// contract that faithfully models "readVal returns none" faithfully rejects everything.
+//
+// Pre-M10 this shape was a `compile_error!`; M10 turned a loud error into a SILENT ALWAYS-REJECT,
+// which the milestone names as its worst failure mode. The gate is now `is_scalar_readable_field`
+// — present AND of a type `read_val` decodes — and the false branch routes to the VERBATIM-Rust
+// hatch (`proven_if: None`), never to the recompiled `deser` form: `layout::FieldValue` returns
+// `None` for exactly the same aggregate set, so that branch would brick identically.
+
+#[verified_anchor::account]
+struct RootVault {
+    root: [u8; 32],
+    amount: u64,
+}
+
+#[derive(VerifiedAccounts)]
+#[instruction(root: [u8; 32])]
+struct ArrayEq<'info> {
+    #[account(constraint = vault.root == root)]
+    vault: verified_anchor::Account<'info, RootVault>,
+}
+
+fn root_vault_data(root: [u8; 32], amount: u64) -> Vec<u8> {
+    let mut d = <RootVault as verified_anchor::AccountData>::DISCRIMINATOR.to_vec();
+    d.extend_from_slice(&root);
+    d.extend_from_slice(&amount.to_le_bytes());
+    d
+}
+
+// Incidental but load-bearing coverage for I2 as well: the identifier `root` appears BOTH after
+// a dot (`vault.root`, a data field) and standalone (`root`, the instruction argument). The
+// verbatim hatch must bind the argument and not the field name, so an `idents_in` filter that
+// dropped too much would fail to bind `root` and this fixture would not compile at all.
+#[test]
+fn array_field_equality_is_reported_unproven() {
+    assert_eq!(ArrayEq::UNPROVEN_CHECKS, &["vault.root == root"]);
+}
+
+#[test]
+fn array_field_equality_omits_the_check_from_the_lean_spec() {
+    let s = ArrayEq::lean_spec();
+    assert!(!s.contains("Constraint.expr"), "unreadable-field check leaked into the spec: {s}");
+}
+
+/// The heart of C1: the check must still be ENFORCED, both ways. Before the fix this returned
+/// `Err(ConstraintViolated)` even for a MATCHING root.
+#[test]
+fn array_field_equality_is_enforced_through_try_accounts() {
+    use verified_anchor::Accounts;
+    let root = [9u8; 32];
+    let mut instr = Vec::new();
+    instr.extend_from_slice(&root);
+
+    // matching root → ACCEPTED (this is the assertion the bug broke).
+    let mut good = acct_with_data(Pubkey::new_unique(), root_vault_data(root, 1));
+    good.owner = crate::ID;
+    assert!(ArrayEq::try_accounts(&any_pid(), &[good.info()], &instr).is_ok());
+
+    // differing root → REJECTED.
+    let mut bad = acct_with_data(Pubkey::new_unique(), root_vault_data([1u8; 32], 1));
+    bad.owner = crate::ID;
+    assert!(matches!(
+        ArrayEq::try_accounts(&any_pid(), &[bad.info()], &instr),
+        Err(VAError::ConstraintViolated { field: "vault", expr: "vault.root == root" })
+    ));
+}
+
+// The same shape for a VARIABLE-length aggregate. `String` is never even locatable at a fixed
+// offset, but it IS present in the descriptor, so the old name-presence gate accepted it too.
+#[verified_anchor::account]
+struct NamedVault {
+    label: String,
+    amount: u64,
+}
+
+#[derive(VerifiedAccounts)]
+#[instruction(label: String)]
+struct StringEq<'info> {
+    #[account(constraint = vault.label == label)]
+    vault: verified_anchor::Account<'info, NamedVault>,
+}
+
+fn named_vault_data(label: &str, amount: u64) -> Vec<u8> {
+    let mut d = <NamedVault as verified_anchor::AccountData>::DISCRIMINATOR.to_vec();
+    d.extend_from_slice(&(label.len() as u32).to_le_bytes());
+    d.extend_from_slice(label.as_bytes());
+    d.extend_from_slice(&amount.to_le_bytes());
+    d
+}
+
+#[test]
+fn string_field_equality_is_reported_unproven() {
+    assert_eq!(StringEq::UNPROVEN_CHECKS, &["vault.label == label"]);
+}
+
+#[test]
+fn string_field_equality_is_enforced_through_try_accounts() {
+    use verified_anchor::Accounts;
+    let mut instr = Vec::new();
+    instr.extend_from_slice(&3u32.to_le_bytes());
+    instr.extend_from_slice(b"abc");
+
+    let mut good = acct_with_data(Pubkey::new_unique(), named_vault_data("abc", 1));
+    good.owner = crate::ID;
+    assert!(StringEq::try_accounts(&any_pid(), &[good.info()], &instr).is_ok());
+
+    let mut bad = acct_with_data(Pubkey::new_unique(), named_vault_data("xyz", 1));
+    bad.owner = crate::ID;
+    assert!(matches!(
+        StringEq::try_accounts(&any_pid(), &[bad.info()], &instr),
+        Err(VAError::ConstraintViolated { field: "vault", expr: "vault.label == label" })
+    ));
+}
+
+/// The other half of the C1 fix, and the one that keeps the milestone worth having: a SCALAR
+/// data field on the SAME struct as an array must still be PROVEN. A fix that routed every
+/// data-field constraint to the hatch would pass every test above while destroying M10's value.
+#[derive(VerifiedAccounts)]
+struct ScalarStillProven<'info> {
+    #[account(constraint = vault.amount >= 1000)]
+    vault: verified_anchor::Account<'info, RootVault>,
+}
+
+#[test]
+fn a_scalar_field_after_an_array_is_still_proven() {
+    assert!(
+        ScalarStillProven::UNPROVEN_CHECKS.is_empty(),
+        "the C1 fix over-approximated and pushed a provable scalar to the hatch: {:?}",
+        ScalarStillProven::UNPROVEN_CHECKS
+    );
+    let s = ScalarStillProven::lean_spec();
+    assert!(s.contains("Constraint.expr"), "proven check missing from the spec: {s}");
+}
+
+#[test]
+fn a_scalar_field_after_an_array_is_enforced_by_the_proven_core() {
+    let mut good = acct_with_data(Pubkey::new_unique(), root_vault_data([0u8; 32], 1000));
+    good.owner = crate::ID;
+    assert_eq!(ScalarStillProven::validate(&[good.info()], &[], &any_pid()), Ok(()));
+
+    let mut bad = acct_with_data(Pubkey::new_unique(), root_vault_data([0u8; 32], 999));
+    bad.owner = crate::ID;
+    assert!(matches!(
+        ScalarStillProven::validate(&[bad.info()], &[], &any_pid()),
+        Err(VAError::ConstraintViolated { field: "vault", .. })
+    ));
 }

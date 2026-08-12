@@ -3,7 +3,7 @@ use solana_program::{
     account_info::AccountInfo, entrypoint, entrypoint::ProgramResult,
     program_error::ProgramError, pubkey::Pubkey,
 };
-use verified_anchor::{Accounts, AccountData, Key, Validate, VerifiedAccounts};
+use verified_anchor::{Accounts, Key, Validate, VerifiedAccounts};
 
 // Needed so `Account<'info, T>` (which implies `owner = crate::ID`) compiles in the derive macro.
 // Tests that exercise typed accounts (init_if_needed, tag 10) load the program under this id.

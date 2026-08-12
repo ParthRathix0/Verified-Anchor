@@ -46,11 +46,23 @@ def AccountsStruct.argBytes (s : AccountsStruct) (c : Ctx) (name : String) : Opt
         pure (c.instrData.extract off (off + w))
       else none
 
-/-- Structural well-formedness: one account per declared field. -/
+/-- Structural well-formedness: at least one account per declared field.
+
+    A PREFIX condition, not an exact count, and deliberately so. Anchor passes surplus accounts
+    through to `ctx.remaining_accounts`, so a framework that rejected them would not be a
+    drop-in replacement; the generated Rust accordingly guards only `accounts.len() < n`. This
+    used to read `c.length = s.fields.length`, which made the contract claim something the
+    generated code does not enforce and forced the soundness statement to carry a caveat.
+
+    Nothing is weakened by the relaxation, because nothing ever looked at a surplus account:
+    every per-field check and the distinct-mut-key check range over `s.fields.zipIdx`, i.e. the
+    DECLARED prefix only. Accounts at index ≥ `s.fields.length` were unconstrained under the
+    equality too. The change is to what the contract CLAIMS, not to what it CHECKS — and it is
+    what makes the soundness guarantee unconditional rather than qualified. -/
 def WellFormed (s : AccountsStruct) (c : Ctx) : Prop :=
-  c.length = s.fields.length
+  s.fields.length ≤ c.length
 
 instance (s : AccountsStruct) (c : Ctx) : Decidable (WellFormed s c) :=
-  inferInstanceAs (Decidable (c.length = s.fields.length))
+  inferInstanceAs (Decidable (s.fields.length ≤ c.length))
 
 end VerifiedAnchor

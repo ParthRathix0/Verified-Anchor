@@ -12,7 +12,7 @@ what is and is not proven.
 | `if accounts[i].owner != &expected { Err(WrongOwner) }` | `genOwner e a := decide (a.owner = e)` | `satisfies … (.owner e)` |
 | `if !accounts[i].executable { Err(WrongOwner) }` (`Program<P>` base check) | `genConstraint … .executable := a.executable` | `satisfies … .executable` |
 | `if accounts[i].key != &P::ID { Err(WrongOwner) }` (`Program<P>` base check) | `genConstraint … (.address e) := decide (a.key = e)` | `satisfies … (.address e)` |
-| `if accounts.len() < n { Err(NotEnoughAccounts) }` | `decide (c.length = s.fields.length)` | `WellFormed` |
+| `if accounts.len() < n { Err(NotEnoughAccounts) }` | `decide (s.fields.length ≤ c.length)` | `WellFormed` |
 | `let (off, ty) = locate(T::LAYOUT, &["field"], data, 0)?; if read_val(&ty, data, off) != Some(Value::Key(target.key)) { Err(WrongHasOne) }` | `genHasOne` (locate the named field via `f.ty.locateField field a.data` at its REAL Borsh offset, `readVal`, compare to the looked-up key) | `satisfies … (.hasOne field)` |
 | `if a.field.locate(…) is unlocatable { compile_error! }` (macro-time, via `has_top_level_field`) | `AccountType.locateField` returning `none` for the target | — (build error, not a runtime check; see "Borsh field model" below) |
 | `if !condA \|\| !condB { Err(ConstraintViolated) }` (`constraint = <expr>`, compiled) | `evalExpr` over the `Operand`/`Cmp`/`Expr` sublanguage, strict `and`/`or`, fail-closed | `satisfies … (.expr e)` |
@@ -29,6 +29,8 @@ what is and is not proven.
 | `let min = rent.minimum_balance(newLen); if min > cur { transfer(delta) }; account.realloc(newLen, zero)` | `applyRealloc` (state transformer) | `realloc_establishes_post`: size=newLen ∧ rent-exempt ∧ never-debited |
 | `if data[..8] != [0u8;8] { Err(NotZeroed) }` | `genConstraint … .zero` | `satisfies … .zero`: the all-zero-discriminator reinit guard |
 | uninitialized branch: `invoke(create_account(...)) + write T::DISCRIMINATOR`; existing branch: `if owner≠program ∥ data_len<space+8 { Err(InitFailed) }` | `applyInitIfNeeded` (state transformer) | `initIfNeeded_establishes_post`: both branches leave owner=program ∧ data≥space+8 |
+| `encoded_width(Ty::Vec(e), ..)`: `count.checked_mul(w)?` yields `None` when the u32 length prefix times the element width overflows `usize` (`layout.rs`) | `encodedWidth`/`vecWidthFrom` accumulate in unbounded `Nat`, so the same input yields `some <huge>` (`Solana/Borsh/Locate.lean`) | — (**known divergence, safe direction**: both end in rejection. Rust's `None` propagates out of `locate` and the constraint fails closed; Lean's huge offset then fails the `off + w ≤ data.size` bounds test in `readVal`, which is also `none`, also fail-closed.) |
+| an `argField` seed whose name `argBytes` cannot resolve in the instruction data: the generated Rust returns `Err(WrongPda)` for the field | `resolveSeeds` substitutes `ByteArray.empty` for the unresolved seed and derives a PDA from it (`Contract/Satisfies.lean`) | — (**known divergence, safe direction**: Rust rejects outright where Lean derives from an empty seed and *could* in principle match, so Rust rejects strictly more — never less.) |
 
 The generated `validate` has signature
 `fn validate(accounts: &[AccountInfo], instr_data: &[u8], program_id: &Pubkey) -> Result<(), VAError>`
@@ -81,15 +83,25 @@ above. This correspondence is not machine-checked across the language boundary; 
 by shared accept/reject test vectors run in both `rust/verified-anchor/tests/behavior.rs`
 and the Lean `#guard`s in `lean/VerifiedAnchor/Codegen/ExampleGenerated.lean`.
 
-**Known permissiveness difference (account count).** The generated Rust guards with
-`accounts.len() < n`, so it accepts surplus accounts (only the declared prefix `0..n` is
-inspected). The Lean model `genValidate` and the contract's `WellFormed` predicate require
-an exact count (`c.length = s.fields.length`). On a slice with more accounts than the struct
-declares, Rust returns `Ok` while the contract and model would reject. This is a transcription
-difference, not a soundness defect: `genValidate_sound` relates the model to the contract
-(both exact), and the Rust is strictly *more* permissive only along the surplus dimension.
-The Rust behaviour is pinned by the `accepts_surplus_accounts` test. A future revision can
-tighten the generated guard to `!= n` if exact-count parity is desired.
+**Account count: a prefix condition on both sides (was a divergence before v0.4.0).** The
+generated Rust guards with `accounts.len() < n`, so it accepts surplus accounts — only the
+declared prefix `0..n` is inspected. Anchor passes the surplus through to
+`ctx.remaining_accounts`, so rejecting it would break drop-in compatibility and the guard must
+stay as it is.
+
+Through v0.3 the Lean side did not match: `WellFormed` and `genValidate` both required an exact
+count (`c.length = s.fields.length`), so on a slice with more accounts than the struct declares
+Rust returned `Ok` while the contract and model rejected. That was a real gap between the
+headline soundness sentence ("verified-anchor never accepts an account set the contract
+rejects") and the contract as written, and it is closed in v0.4.0 by relaxing the Lean side to
+`s.fields.length ≤ c.length` rather than by tightening the Rust.
+
+Nothing is weakened by the relaxation, because nothing ever inspected a surplus account under
+either formulation: every per-field check and the struct-level distinct-mut-key check range over
+`s.fields.zipIdx`, i.e. the declared prefix only, so accounts at index ≥ `s.fields.length` were
+unconstrained by the exact-count contract too. The change is to what the contract *claims*, not
+to what it *checks*, and `genValidate_sound` re-proves unchanged. The Rust behaviour is pinned
+by the `accepts_surplus_accounts` test.
 
 ## Lifecycle: `init` and `close`
 
@@ -312,6 +324,7 @@ entry below).
 | per-operand codegen (`Operand::{Field,Key,Owner,Lamports,DataLen,IsSigner,IsWritable,Executable,InstrArg}`) computed as `Option<...>`, combined STRICTLY (never Rust's short-circuiting `&&`/`\|\|`) | `evalOperand` / `evalCmp` / `evalExpr`, strict `and`/`or` in the `Option` monad | `satisfies … (.expr e)` |
 | `nat`/`int` operands compared via a widened numeric comparison (so `delta < 0` on an `i64` field and `count > 0` on a `u64` field both type-check against a signed/unsigned literal) | `Value.toInt?` widens `nat`/`int` to `Int` before `evalCmp` orders them | same |
 | target unlocatable in `T::LAYOUT` → `compile_error!` at macro expansion (`has_one`), or the field falls out of the sublanguage into the escape hatch (`constraint = <expr>`) | `AccountType.locateField`/`locateField'` returning `none` | — (build-time / escape-hatch routing, not a runtime check) |
+| `constraint = <expr>` data field present in `T::LAYOUT` but NOT decodable by `read_val` (an aggregate: `Ty::{Array,String,Vec,Option,Struct}`) → escape hatch, via the const `layout::has_top_level_scalar_field` | `readVal` has no aggregate arm — every one of them is `none` | — (escape-hatch routing; see "readability, not merely presence" below) |
 
 **What is not modelled.** `Ty` has no float and no Borsh-enum variant. A `has_one` target (or
 a `constraint = <expr>` data-field operand) behind — or itself — a float, an enum, a nested
@@ -320,6 +333,28 @@ unlocatable in `T::LAYOUT`. For `has_one` this is a **build error** (see "Known 
 in the migration guide): `has_one` is declarative, so there is no developer expression to fall
 back to. For `constraint = <expr>` it is not an error — the expression falls to the escape
 hatch and still runs, just outside the proof.
+
+**Readability, not merely presence (v0.4.0).** The const that routes a `constraint = <expr>`
+data field between the proven core and the escape hatch asks whether `read_val` can DECODE the
+field, not whether `T::LAYOUT` merely names it: `layout::has_top_level_scalar_field`, whose
+truth table is exactly `read_val`'s arm split — `true` for the integers, `bool` and `Pubkey`;
+`false` for `Array`, `String`, `Vec`, `Option` and `Struct`.
+
+Presence was a sufficient test only while the descriptor TRUNCATED at the first unmappable
+field, because "named" then implied "scalar". Once the derive learned to map `[T; N]`, an array
+field became named while `read_val` kept refusing it, and a presence test would report
+`constraint = vault.root == root` as *proven*: the check went into the Lean spec, the obligation
+discharged honestly — Lean's `readVal .array` is `none`, so the contract faithfully says "reject
+everything" — and the generated validator then rejected every account, matching root included.
+A build error had silently become an always-reject, which is strictly worse.
+
+The false branch routes to the **verbatim-Rust** hatch rather than to the recompiled
+`layout::FieldValue` form, because `FieldValue` refuses the same aggregate set and would brick
+identically. The recompiled form is retained only for expressions whose verbatim Rust would not
+type-check — a negative literal against an unsigned field, or an ordering between two runtime
+operands of possibly-different signedness — where the sublanguage is deliberately more
+permissive than Rust. Both arms of the selection are type-checked whether or not the const picks
+them, which is why that choice is made at macro-expansion time rather than in the user's crate.
 
 ## The constraint expression sublanguage (`constraint = <expr>`)
 

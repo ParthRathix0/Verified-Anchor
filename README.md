@@ -30,6 +30,7 @@ Verified Anchor closes the gap. Every macro expansion ships with a Lean 4 theore
 * `v0.2.0` — M8 constraint-surface completion: `address`/`executable` explicit annotations, stored/non-canonical bump opt-in, `seeds::program`, automatic distinct-mut-key checking, `rent_exempt = enforce/skip`.
 * Lean theorems' axioms: `[propext, Quot.sound]` only. Zero `sorry` / `admit`.
 * Out of scope: token / mint / associated-token constraints. Floats and Borsh enums in the constraint sublanguage (fall to the escape hatch).
+* Known drop-in gap: **an unlocatable `has_one` target is a build error.** `has_one` needs the target field's real Borsh offset from `T::LAYOUT`, and `#[derive(AccountData)]` truncates that descriptor at the first field it cannot map — a non-literal-length array (`[u8; N]` with `N` a named const), a nested struct, or an enum. A `has_one` target at or behind such a field is rejected at compile time. Unlike `constraint = <expr>`, `has_one` is declarative: there is no developer expression to fall back to. This is the release's largest known departure from "anything Anchor compiles, we compile"; see [`docs/migrating-from-anchor.md`](docs/migrating-from-anchor.md#limitations).
 
 ## Packages
 

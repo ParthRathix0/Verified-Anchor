@@ -645,6 +645,12 @@ fn instr_arg_binds(
             false => quote! { _ },
         };
         quote! {
+            // BELT AND BRACES with `idents_in`'s value-position filter. That filter removes the
+            // common false positive, but the walk stays an over-approximation by design, and any
+            // residual one lands here as an `unused_variables` warning attributed to the USER'S
+            // STRUCT SPAN — unsilenceable from their crate and a hard error under
+            // `#![deny(warnings)]`, which is the `compile_error!` the prime directive forbids.
+            #[allow(unused_variables)]
             let #pat: #ty = <#ty as ::verified_anchor::borsh::BorshDeserialize>::deserialize(
                 &mut __va_args)
                 .map_err(|_| ::verified_anchor::VAError::ConstraintViolated {
@@ -924,9 +930,9 @@ fn inner_ty_at(i: usize, ctx: &crate::expr::ExprCtx) -> syn::Type {
         .expect("data-field operand on a field with no typed layout")
 }
 
-/// The const-bool guard "every data field this expression reads is locatable in the USER's
-/// Borsh descriptor", or `None` when the expression reads no data field at all (then it is
-/// proven unconditionally).
+/// The const-bool guard "every data field this expression reads is present in the USER's Borsh
+/// descriptor AND of a type `read_val` can decode", or `None` when the expression reads no data
+/// field at all (then it is proven unconditionally).
 ///
 /// WHY THIS IS A CONST AND NOT A BUILD ERROR. `#[derive(AccountData)]` truncates the layout at
 /// the first field whose type `map_ty` cannot map, so `constraint = vault.amount >= 1000` over
@@ -938,10 +944,20 @@ fn inner_ty_at(i: usize, ctx: &crate::expr::ExprCtx) -> syn::Type {
 /// runtime `None` either: `locate` failing rejects EVERY account, bricking the instruction.
 ///
 /// So the decision is deferred to the user's crate, where the descriptor is finally known, and
-/// taken by a CONST so both arms are compiled but only one survives: locatable => the proven
-/// byte-level check in `validate`; not locatable => the developer's verbatim Rust in
-/// `try_accounts`, listed in `UNPROVEN_CHECKS` and absent from `lean_spec`. Enforcement never
-/// stops; only the proof does.
+/// taken by a CONST so both arms are compiled but only one survives: readable => the proven
+/// byte-level check in `validate`; not readable => a fallback in `try_accounts`, listed in
+/// `UNPROVEN_CHECKS` and absent from `lean_spec`. Enforcement never stops; only the proof does.
+///
+/// THE SECOND WAY THIS GATE CAN BE WRONG, and the one that made it a CRITICAL finding. Until
+/// M10 Task 15b an unmappable field TRUNCATED the descriptor, so "the descriptor names this
+/// field" implied "the field is scalar" and a presence test was a sound readability test. Task
+/// 15b taught `map_ty` to map `[T; N]`, and an array field became PRESENT while `read_val` kept
+/// refusing it. A presence gate then reported `constraint = vault.root == root` as PROVEN, wrote
+/// it into the Lean spec, discharged the obligation honestly (Lean's `readVal .array` is `none`
+/// as well, so the contract faithfully says "reject everything") — and rejected every account,
+/// matching root included. The gate is therefore `has_top_level_scalar_field`, and the same
+/// change applies to `String`/`Vec<T>`/`Option<T>`/`Struct` comparisons, all of which real
+/// Anchor compiles and enforces.
 fn locatability_cond(v: &crate::expr::VExpr, ctx: &crate::expr::ExprCtx) -> Option<TokenStream2> {
     let ops = v.field_operands();
     if ops.is_empty() {
@@ -949,8 +965,11 @@ fn locatability_cond(v: &crate::expr::VExpr, ctx: &crate::expr::ExprCtx) -> Opti
     }
     let terms: Vec<TokenStream2> = ops.iter().map(|(i, seg)| {
         let inner = inner_ty_at(*i, ctx);
+        // SCALAR-READABLE, not merely PRESENT. See `layout::has_top_level_scalar_field`: a
+        // present-but-aggregate field (`[u8; 32]`, `String`, `Vec<T>`, `Option<T>`) is one
+        // `read_val` refuses, so proving a check over it proves "reject everything".
         quote! {
-            ::verified_anchor::layout::has_top_level_field(
+            ::verified_anchor::layout::has_top_level_scalar_field(
                 <#inner as ::verified_anchor::AccountData>::LAYOUT, #seg)
         }
     }).collect();
@@ -966,17 +985,28 @@ struct UnprovenCheck<'a> {
     /// The expression, run VERBATIM as Rust in `try_accounts`.
     expr: &'a Expr,
     /// `None` — outside the sublanguage, so unproven in every build; the hatch runs the
-    /// developer's Rust verbatim. `Some((cond, v))` — INSIDE the sublanguage, but only
-    /// provable when `cond` (a const bool evaluated in the user's crate) holds; the hatch
-    /// re-evaluates the compiled form `v` against the deserialised struct otherwise.
+    /// developer's Rust verbatim. `Some((cond, form))` — INSIDE the sublanguage, but only
+    /// provable when `cond` (a const bool evaluated in the user's crate) holds; `form` says
+    /// which fallback the hatch runs when it does not.
     ///
-    /// The two arms differ deliberately. A statically unproven expression is arbitrary Rust
-    /// and must run as Rust. A conditionally unproven one is a SUBLANGUAGE expression, and
-    /// re-emitting it as Rust would change its meaning: the sublanguage compares `nat` against
-    /// `int` numerically (`vault.delta < vault.amount`, `vault.big > -1`) where Rust refuses
-    /// the comparison outright, and it is strict where Rust's `||` short-circuits. Running the
-    /// compiled form keeps the fallback semantically identical to the check it replaces.
-    proven_if: Option<(TokenStream2, crate::expr::VExpr)>,
+    /// `form = None` runs the developer's Rust VERBATIM, exactly like the statically unproven
+    /// case. `form = Some(v)` re-evaluates the COMPILED expression `v` against the deserialised
+    /// struct through `layout::FieldValue`.
+    ///
+    /// Neither form is universally usable, which is why the choice is made per expression by
+    /// `VExpr::fallback_needs_value_form` (see its doc comment for the rule and its residue):
+    ///
+    ///   * The compiled form goes through `layout::FieldValue`, which returns `None` for
+    ///     `Option<T>`, `Vec<T>`, `String` and `[T; N]` — the very set `read_val` refuses. So it
+    ///     BRICKS on exactly the expressions the readability gate now diverts to the hatch, and
+    ///     cannot be the fallback for them.
+    ///   * The verbatim form is plain Rust, so it cannot express the comparisons where the
+    ///     sublanguage is deliberately more permissive than Rust's type checker: `nat` against
+    ///     `int` numerically (`vault.delta < vault.amount`, `vault.big > -1`).
+    ///
+    /// Both arms of the const selection are type-checked regardless of which the const picks,
+    /// so this cannot be deferred to the user's crate along with `cond`.
+    proven_if: Option<(TokenStream2, Option<crate::expr::VExpr>)>,
 }
 
 /// Every constraint expression that must run through the escape hatch, in field order.
@@ -994,7 +1024,13 @@ fn unproven_checks<'a>(specs: &'a [FieldSpec], ctx: &crate::expr::ExprCtx) -> Ve
                 None => None,
                 // Inside it, but its provability depends on the user's descriptor.
                 Some(v) => match locatability_cond(&v, ctx) {
-                    Some(cond) => Some((cond, v)),
+                    Some(cond) => {
+                        let form = match v.fallback_needs_value_form() {
+                            true => Some(v),
+                            false => None,
+                        };
+                        Some((cond, form))
+                    }
                     // Proven unconditionally — not an escape-hatch check at all.
                     None => continue,
                 },
@@ -1010,17 +1046,38 @@ fn unproven_checks<'a>(specs: &'a [FieldSpec], ctx: &crate::expr::ExprCtx) -> Ve
     out
 }
 
-/// Every identifier appearing anywhere in `e`, used to decide which account fields and which
-/// `#[instruction(...)]` arguments an escape-hatch expression needs in scope. Deliberately
-/// over-approximate (a method name counts as an identifier): binding one extra name is
-/// harmless, missing one is a build failure on valid Anchor.
+/// Every identifier appearing in `e` in VALUE POSITION, used to decide which account fields and
+/// which `#[instruction(...)]` arguments an escape-hatch expression needs in scope.
+///
+/// Still deliberately over-approximate — it is a token walk, not name resolution — because the
+/// two error directions are not symmetric: binding a name the expression does not use is a
+/// warning, while failing to bind one it does use is a hard build failure on valid Anchor.
+///
+/// The one refinement it does make is dropping identifiers that directly follow a `.`, i.e.
+/// field and method names. That is what stops `constraint = at_least(vault.amount)` from
+/// claiming to use an `#[instruction(amount: u64)]` argument it never mentions; see
+/// `instr_arg_binds`. It cannot introduce a miss, because nothing after a `.` is ever a name
+/// this function's callers would bind: a field name resolves against the receiver, a method
+/// name against its impl, and a tuple index is not an `Ident` at all.
 fn idents_in(e: &Expr) -> std::collections::HashSet<String> {
     fn walk(ts: TokenStream2, out: &mut std::collections::HashSet<String>) {
+        let mut after_dot = false;
         for tt in ts {
             match tt {
-                proc_macro2::TokenTree::Ident(i) => { out.insert(i.to_string()); }
-                proc_macro2::TokenTree::Group(g) => walk(g.stream(), out),
-                _ => {}
+                proc_macro2::TokenTree::Ident(i) => {
+                    if !after_dot {
+                        out.insert(i.to_string());
+                    }
+                    after_dot = false;
+                }
+                proc_macro2::TokenTree::Group(g) => {
+                    // A delimited group is never the field/method name of a preceding `.`
+                    // (`a.(b)` is not an expression), so the flag does not carry into it.
+                    walk(g.stream(), out);
+                    after_dot = false;
+                }
+                proc_macro2::TokenTree::Punct(p) => after_dot = p.as_char() == '.',
+                proc_macro2::TokenTree::Literal(_) => after_dot = false,
             }
         }
     }
@@ -2172,13 +2229,46 @@ pub fn derive_verified_accounts(input: TokenStream) -> TokenStream {
         instr_args: &hatch_arg_names,
         deser: true,
     };
+    // The developer's expression run VERBATIM as Rust, as a self-contained block. Used both for
+    // expressions outside the sublanguage and as the const-selected fallback for a sublanguage
+    // expression the readability gate turned off (see `UnprovenCheck::proven_if`).
+    let verbatim_check = |field: &str, src: &str, e: &Expr| -> TokenStream2 {
+        let used = idents_in(e);
+        // Bind every account field the expression names, by its DECLARED name, so the
+        // developer's Rust reads exactly what the same source reads under real Anchor:
+        // `Account<'info, T>` derefs to the deserialised `T`, the untyped wrappers
+        // deref to `AccountInfo`. Only the names actually used are bound — an unused
+        // binding would warn in the user's crate, which they cannot silence.
+        let binds: Vec<TokenStream2> = specs.iter().filter(|sp| used.contains(&sp.name))
+            .map(|sp| {
+                let id = syn::Ident::new(&sp.name, name.span());
+                // Same reasoning as the argument bindings below: `idents_in` may over-report
+                // (an account field name reached only through a non-value position), and the
+                // resulting warning would be unsilenceable in the user's crate.
+                quote! { #[allow(unused_variables)] let #id = &__self.#id; }
+            }).collect();
+        let arg_binds = instr_arg_binds(
+            &instr_args.all, &used, &field_names, field, src, name.span());
+        quote! {
+            {
+                #(#binds)*
+                #arg_binds
+                if !(#e) {
+                    return ::core::result::Result::Err(
+                        ::verified_anchor::VAError::ConstraintViolated {
+                            field: #field, expr: #src });
+                }
+            }
+        }
+    };
+
     let hatch_checks: Vec<TokenStream2> = unproven.iter().map(|u| {
         let (field, src, e) = (&u.field, &u.src, u.expr);
         match &u.proven_if {
             // Const-selected fallback for a SUBLANGUAGE expression whose data fields the user's
-            // descriptor cannot locate. The proven check in `validate` is switched off by the
-            // same const, so exactly one of the two runs — never neither.
-            Some((cond, v)) => {
+            // descriptor cannot read at the byte level. The proven check in `validate` is
+            // switched off by the SAME const, so exactly one of the two runs — never neither.
+            Some((cond, Some(v))) => {
                 let check = v.to_tokens_check(field, src, &hatch_ctx_deser);
                 // `Operand::instrArg` reads `instr_data` through this const, which
                 // `try_accounts` only emits for seeds. Shadowing it locally is harmless and
@@ -2189,33 +2279,15 @@ pub fn derive_verified_accounts(input: TokenStream) -> TokenStream {
                 };
                 quote! { if !(#cond) { #args_decl #check } }
             }
-            // Outside the sublanguage: the developer's Rust, verbatim.
-            None => {
-                let used = idents_in(e);
-                // Bind every account field the expression names, by its DECLARED name, so the
-                // developer's Rust reads exactly what the same source reads under real Anchor:
-                // `Account<'info, T>` derefs to the deserialised `T`, the untyped wrappers
-                // deref to `AccountInfo`. Only the names actually used are bound — an unused
-                // binding would warn in the user's crate, which they cannot silence.
-                let binds: Vec<TokenStream2> = specs.iter().filter(|sp| used.contains(&sp.name))
-                    .map(|sp| {
-                        let id = syn::Ident::new(&sp.name, name.span());
-                        quote! { let #id = &__self.#id; }
-                    }).collect();
-                let arg_binds = instr_arg_binds(
-                    &instr_args.all, &used, &field_names, field, src, name.span());
-                quote! {
-                    {
-                        #(#binds)*
-                        #arg_binds
-                        if !(#e) {
-                            return ::core::result::Result::Err(
-                                ::verified_anchor::VAError::ConstraintViolated {
-                                    field: #field, expr: #src });
-                        }
-                    }
-                }
+            // Same const selection, but the fallback is the developer's verbatim Rust — the only
+            // form that can read an AGGREGATE field (`[T; N]`, `String`, `Vec<T>`, `Option<T>`),
+            // which both `read_val` and `layout::FieldValue` refuse.
+            Some((cond, None)) => {
+                let body = verbatim_check(field, src, e);
+                quote! { if !(#cond) #body }
             }
+            // Outside the sublanguage: the developer's Rust, verbatim, in every build.
+            None => verbatim_check(field, src, e),
         }
     }).collect();
 

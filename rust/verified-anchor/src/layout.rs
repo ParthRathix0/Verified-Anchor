@@ -181,7 +181,11 @@ pub fn encoded_width(ty: &Ty, data: &[u8], off: usize) -> Option<usize> {
             if tag == 0 {
                 Some(1)
             } else {
-                Some(1 + encoded_width(e, data, off + 1)?)
+                // `checked_add` on both the cursor step and the accumulated width, as every
+                // sibling arm does: a hostile descriptor/buffer pair must saturate into `None`
+                // (reject) rather than wrap into a small offset that reads the wrong bytes.
+                let w = encoded_width(e, data, off.checked_add(1)?)?;
+                1usize.checked_add(w)
             }
         }
         Ty::Struct(fs) => {
@@ -322,6 +326,43 @@ pub const fn has_top_level_field(ty: Ty, name: &str) -> bool {
 /// time by the same mechanism.
 pub const fn has_top_level_pubkey_field(ty: Ty, name: &str) -> bool {
     matches!(top_level_field(ty, name), Some(Ty::Pubkey))
+}
+
+/// True when `read_val` can DECODE a value of this type — i.e. `Ty` is one of the scalars, not
+/// an aggregate. MUST stay arm-for-arm with `read_val` (and with Lean's `readVal`, which it
+/// mirrors): every type listed there as yielding a `Value` is `true` here, and every type
+/// listed there as failing closed is `false`.
+///
+///   `U8 U16 U32 U64 U128 I8 I16 I32 I64 I128 Bool Pubkey` -> true
+///   `Array String Vec Option Struct`                      -> false
+pub const fn is_readable_scalar(ty: Ty) -> bool {
+    match ty {
+        Ty::U8 | Ty::U16 | Ty::U32 | Ty::U64 | Ty::U128
+        | Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 | Ty::I128
+        | Ty::Bool | Ty::Pubkey => true,
+        Ty::Array(_, _) | Ty::String | Ty::Vec(_) | Ty::Option(_) | Ty::Struct(_) => false,
+    }
+}
+
+/// True when `name` is a top-level field of `ty` AND `read_val` can decode it.
+///
+/// THE PREDICATE `constraint = <expr>` NEEDS, and the reason it is not `has_top_level_field`.
+/// Presence alone was a sound gate only while the descriptor was TRUNCATED at the first
+/// unmappable field — then "present" implied "mappable" implied "scalar". Once `map_ty` learned
+/// `[T; N]` (M10 Task 15b) an ARRAY field became present in the descriptor while `read_val`
+/// still refuses it, so a presence gate reported `vault.root == root` as PROVEN, put it in the
+/// Lean spec, discharged the obligation honestly (Lean's `readVal .array` is `none` too) — and
+/// then rejected EVERY account, matching root included. A loud pre-M10 `compile_error!` had
+/// become a silent always-reject.
+///
+/// So the question the gate must ask is not "could `locate` find this field?" but "could
+/// `read_val` produce a `Value` from it?". `has_top_level_field` remains the right predicate for
+/// `has_one` (which pairs it with `has_top_level_pubkey_field`), not for a general expression.
+pub const fn has_top_level_scalar_field(ty: Ty, name: &str) -> bool {
+    match top_level_field(ty, name) {
+        Some(t) => is_readable_scalar(t),
+        None => false,
+    }
 }
 
 #[cfg(test)]
@@ -517,6 +558,68 @@ mod const_lookup_tests {
             assert_eq!(const_str_eq(a, b), a == b, "{a:?} vs {b:?}");
         }
     }
+
+    /// The C1 truth table, spelled out. `is_readable_scalar` is the const mirror of `read_val`'s
+    /// arm split, and it MUST NOT DRIFT: a `true` here for a type `read_val` refuses puts a
+    /// reject-everything check into the "proven" core, and a `false` for one it accepts throws
+    /// away a proof the milestone exists to produce.
+    #[test]
+    fn is_readable_scalar_mirrors_read_val_arm_for_arm() {
+        let data = vec![0u8; 128];
+        let scalars = [
+            Ty::U8, Ty::U16, Ty::U32, Ty::U64, Ty::U128,
+            Ty::I8, Ty::I16, Ty::I32, Ty::I64, Ty::I128,
+            Ty::Bool, Ty::Pubkey,
+        ];
+        let aggregates = [
+            Ty::Array(&Ty::U8, 32),
+            Ty::String,
+            Ty::Vec(&Ty::U8),
+            Ty::Option(&Ty::U64),
+            Ty::Struct(&[("a", Ty::U8)]),
+        ];
+        for ty in scalars {
+            assert!(is_readable_scalar(ty), "{ty:?} must be readable");
+            // …and the predicate is not merely asserting itself: `read_val` really does decode
+            // it from a buffer large enough to hold it.
+            assert!(read_val(&ty, &data, 0).is_some(), "read_val refused scalar {ty:?}");
+        }
+        for ty in aggregates {
+            assert!(!is_readable_scalar(ty), "{ty:?} must NOT be readable");
+            assert!(read_val(&ty, &data, 0).is_none(), "read_val decoded aggregate {ty:?}");
+        }
+    }
+
+    /// The gate `constraint = <expr>` compiles into the user's crate. An ARRAY field is the
+    /// regression that made C1 critical: PRESENT (since `map_ty` learned `[T; N]`) but not
+    /// readable, so a presence gate said "proven" and the check then rejected every account.
+    #[test]
+    fn scalar_field_predicate_separates_presence_from_readability() {
+        const ROOT_VAULT: Ty =
+            Ty::Struct(&[("root", Ty::Array(&Ty::U8, 32)), ("amount", Ty::U64)]);
+
+        // Both fields are PRESENT — this is exactly why presence was the wrong question.
+        assert!(has_top_level_field(ROOT_VAULT, "root"));
+        assert!(has_top_level_field(ROOT_VAULT, "amount"));
+
+        // Only the scalar one is READABLE.
+        assert!(!has_top_level_scalar_field(ROOT_VAULT, "root"));
+        assert!(has_top_level_scalar_field(ROOT_VAULT, "amount"));
+
+        // Absent stays false, on both predicates.
+        assert!(!has_top_level_scalar_field(ROOT_VAULT, "nope"));
+        assert!(!has_top_level_scalar_field(TRUNCATED, "authority"));
+
+        // The scalar types existing constraints rely on keep their proofs.
+        assert!(has_top_level_scalar_field(VAULT, "bump"));
+        assert!(has_top_level_scalar_field(VAULT, "authority"));
+    }
+
+    // Const-evaluable, like the guards above: this is the exact expression `locatability_cond`
+    // emits into the user's crate.
+    const _: () = assert!(has_top_level_scalar_field(VAULT, "authority"));
+    const _: () = assert!(!has_top_level_scalar_field(
+        Ty::Struct(&[("root", Ty::Array(&Ty::U8, 32))]), "root"));
 
     /// The const predicate must agree with the runtime `locate` it is guarding: whenever it says
     /// "absent", `locate` must genuinely fail for every buffer, not just some.

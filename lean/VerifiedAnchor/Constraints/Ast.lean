@@ -1,5 +1,4 @@
 import VerifiedAnchor.Solana.Pubkey
-import VerifiedAnchor.Solana.Layout
 import VerifiedAnchor.Solana.Discriminator
 import VerifiedAnchor.Solana.Borsh.Locate
 

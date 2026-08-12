@@ -90,7 +90,9 @@ def distinctMutKeysB (s : AccountsStruct) (c : Ctx) : Bool :=
           (Ctx.atField s c q.2).allB (fun b => decide (a.key ≠ b.key)))))
 
 def genValidate (s : AccountsStruct) (c : Ctx) : Bool :=
-  decide (c.length = s.fields.length) &&
+  -- Mirrors the generated Rust's `if accounts.len() < n { Err(NotEnoughAccounts) }` exactly.
+  -- See `WellFormed` for why this is a prefix condition and not an exact count.
+  decide (s.fields.length ≤ c.length) &&
     distinctMutKeysB s c &&
     s.fields.zipIdx.all (fun p => genFieldValidate s c p.2 p.1)
 
