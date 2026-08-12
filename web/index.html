@@ -840,7 +840,7 @@ $ cargo verified-anchor check          <span class="out"># discharges every stru
         <div class="idx">5</div>
         <div>
           <div class="label">Discharge at build time</div>
-          <div class="text"><code>cargo verified-anchor check</code> runs <code>lake env lean</code> and discharges a per-struct obligation by <code>decide M4Subset</code>. If the obligation fails, the build fails.</div>
+          <div class="text"><code>cargo verified-anchor check</code> runs <code>lake env lean</code> and discharges a per-struct obligation by <code>decide M10Subset</code>. If the obligation fails, the build fails.</div>
         </div>
       </div>
     </div>
@@ -848,7 +848,7 @@ $ cargo verified-anchor check          <span class="out"># discharges every stru
     <div class="theorem">
       <div class="label">Headline theorem · Lean 4</div>
 <pre>theorem genValidate_sound
-    (s : AccountsStruct) (c : Ctx) (h : M4Subset s) :
+    (s : AccountsStruct) (c : Ctx) (h : M10Subset s) :
   genValidate s c = true ↔ validates s c</pre>
       <p>For every struct in the supported subset, the generated Rust validator returns <code>Ok(())</code> exactly when the declarative contract holds. Proved once, parameterised over the user's struct. The lifecycle theorem <code>lifecycle_sound</code> discharges analogous Hoare obligations for <code>init</code> and <code>close</code>. Both depend only on <code>[propext, Quot.sound]</code>.</p>
     </div>
@@ -863,11 +863,16 @@ $ cargo verified-anchor check          <span class="out"># discharges every stru
       <div class="row"><div class="c">owner = &lt;expr&gt;</div><div class="t">genValidate_sound</div></div>
       <div class="row"><div class="c">has_one = &lt;field&gt;</div><div class="t">genValidate_sound (relational)</div></div>
       <div class="row"><div class="c">seeds = […], bump</div><div class="t">genValidate_sound (canonical-only PDA)</div></div>
+      <div class="row"><div class="c">seeds = […], bump = arg(off)</div><div class="t">genValidate_sound (stored-bump opt-in)</div></div>
+      <div class="row"><div class="c">seeds::program = &lt;expr&gt;</div><div class="t">genValidate_sound (foreign program id)</div></div>
       <div class="row"><div class="c">discriminator = "…"</div><div class="t">genValidate_sound</div></div>
-      <div class="row"><div class="c">address = &lt;pubkey&gt; / executable</div><div class="t">genValidate_sound</div></div>
+      <div class="row"><div class="c">address = &lt;pubkey&gt;</div><div class="t">genValidate_sound</div></div>
+      <div class="row"><div class="c">executable</div><div class="t">genValidate_sound</div></div>
       <div class="row"><div class="c">rent_exempt = enforce</div><div class="t">genValidate_sound (opaque rent minimum)</div></div>
       <div class="row"><div class="c">distinct mutable keys</div><div class="t">genValidate_sound (struct-level)</div></div>
       <div class="row"><div class="c">constraint = &lt;expr&gt;</div><div class="t">genValidate_sound (relational sublanguage, fail-closed)</div></div>
+      <div class="row"><div class="c">SystemAccount base</div><div class="t">genValidate_sound (owner)</div></div>
+      <div class="row"><div class="c">Program&lt;P&gt; base</div><div class="t">genValidate_sound (executable + address)</div></div>
       <div class="row"><div class="c">init / close / realloc / zero / init_if_needed</div><div class="t">lifecycle_sound (Hoare-style)</div></div>
     </div>
   </div>
@@ -900,7 +905,8 @@ $ lake env lean Audit.lean</pre>
     <div class="boundary">
       <div class="in">
         <div class="h">In the proof</div>
-        <p><code>signer</code>, <code>mut</code>, <code>owner</code>, <code>has_one</code> (located at its real Borsh offset), <code>seeds</code> + <code>bump</code> (incl. <code>seeds::program</code> and opt-in stored bump), <code>discriminator</code>, <code>address</code>, <code>executable</code>, <code>rent_exempt</code>, automatic distinct-mutable-key checking, and a relational <code>constraint = &lt;expr&gt;</code> sublanguage over account metadata, Borsh-located data fields and <code>#[instruction(…)]</code> arguments. Plus <code>init</code> / <code>close</code> / <code>realloc</code> / <code>zero</code> / <code>init_if_needed</code> as Hoare theorems.</p>
+        <p><code>signer</code>, <code>mut</code>, <code>owner</code>, <code>has_one</code> (located at its real Borsh offset), <code>seeds</code> + <code>bump</code> (including <code>seeds::program</code> and opt-in stored bump), <code>discriminator</code>, <code>address</code>, <code>executable</code>, <code>rent_exempt</code>, automatic distinct-mutable-key checking, and a relational <code>constraint = &lt;expr&gt;</code> sublanguage over account metadata, Borsh-located data fields and <code>#[instruction(…)]</code> arguments. Plus <code>init</code> / <code>close</code> / <code>realloc</code> / <code>zero</code> / <code>init_if_needed</code> as Hoare theorems.</p>
+        <p style="margin-top: 12px;">Known drop-in gap: an unlocatable <code>has_one</code> target is a build error. <code>has_one</code> needs the target field's real Borsh offset from <code>T::LAYOUT</code>; if <code>#[derive(AccountData)]</code> stops at a non-literal-length array, a nested struct, or an enum, the compile is rejected.</p>
       </div>
       <div class="out">
         <div class="h">Outside the proof</div>
@@ -908,7 +914,7 @@ $ lake env lean Audit.lean</pre>
       </div>
       <div class="out">
         <div class="h">Constraints not modelled</div>
-        <p>SPL <code>token::*</code> / <code>mint::*</code> / <code>associated_token::*</code> (planned for v0.5) — these still emit a <code>compile_error!</code> with a migration-guide pointer. A <code>constraint = &lt;expr&gt;</code> outside the proven sublanguage is <em>not</em> rejected: it compiles, runs verbatim after deserialisation, and is reported by <code>cargo verified-anchor check</code> as an unproven check. Unproven checks are additional conjuncts, so they can only reject more — verified-anchor never accepts an account set the contract rejects.</p>
+        <p>SPL <code>token::*</code> / <code>mint::*</code> / <code>associated_token::*</code> constraints are out of scope for the current release (planned M11). A <code>constraint = &lt;expr&gt;</code> outside the proven sublanguage is <em>not</em> rejected: it compiles, runs verbatim after deserialisation, and is reported by <code>cargo verified-anchor check</code> as an unproven check. Unproven checks are additional conjuncts, so they can only reject more — verified-anchor never accepts an account set the contract rejects.</p>
       </div>
       <div class="in">
         <div class="h">Empirically validated</div>
@@ -961,7 +967,7 @@ $ lake env lean Audit.lean</pre>
       <a href="https://github.com/ParthRathix0/Verified-Anchor/blob/master/docs/migrating-from-anchor.md">Migration guide</a>
       <a href="https://github.com/ParthRathix0/Verified-Anchor/blob/master/docs/announcement-v0.1.0.md">v0.1.0 post</a>
     </div>
-    <div>Verified Anchor · v0.1.0 · CC BY-NC-ND 4.0</div>
+    <div>Verified Anchor · v0.4.0 · CC BY-NC-ND 4.0</div>
   </div>
 </footer>
 
