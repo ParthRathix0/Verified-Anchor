@@ -5,9 +5,9 @@
 
 use verified_anchor::VerifiedAccounts;
 
-verified_anchor::solana_program::declare_id!("VAIinArg1111111111111111111111111111111111");
+verified_anchor::solana_program::declare_id!("VAiinArg11111111111111111111111111111111111");
 
-#[derive(borsh::BorshSerialize, borsh::BorshDeserialize, verified_anchor_macros::AccountData)]
+#[verified_anchor::account]
 pub struct VaultAccount {
     pub value: u64,
 }
