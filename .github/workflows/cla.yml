@@ -17,7 +17,24 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: CLA Assistant
-        if: (github.event.comment.body == 'recheck' || github.event.comment.body == 'I have read the CLA Document and I hereby sign the CLA') || github.event_name == 'pull_request_target'
+        # The CLA exists to cover contributions from OUTSIDE the project. A pull request whose
+        # head branch lives in this repository can only have been pushed by someone with write
+        # access — currently the sole maintainer — so there is no inbound contribution to
+        # license and the check is skipped. Fork pull requests, which is every outside
+        # contribution, stay fully gated.
+        #
+        # The STEP is skipped rather than the job, deliberately. `cla` is a required status
+        # check on master, and a job that never runs never reports a status, which would leave
+        # every maintainer pull request permanently unmergeable. A job whose only step is
+        # skipped still completes successfully and reports.
+        #
+        # The comment-driven routes (signing, and `recheck`) are kept unconditional so a
+        # contributor can always sign or re-trigger on their own pull request.
+        if: >-
+          (github.event_name == 'pull_request_target'
+            && github.event.pull_request.head.repo.full_name != github.repository)
+          || github.event.comment.body == 'recheck'
+          || github.event.comment.body == 'I have read the CLA Document and I hereby sign the CLA'
         uses: contributor-assistant/github-action@v2.6.1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
