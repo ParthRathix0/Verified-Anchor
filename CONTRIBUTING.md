@@ -81,9 +81,9 @@ Fill in the template: what changed, the issue it closes, its soundness impact, a
 checklist. If you could not run part of the gate — no SBF toolchain, for instance — tick what
 you ran and say plainly what you skipped. An honest gap is fine; a silently skipped step is not.
 
-**8. Sign the CLA.** On your first pull request only, a bot comments asking you to sign. Reply
-with a single comment containing exactly the sentence it gives you. It is recorded once and never
-asked again. You keep the copyright in your work — see [CLA.md](CLA.md).
+**8. Sign the CLA.** On your first pull request only, a **CLA** check appears. Click **Details**
+next to it, sign in with your GitHub account and accept. It is recorded once against your account
+and never asked again. You keep the copyright in your work — see [CLA.md](CLA.md).
 
 **9. Wait for CI.** Every pull request runs the full gate automatically: Lean build, zero
 `sorry`, the axiom audit, the SBF build, the litesvm runtime suites, and the proof obligations.
@@ -291,8 +291,9 @@ These are the conventions that section assumes:
 
 ## Contributor License Agreement
 
-You sign a [CLA](CLA.md) on your first pull request. A bot comments with instructions; you reply
-once with a single sentence and it is recorded permanently.
+You sign a [CLA](CLA.md) on your first pull request. A **CLA** check appears on it; click
+**Details**, sign in with GitHub and accept. It is recorded permanently against your account, so
+every later pull request you open is covered automatically.
 
 **You keep the copyright in your contribution.** The CLA grants a licence, it is not an
 assignment.
