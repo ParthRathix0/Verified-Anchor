@@ -44,7 +44,9 @@ fn declare_ids_in(path: &Path, out: &mut Vec<(String, String)>) {
 
 fn walk(dir: &Path, out: &mut Vec<(String, String)>) {
     for entry in fs::read_dir(dir).unwrap_or_else(|e| panic!("reading dir {dir:?}: {e}")) {
-        let path = entry.unwrap_or_else(|e| panic!("reading entry in {dir:?}: {e}")).path();
+        let path = entry
+            .unwrap_or_else(|e| panic!("reading entry in {dir:?}: {e}"))
+            .path();
         if path.is_dir() {
             walk(&path, out);
         } else if path.extension().is_some_and(|ext| ext == "rs") {
@@ -65,8 +67,8 @@ fn every_ui_fixture_declare_id_is_a_valid_pubkey() {
     );
 
     for (file, id) in &ids {
-        let decoded =
-            base58_decode(id).unwrap_or_else(|e| panic!("{file}: {id:?} is not valid base58 ({e})"));
+        let decoded = base58_decode(id)
+            .unwrap_or_else(|e| panic!("{file}: {id:?} is not valid base58 ({e})"));
         assert_eq!(
             decoded.len(),
             32,
