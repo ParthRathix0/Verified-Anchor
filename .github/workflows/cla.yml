@@ -38,10 +38,22 @@ jobs:
         uses: contributor-assistant/github-action@v2.6.1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Required only because the signature store lives in a separate PRIVATE repository.
+          # Needs a token with write access to ParthRathix0/Verified-Anchor-Private; the default
+          # GITHUB_TOKEN is scoped to this repository and cannot reach it.
+          PERSONAL_ACCESS_TOKEN: ${{ secrets.CLA_STORE_TOKEN }}
         with:
-          path-to-signatures: '.github/cla-signatures.json'
+          # Signatures are kept OUT of the public repository. The record is only a GitHub
+          # username, user id, timestamp and pull request number, but there is no reason to
+          # publish it when the action supports private storage.
+          remote-organization-name: ParthRathix0
+          remote-repository-name: Verified-Anchor-Private
+          path-to-signatures: 'signatures/cla.json'
           path-to-document: 'https://github.com/ParthRathix0/Verified-Anchor/blob/master/CLA.md'
-          branch: 'cla-signatures'
+          # A branch that EXISTS in the remote store repository. The action hard-errors with
+          # "Branch <name> not found" and then misreports it as an unsigned CLA, so this must
+          # track the private repository's default branch, not the old in-repo branch name.
+          branch: 'master'
           allowlist: ParthRathix0,dependabot[bot]
           custom-notsigned-prcomment: |
             Thanks for the pull request. Before it can be merged, please sign the
