@@ -19,13 +19,28 @@ Pre-publish steps (must be done before `cargo publish`):
    # in dry-run). It will succeed at the real-publish step below.
    ```
    The first two dry-runs must succeed before proceeding.
-4. **Push the version tag FIRST.** `cargo-verified-anchor` auto-fetches the Lean proof library
+4. **Refresh `EXPECTED_LEAN_TREE` if `lean/` changed this release.** `cargo-verified-anchor`
+   refuses to discharge obligations against a proof library whose content does not match the
+   constant baked into the binary, which is what stops a moved version tag or a tampered cache
+   silently replacing the proofs (see the supply-chain section of
+   `docs/verified-anchor-bridge.md`). Recompute and paste it into `EXPECTED_LEAN_TREE` in
+   `rust/cargo-verified-anchor/src/discharge.rs`:
+   ```bash
+   git rev-parse HEAD:lean
+   ```
+   There is **no chicken-and-egg here**: this is the tree object of `lean/` alone, so it is
+   unchanged by the commit that writes it, by the version bump, and by tagging. Commit the
+   constant before cutting the tag.
+
+   You cannot forget this step silently — `cargo test -p cargo-verified-anchor` fails via
+   `expected_lean_tree_matches_this_checkout` whenever the constant and `lean/` drift apart.
+5. **Push the version tag FIRST.** `cargo-verified-anchor` auto-fetches the Lean proof library
    from the git tag `v<version>` (e.g. `v0.1.1`) on first run, so that tag must exist on the
    public repo before the published tool is used:
    ```bash
    git tag v0.1.1 && git push origin v0.1.1
    ```
-5. **Publish in dependency order.** Modern cargo auto-waits for each upload to appear in the
+6. **Publish in dependency order.** Modern cargo auto-waits for each upload to appear in the
    index before returning, so explicit sleeps are usually unnecessary; if the runtime publish
    can't find the just-published macros, wait ~60 s and re-run it:
    ```bash
