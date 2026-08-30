@@ -13,15 +13,12 @@ projects and under other licences.
 
 ## How to sign
 
-Open a pull request as normal. A bot will comment asking you to sign. Reply with a comment on
-that pull request containing exactly:
+Open a pull request as normal. A **CLA** check appears on it. Click **Details** next to that
+check, sign in with your GitHub account, and accept the agreement.
 
-```
-I have read the CLA Document and I hereby sign the CLA
-```
-
-Your signature is recorded once and applies to all your future contributions to this Project.
-You will not be asked again.
+Your signature is recorded against your GitHub account once and covers all your future
+contributions to this Project. You will not be asked again, and any pull request you already
+have open updates on its own — you do not need to push anything or open a new one.
 
 If your employer has rights to intellectual property you create — which is common in employment
 contracts — please email <rathiparth931@gmail.com> before contributing, rather than signing this
