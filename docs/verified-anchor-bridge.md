@@ -502,3 +502,46 @@ per-struct obligations and runs `lake env lean`. Each obligation is a single `de
 This automates the generation and checking of obligations that were always implied by the
 specification; it does not widen the proven surface. The correspondence remains
 transcription, now regenerated each run. No new modelling axioms are introduced.
+
+## Supply chain: where the proof library comes from, and why you can trust it
+
+Everything above describes what is proven. This section describes how the thing doing the
+proving reaches your machine, which is a separate question and a real part of the attack
+surface: the Lean library `cargo verified-anchor check` runs against **is** what decides whether
+your obligations discharge. A proof library an attacker controls is worse than no proof library,
+because it reports a green check.
+
+`locate_lean_dir` resolves four routes, in order: an explicit `--lean-dir`, the
+`VERIFIED_ANCHOR_LEAN_DIR` variable, a sibling `lean/` found by walking up (in-repo
+development), and finally an auto-fetch that shallow-clones the tag `v<version>` into a cache.
+
+**Only the auto-fetched route is content-verified**, and deliberately so. The first three are
+directories the invoking user chose and owns — they are the explicit opt-out for anyone who
+wants to point the tool at a checkout they control, and verifying them would break that. The
+fourth is the one the user did not choose, so it is the one that must be checked.
+
+Two properties are enforced there:
+
+* **The fetched tree is pinned by content, not by name.** A git tag is mutable; anyone able to
+  move `v<version>` would change the proof library every already-installed copy of the tool
+  downloads, with no version bump and nothing visible in `cargo` output. So after cloning — and
+  again on every cache hit — the tool compares the git tree object of `lean/` against
+  `EXPECTED_LEAN_TREE`, a constant baked into the binary at release. A mismatch is refused, not
+  warned about.
+* **There is no world-writable cache fallback.** When no cache location can be determined the
+  tool errors out instead of using a temp directory. `lake build` runs inside the cache, a
+  `lakefile.toml` can execute arbitrary code during a build, and the Lean definitions found
+  there decide every obligation — so a cache another local user can pre-create is both code
+  execution and forged proofs.
+
+**This is integrity, not a proof-level trust boundary.** It does not join `sha256`, `isOnCurve`,
+`rentExemptMinimum` and the Borsh layout model — those four are modelled opaquely and are what
+the theorems rest on; there are still exactly four. This mechanism only answers "are you running
+the library the theorems were checked against."
+
+**Its honest limit:** git tree objects are SHA-1. That is adequate for detecting a moved tag or a
+tampered cache, and modern git rejects known SHA-1 collision-attack inputs, but it is not a
+signature — it proves the fetched content matches what the release pinned, not who authored it.
+An attacker who can both move the tag *and* ship a matching `cargo-verified-anchor` release to
+crates.io defeats it; that is a strictly harder attack than moving a tag, and it is visible in
+crates.io version history. Signed tags would close the remaining gap and are not implemented.
