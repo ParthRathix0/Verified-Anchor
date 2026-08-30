@@ -6,7 +6,6 @@
 
 [![crates.io](https://img.shields.io/crates/v/verified-anchor?logo=rust&label=crates.io)](https://crates.io/crates/verified-anchor)
 [![Lean](https://img.shields.io/badge/Lean-4.30.0-blue?logo=lean&logoColor=white)](https://lean-lang.org)
-[![Rust](https://img.shields.io/badge/Rust-1.93%2B-orange?logo=rust&logoColor=white)](https://www.rust-lang.org)
 [![Solana](https://img.shields.io/badge/Solana-SBF-9945FF?logo=solana&logoColor=white)](https://solana.com)
 [![Axioms](https://img.shields.io/badge/axioms-%5Bpropext%2C%20Quot.sound%5D-22c55e)](#audit-the-proofs)
 [![License](https://img.shields.io/badge/license-Apache--2.0-22c55e)](LICENSE)
