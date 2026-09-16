@@ -159,8 +159,7 @@ Each expression is compiled one of two ways:
   `a.is_signer`, `a.is_writable`, `a.executable`), a literal, a `#[instruction(...)]` argument,
   or a Borsh-located field of a typed `Account<'info, T>`, it compiles into the proven
   relational sublanguage: a byte-level check in `validate`, covered by `genValidate_sound` at
-  `M10Subset`, exactly like `signer`/`owner`/`has_one`. `nat`/`int` fields compare numerically
-  (widened), so a signed and unsigned field can be compared directly.
+  `M10Subset`, exactly like `signer`/`owner`/`has_one`. `nat`/`int` **ordering** comparisons are numerically (widened) and proven. Cross-type **equality** does not compile when Rust integer types disagree; make types agree in source.
 * **Honest escape hatch.** Anything else — a function call, a macro, a module-qualified path, a
   multi-segment data path (`vault.inner.amount`), or a data field the sublanguage cannot locate
   (behind a float, a Borsh enum, or a fixed-size array whose length is a named const rather than
@@ -331,9 +330,8 @@ or any off-chain / big-endian-host tooling evaluates it. Both are compile errors
   proven core. It is reported in `UNPROVEN_CHECKS` and enforced as verbatim Rust in
   `try_accounts`, exactly as real Anchor would run it. (Before v0.4.0 an array field was
   *reported as proven* and then rejected every account — see the v0.4.0 fix notes.)
-- **`nat`/`int` comparisons in `constraint = <expr>` ARE supported**, numerically widened
-  (a signed and an unsigned field, or a signed field and an unsigned literal, compare correctly
-  against each other). **Floats and Borsh enums are not modelled** in the `Ty` descriptor at
+- **`nat`/`int` ordering comparisons in `constraint = <expr>` ARE supported**, numerically widened
+  (a signed and an unsigned field, or a signed field and an unsigned literal, order correctly against each other). Cross-type **equality** does not compile when Rust types disagree (e.g. u32 field vs u64 instruction arg) - match types in source, as with stock Anchor. **Floats and Borsh enums are not modelled** in the `Ty` descriptor at
   all — any field of, or expression touching, either type falls to the escape hatch.
 - **`AccountData` gained required `LAYOUT` and `LAYOUT_LEAN` associated consts in v0.4.0.**
   This breaks any HAND-WRITTEN `impl AccountData for T`, which will no longer compile until the

@@ -405,7 +405,7 @@ short-circuit `true \|\| <unevaluable>` to `true` (ACCEPT) where the contract sa
 
 **What compiles into the sublanguage.** Field-access and method-call operands on a struct
 field or a typed account (see the table above); comparisons and boolean combinators over them;
-`nat`/`int` comparisons (numerically widened, so a signed and unsigned field can be compared).
+`nat`/`int` **ordering** comparisons (numerically widened). Cross-type **equality** does not compile when Rust integer types disagree - align types in source (same as stock Anchor).
 
 **What falls to the escape hatch.** A function call, a macro invocation, a module-qualified
 path, a multi-segment data path (`vault.inner.amount` — `map_ty` cannot yet produce a nested
