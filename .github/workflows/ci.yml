@@ -94,42 +94,78 @@ jobs:
           path: |
             ~/.local/share/solana
             ~/.cache/solana
-          key: solana-${{ runner.os }}-v1.53-pin-v2.1.21
+          key: solana-${{ runner.os }}-v1.53-manual-pt
 
-      - name: Install Solana CLI
+      - name: Install Solana CLI (stable cargo-build-sbf)
         run: |
-          # Pin install channel so cargo-build-sbf and litesvm stay on a known-good
-          # platform-tools pair (docs/local recipe: v1.53). Floating `stable` drifted and
-          # produced .so files the litesvm 0.6 loader rejects with InvalidAccountData.
-          if [ ! -d "$HOME/.local/share/solana" ]; then
-            sh -c "$(curl -sSfL https://release.anza.xyz/v2.1.21/install)"
+          if [ ! -x "$HOME/.local/share/solana/install/active_release/bin/cargo-build-sbf" ]; then
+            sh -c "$(curl -sSfL https://release.anza.xyz/stable/install)"
           fi
           echo "$HOME/.local/share/solana/install/active_release/bin" >> "$GITHUB_PATH"
+          cargo-build-sbf --version || true
 
-      # Match CONTRIBUTING.md / README: platform-tools v1.53 on PATH, --tools-version v1.53,
-      # so cargo-build-sbf downloads/uses that tools tree.
+      # Docs pin platform-tools v1.53. Floating stable tools produce ELFs that litesvm 0.6
+      # rejects with InvalidAccountData at load. Pre-install the tarball so PATH can force it.
+      - name: Install platform-tools v1.53
+        run: |
+          set -euo pipefail
+          PT_ROOT="$HOME/.cache/solana/v1.53"
+          RUSTC_CANDIDATE="$PT_ROOT/platform-tools/rust/bin/rustc"
+          if [ ! -x "$RUSTC_CANDIDATE" ]; then
+            mkdir -p "$PT_ROOT"
+            curl -sSfL \
+              "https://github.com/anza-xyz/platform-tools/releases/download/v1.53/platform-tools-linux-x86_64.tar.bz2" \
+              -o /tmp/platform-tools-v1.53.tar.bz2
+            tar -xjf /tmp/platform-tools-v1.53.tar.bz2 -C "$PT_ROOT"
+            # tarball layout varies: either platform-tools/… or rust/… at top level
+            if [ ! -x "$RUSTC_CANDIDATE" ]; then
+              if [ -x "$PT_ROOT/rust/bin/rustc" ]; then
+                mkdir -p "$PT_ROOT/platform-tools"
+                # move contents under platform-tools/
+                shopt -s dotglob
+                for item in "$PT_ROOT"/*; do
+                  base=$(basename "$item")
+                  [ "$base" = "platform-tools" ] && continue
+                  mv "$item" "$PT_ROOT/platform-tools/"
+                done
+              fi
+            fi
+          fi
+          if [ ! -x "$RUSTC_CANDIDATE" ]; then
+            echo "::error::platform-tools rustc missing after extract"
+            find "$HOME/.cache/solana" -maxdepth 5 -type f -name rustc 2>/dev/null || true
+            find "$PT_ROOT" -maxdepth 4 -type d 2>/dev/null || true
+            exit 1
+          fi
+          echo "using $RUSTC_CANDIDATE"
+          "$RUSTC_CANDIDATE" --version || true
+
       - name: Build both BPF programs
         run: |
-          export PATH="$HOME/.cache/solana/v1.53/platform-tools/rust/bin:$HOME/.local/share/solana/install/active_release/bin:$PATH"
+          set -euo pipefail
+          PT_BIN="$HOME/.cache/solana/v1.53/platform-tools/rust/bin"
+          export PATH="$PT_BIN:$HOME/.local/share/solana/install/active_release/bin:$PATH"
+          echo "which rustc: $(which rustc)"
+          rustc --version
           build_sbf() {
-            echo "::group::cargo-build-sbf $1 (tools v1.53)"
+            echo "::group::cargo-build-sbf $1"
+            # Prefer forcing the preinstalled tools tree. Fall back to plain cargo-build-sbf
+            # if this cargo-build-sbf build does not accept the flag.
             if ( cd "$1" && cargo-build-sbf --tools-version v1.53 ); then
               echo "::endgroup::"
               return 0
             fi
-            echo "first attempt failed; looking for platform-tools rustc under ~/.cache/solana"
-            PT_RUSTC=$(find "$HOME/.cache/solana" -type f -name rustc -path '*platform-tools*' 2>/dev/null | head -1)
-            if [ -z "$PT_RUSTC" ]; then
-              echo "::error::no platform-tools rustc found under $HOME/.cache/solana"
-              find "$HOME/.cache/solana" -maxdepth 4 -type d 2>/dev/null || true
+            echo "retry without --tools-version, PATH-forced rustc"
+            if ( cd "$1" && cargo-build-sbf --no-rustup-override ); then
               echo "::endgroup::"
-              return 1
+              return 0
             fi
-            echo "retrying with $PT_RUSTC"
-            ( cd "$1" && PATH="$(dirname "$PT_RUSTC"):$PATH" cargo-build-sbf --tools-version v1.53 )
-            rc=$?
+            if ( cd "$1" && cargo-build-sbf ); then
+              echo "::endgroup::"
+              return 0
+            fi
             echo "::endgroup::"
-            return $rc
+            return 1
           }
           build_sbf rust/verified-anchor-program
           build_sbf rust/verified-anchor-exploits
