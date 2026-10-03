@@ -107,7 +107,7 @@ jobs:
           echo "$HOME/.local/share/solana/install/active_release/bin" >> "$GITHUB_PATH"
 
       # Match CONTRIBUTING.md / README: platform-tools v1.53 on PATH, --tools-version v1.53,
-      # and --no-rustup-override so the SBF target rustc is the one that built the ELF.
+      # so cargo-build-sbf downloads/uses that tools tree.
       - name: Build both BPF programs
         run: |
           export PATH="$HOME/.cache/solana/v1.53/platform-tools/rust/bin:$HOME/.local/share/solana/install/active_release/bin:$PATH"
