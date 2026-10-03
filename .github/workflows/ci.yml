@@ -94,38 +94,39 @@ jobs:
           path: |
             ~/.local/share/solana
             ~/.cache/solana
-          key: solana-${{ runner.os }}-v1.53
+          key: solana-${{ runner.os }}-v1.53-pin-v2.1.21
 
       - name: Install Solana CLI
         run: |
+          # Pin install channel so cargo-build-sbf and litesvm stay on a known-good
+          # platform-tools pair (docs/local recipe: v1.53). Floating `stable` drifted and
+          # produced .so files the litesvm 0.6 loader rejects with InvalidAccountData.
           if [ ! -d "$HOME/.local/share/solana" ]; then
-            sh -c "$(curl -sSfL https://release.anza.xyz/stable/install)"
+            sh -c "$(curl -sSfL https://release.anza.xyz/v2.1.21/install)"
           fi
           echo "$HOME/.local/share/solana/install/active_release/bin" >> "$GITHUB_PATH"
 
-      # The local dev recipe pins platform-tools v1.53 on PATH and passes
-      # --no-rustup-override to dodge a rustup 1.26 bug. NEITHER applies on a clean
-      # runner: the pinned path does not exist there, so `rustc` resolved to the stable
-      # toolchain, which has no sbpf-solana-solana target. Let cargo-build-sbf manage its
-      # own toolchain, and fall back to an explicit platform-tools rustc if it needs one.
+      # Match CONTRIBUTING.md / README: platform-tools v1.53 on PATH, --tools-version v1.53,
+      # and --no-rustup-override so the SBF target rustc is the one that built the ELF.
       - name: Build both BPF programs
         run: |
+          export PATH="$HOME/.cache/solana/v1.53/platform-tools/rust/bin:$HOME/.local/share/solana/install/active_release/bin:$PATH"
           build_sbf() {
-            echo "::group::cargo-build-sbf $1"
-            if ( cd "$1" && cargo-build-sbf ); then
+            echo "::group::cargo-build-sbf $1 (tools v1.53)"
+            if ( cd "$1" && cargo-build-sbf --tools-version v1.53 --no-rustup-override ); then
               echo "::endgroup::"
               return 0
             fi
-            echo "first attempt failed; looking for a cached platform-tools rustc"
+            echo "first attempt failed; looking for platform-tools rustc under ~/.cache/solana"
             PT_RUSTC=$(find "$HOME/.cache/solana" -type f -name rustc -path '*platform-tools*' 2>/dev/null | head -1)
             if [ -z "$PT_RUSTC" ]; then
               echo "::error::no platform-tools rustc found under $HOME/.cache/solana"
-              find "$HOME/.cache/solana" -maxdepth 3 -type d 2>/dev/null || true
+              find "$HOME/.cache/solana" -maxdepth 4 -type d 2>/dev/null || true
               echo "::endgroup::"
               return 1
             fi
             echo "retrying with $PT_RUSTC"
-            ( cd "$1" && PATH="$(dirname "$PT_RUSTC"):$PATH" cargo-build-sbf --no-rustup-override )
+            ( cd "$1" && PATH="$(dirname "$PT_RUSTC"):$PATH" cargo-build-sbf --tools-version v1.53 --no-rustup-override )
             rc=$?
             echo "::endgroup::"
             return $rc
