@@ -32,12 +32,13 @@ fn setup(program_id: Pubkey) -> (LiteSVM, Keypair) {
     );
     // add_program_from_file only surfaces io::Error; loader rejection panics inside
     // litesvm as Instruction(InvalidAccountData). Keep the path for CI diagnosis.
-    svm.add_program_from_file(program_id, &path).unwrap_or_else(|e| {
-        panic!(
-            "failed to read {}: {e} (InvalidAccountData => pin platform-tools v1.53)",
-            path.display()
-        )
-    });
+    svm.add_program_from_file(program_id, &path)
+        .unwrap_or_else(|e| {
+            panic!(
+                "failed to read {}: {e} (InvalidAccountData => pin platform-tools v1.53)",
+                path.display()
+            )
+        });
     let payer = Keypair::new();
     svm.airdrop(&payer.pubkey(), 10_000_000)
         .expect("airdrop payer");

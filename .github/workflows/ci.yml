@@ -113,7 +113,7 @@ jobs:
           export PATH="$HOME/.cache/solana/v1.53/platform-tools/rust/bin:$HOME/.local/share/solana/install/active_release/bin:$PATH"
           build_sbf() {
             echo "::group::cargo-build-sbf $1 (tools v1.53)"
-            if ( cd "$1" && cargo-build-sbf --tools-version v1.53 --no-rustup-override ); then
+            if ( cd "$1" && cargo-build-sbf --tools-version v1.53 ); then
               echo "::endgroup::"
               return 0
             fi
@@ -126,7 +126,7 @@ jobs:
               return 1
             fi
             echo "retrying with $PT_RUSTC"
-            ( cd "$1" && PATH="$(dirname "$PT_RUSTC"):$PATH" cargo-build-sbf --tools-version v1.53 --no-rustup-override )
+            ( cd "$1" && PATH="$(dirname "$PT_RUSTC"):$PATH" cargo-build-sbf --tools-version v1.53 )
             rc=$?
             echo "::endgroup::"
             return $rc
