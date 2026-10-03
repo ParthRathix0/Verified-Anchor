@@ -88,44 +88,43 @@ jobs:
         with:
           workspaces: rust
 
-      # Pin the Agave CLI whose default platform-tools still emit ELFs that
-      # litesvm 0.6.1 (solana-sbpf 0.10) can load. Floating `stable` (e.g.
-      # commit 44b42d4) and platform-tools v1.53 both produce smaller
-      # unloadable ELFs — loader rejects with InvalidAccountData at
-      # add_program. Last green CI (Sep 2026) hit a cached install that
-      # predated that drift; program .so was ~89KB / exploits ~85KB.
-      # Agave v2.1.21 ships DEFAULT_PLATFORM_TOOLS_VERSION = v1.43.
+      # Floating anza `stable` defaults to platform-tools that emit ELFs
+      # litesvm 0.6.1 (solana-sbpf 0.10) rejects (InvalidAccountData at
+      # add_program). CONTRIBUTING pins v1.53; use that explicitly, keep
+      # host cargo first on PATH so rustup can resolve
+      # `+…-sbpf-solana-v1.53`, and force SBPFv0 (litesvm 0.6 default).
       - name: Cache Solana platform-tools
         uses: actions/cache@v4
         with:
           path: |
             ~/.local/share/solana
             ~/.cache/solana
-          key: solana-${{ runner.os }}-agave-v2.1.21-pt-v1.43
+          key: solana-${{ runner.os }}-stable-pt-v1.53-arch-v0
 
-      - name: Install Solana CLI (Agave v2.1.21)
+      - name: Install Solana CLI
         run: |
           set -euo pipefail
           if [ ! -x "$HOME/.local/share/solana/install/active_release/bin/cargo-build-sbf" ]; then
-            sh -c "$(curl -sSfL https://release.anza.xyz/v2.1.21/install)"
+            sh -c "$(curl -sSfL https://release.anza.xyz/stable/install)"
           fi
+          # Only the Solana bin dir — never platform-tools/rust/bin first.
+          # Shadowing host cargo breaks `cargo +<sbpf-toolchain>`.
           echo "$HOME/.local/share/solana/install/active_release/bin" >> "$GITHUB_PATH"
           export PATH="$HOME/.local/share/solana/install/active_release/bin:$PATH"
           cargo-build-sbf --version
-          # Do NOT put platform-tools rust/bin first on PATH. That shadows
-          # host cargo and breaks rustup +toolchain selection
-          # (`error: no such command: +…-sbpf-solana-…`). Let cargo-build-sbf
-          # install/link its default tools (v1.43) itself.
 
       - name: Build both BPF programs
         run: |
           set -euo pipefail
           export PATH="$HOME/.local/share/solana/install/active_release/bin:$PATH"
+          which cargo
+          cargo --version
           build_sbf() {
             echo "::group::cargo-build-sbf $1"
-            # Default tools for this CLI pin = v1.43. No --tools-version
-            # override; no PATH-forced platform-tools rustc.
-            ( cd "$1" && cargo-build-sbf )
+            # --tools-version v1.53: docs pin; rustc 1.89 handles edition2024
+            # deps that v1.43 cannot parse.
+            # --arch v0: SBPFv0 bytecode; litesvm 0.6 / solana-sbpf 0.10.
+            ( cd "$1" && cargo-build-sbf --tools-version v1.53 --arch v0 )
             echo "::endgroup::"
           }
           build_sbf rust/verified-anchor-program
@@ -143,7 +142,9 @@ jobs:
           for so in rust/target/deploy/*.so; do
             [ -s "$so" ] || { echo "::error::$so is missing or empty"; fail=1; continue; }
             readelf -h "$so" > /dev/null 2>&1 || { echo "::error::$so is not valid ELF"; fail=1; continue; }
-            echo "ok: $so ($(stat -c%s "$so") bytes)"
+            # Flags 0x0 = SBPFv0 (what litesvm 0.6 expects). 0x3 = SBPFv3.
+            flags=$(readelf -h "$so" | awk '/Flags:/ {print $2; exit}')
+            echo "ok: $so ($(stat -c%s "$so") bytes) Flags=$flags"
           done
           exit $fail
 
