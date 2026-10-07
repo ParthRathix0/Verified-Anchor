@@ -1,3 +1,9 @@
+<!--
+This pull request is squashed into a single commit on `master`, so the title and the section
+below become that commit's message. Title it as a conventional-commit subject — `fix: escape
+struct names in the --json report` — not a sentence.
+-->
+
 ## What this changes
 
 <!-- What does this do, and why? Explain the reasoning, not just the diff. -->

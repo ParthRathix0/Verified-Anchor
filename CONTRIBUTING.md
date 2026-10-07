@@ -81,6 +81,11 @@ Fill in the template: what changed, the issue it closes, its soundness impact, a
 checklist. If you could not run part of the gate — no SBF toolchain, for instance — tick what
 you ran and say plainly what you skipped. An honest gap is fine; a silently skipped step is not.
 
+The pull request **title** becomes the subject line of the commit that lands on `master`, so
+write it as a conventional-commit line — `test: assert every ui fixture declare_id! decodes to a
+32-byte pubkey`, not `Test declare_id fixtures`. **What this changes** becomes the commit body.
+Step 11 explains why.
+
 **8. Sign the CLA.** On your first pull request only, a **CLA** check appears. Click **Details**
 next to it, sign in with your GitHub account and accept. It is recorded once against your account
 and never asked again. You keep the copyright in your work — see [CLA.md](CLA.md).
@@ -92,10 +97,16 @@ and CI re-runs on its own — there is no need to close and reopen anything.
 
 **10. Respond to review.** Push more commits to the same branch; they appear on the pull request
 automatically. Please do not force-push during review, as it makes already-posted comments hard
-to follow.
+to follow. Do not rewrite or tidy your branch either — a `fmt: satisfy cargo fmt` follow-up is
+perfectly fine and will never reach `master`, for the reason in step 11.
 
-**11. A maintainer merges it.** You do not need merge rights, and you should not need to do
-anything further.
+**11. A maintainer merges it — squashed.** Your branch lands on `master` as a **single commit**,
+authored by you. Everything on the branch — the change itself, review fixups, the formatting
+follow-up — collapses into that one commit, which is why step 7 asks you to put the real
+explanation in the pull request title and body rather than only in individual commit messages.
+`master` keeps exactly one commit per pull request; the intermediate steps stay on the pull
+request, where they are useful to a reviewer and useless to a reader of `git log`. You do not
+need merge rights, and you should not need to do anything further.
 
 ### Keeping your branch current
 
@@ -283,7 +294,11 @@ These are the conventions that section assumes:
 * Conventional-commit prefixes, matching the existing history: `feat:`, `fix:`, `docs:`,
   `chore:`, `ci:`, `test:`, `release:`.
 * One logical change per pull request. A licence change and a proof change do not belong
-  together.
+  together. This matters more than usual here: a pull request is squashed into one commit, so
+  the pull request *is* the unit of history.
+* **The pull request title and body are the commit message.** Title it as the conventional-commit
+  subject you want in `git log`, and write **What this changes** as the body you want under it.
+  Your individual branch commits are not what a later reader sees.
 * Explain *why* in the commit body, not just what. The history here is used as documentation.
 * Fill in the gate checklist in the pull request template. If you could not run part of the gate
   (no SBF toolchain, say), tick what you ran and say plainly what you skipped — an honest gap is
