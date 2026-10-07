@@ -88,47 +88,44 @@ jobs:
         with:
           workspaces: rust
 
+      # Floating anza `stable` defaults to platform-tools that emit ELFs
+      # litesvm 0.6.1 (solana-sbpf 0.10) rejects (InvalidAccountData at
+      # add_program). CONTRIBUTING pins v1.53; use that explicitly, keep
+      # host cargo first on PATH so rustup can resolve
+      # `+…-sbpf-solana-v1.53`, and force SBPFv0 (litesvm 0.6 default).
       - name: Cache Solana platform-tools
         uses: actions/cache@v4
         with:
           path: |
             ~/.local/share/solana
             ~/.cache/solana
-          key: solana-${{ runner.os }}-v1.53
+          key: solana-${{ runner.os }}-stable-pt-v1.53-arch-v0
 
       - name: Install Solana CLI
         run: |
-          if [ ! -d "$HOME/.local/share/solana" ]; then
+          set -euo pipefail
+          if [ ! -x "$HOME/.local/share/solana/install/active_release/bin/cargo-build-sbf" ]; then
             sh -c "$(curl -sSfL https://release.anza.xyz/stable/install)"
           fi
+          # Only the Solana bin dir — never platform-tools/rust/bin first.
+          # Shadowing host cargo breaks `cargo +<sbpf-toolchain>`.
           echo "$HOME/.local/share/solana/install/active_release/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.local/share/solana/install/active_release/bin:$PATH"
+          cargo-build-sbf --version
 
-      # The local dev recipe pins platform-tools v1.53 on PATH and passes
-      # --no-rustup-override to dodge a rustup 1.26 bug. NEITHER applies on a clean
-      # runner: the pinned path does not exist there, so `rustc` resolved to the stable
-      # toolchain, which has no sbpf-solana-solana target. Let cargo-build-sbf manage its
-      # own toolchain, and fall back to an explicit platform-tools rustc if it needs one.
       - name: Build both BPF programs
         run: |
+          set -euo pipefail
+          export PATH="$HOME/.local/share/solana/install/active_release/bin:$PATH"
+          which cargo
+          cargo --version
           build_sbf() {
             echo "::group::cargo-build-sbf $1"
-            if ( cd "$1" && cargo-build-sbf ); then
-              echo "::endgroup::"
-              return 0
-            fi
-            echo "first attempt failed; looking for a cached platform-tools rustc"
-            PT_RUSTC=$(find "$HOME/.cache/solana" -type f -name rustc -path '*platform-tools*' 2>/dev/null | head -1)
-            if [ -z "$PT_RUSTC" ]; then
-              echo "::error::no platform-tools rustc found under $HOME/.cache/solana"
-              find "$HOME/.cache/solana" -maxdepth 3 -type d 2>/dev/null || true
-              echo "::endgroup::"
-              return 1
-            fi
-            echo "retrying with $PT_RUSTC"
-            ( cd "$1" && PATH="$(dirname "$PT_RUSTC"):$PATH" cargo-build-sbf --no-rustup-override )
-            rc=$?
+            # --tools-version v1.53: docs pin; rustc 1.89 handles edition2024
+            # deps that v1.43 cannot parse.
+            # --arch v0: SBPFv0 bytecode; litesvm 0.6 / solana-sbpf 0.10.
+            ( cd "$1" && cargo-build-sbf --tools-version v1.53 --arch v0 )
             echo "::endgroup::"
-            return $rc
           }
           build_sbf rust/verified-anchor-program
           build_sbf rust/verified-anchor-exploits
@@ -145,7 +142,9 @@ jobs:
           for so in rust/target/deploy/*.so; do
             [ -s "$so" ] || { echo "::error::$so is missing or empty"; fail=1; continue; }
             readelf -h "$so" > /dev/null 2>&1 || { echo "::error::$so is not valid ELF"; fail=1; continue; }
-            echo "ok: $so ($(stat -c%s "$so") bytes)"
+            # Flags 0x0 = SBPFv0 (what litesvm 0.6 expects). 0x3 = SBPFv3.
+            flags=$(readelf -h "$so" | awk '/Flags:/ {print $2; exit}')
+            echo "ok: $so ($(stat -c%s "$so") bytes) Flags=$flags"
           done
           exit $fail
 

@@ -24,10 +24,24 @@ fn so_path() -> PathBuf {
 
 fn setup(program_id: Pubkey) -> (LiteSVM, Keypair) {
     let mut svm = LiteSVM::new();
-    svm.add_program_from_file(program_id, so_path())
-        .expect("load .so (run cargo-build-sbf first)");
+    let path = so_path();
+    assert!(
+        path.is_file(),
+        "missing {}; run cargo-build-sbf in verified-anchor-program first",
+        path.display()
+    );
+    // add_program_from_file only surfaces io::Error; loader rejection panics inside
+    // litesvm as Instruction(InvalidAccountData). Keep the path for CI diagnosis.
+    svm.add_program_from_file(program_id, &path)
+        .unwrap_or_else(|e| {
+            panic!(
+                "failed to read {}: {e} (InvalidAccountData => pin platform-tools v1.53)",
+                path.display()
+            )
+        });
     let payer = Keypair::new();
-    svm.airdrop(&payer.pubkey(), 10_000_000).unwrap();
+    svm.airdrop(&payer.pubkey(), 10_000_000)
+        .expect("airdrop payer");
     (svm, payer)
 }
 
